@@ -3407,3 +3407,55 @@ fn table_cell_override_does_not_beat_table_geometry() {
         assert_eq!(px_of(&rules_of(select_box).width), Some(SELECT_COLUMN_WIDTH_PX));
     });
 }
+
+/// CrewForge: `drag_from_row` on a plain table adds no grip; every body
+/// cell starts the row's drag, composed over the row's own click — a
+/// press that moves picks the row up (and clicks nothing), a still press
+/// clicks.
+#[test]
+fn drag_from_row_drags_a_plain_row_from_its_cells_and_keeps_its_click() {
+    use runtime_core::{TouchEvent, TouchId, TouchPhase, TouchPoint};
+    with_test_world(|| {
+        let clicks = Rc::new(Cell::new(0u32));
+        let starts: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+        let (c, s) = (clicks.clone(), starts.clone());
+        let t = Table(TableProps {
+            on_reorder: Some(Rc::new(|_, _| {})),
+            drag_from_row: true,
+            on_row_drag_start: Some(Rc::new(move |k| s.borrow_mut().push(k))),
+            children: vec![
+                row_of(vec![head_cell("Name"), head_cell("Role")]),
+                TableRow(TableRowProps {
+                    children: vec![text_of("Ana"), text_of("Lead")],
+                    id: Some(RowId::from("a")),
+                    draggable: true,
+                    on_row_click: Some(Rc::new(move || c.set(c.get() + 1))),
+                    ..Default::default()
+                }),
+            ],
+            ..Default::default()
+        });
+        let mut cells: Vec<Element> = grid_cells(t).into_iter().filter(|c| !is_backdrop(c)).collect();
+        assert_eq!(cells.len(), 4, "no grip column: two head cells, two body cells");
+        let role = view_prim(cells.remove(3)).on_touch.expect("a body cell takes the row's drag");
+        let ev = |phase, x: f32, t_ms: u64| TouchEvent {
+            id: TouchId(1),
+            phase,
+            position: TouchPoint::new(x, 10.0),
+            window_position: TouchPoint::new(x, 10.0),
+            timestamp_ns: t_ms * 1_000_000,
+            force: None,
+        };
+
+        role(&ev(TouchPhase::Began, 10.0, 0));
+        role(&ev(TouchPhase::Ended, 10.0, 60));
+        assert_eq!(clicks.get(), 1, "a still press clicks the row");
+        assert!(starts.borrow().is_empty());
+
+        role(&ev(TouchPhase::Began, 10.0, 1_000));
+        role(&ev(TouchPhase::Moved, 40.0, 1_016));
+        assert_eq!(*starts.borrow(), vec![0], "a press that moves picks the row up");
+        role(&ev(TouchPhase::Ended, 40.0, 1_032));
+        assert_eq!(clicks.get(), 1, "and clicks nothing");
+    });
+}

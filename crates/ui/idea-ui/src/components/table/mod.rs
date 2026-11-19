@@ -123,6 +123,13 @@
 //! - The drag starts on the grip only: the row's other cells keep their
 //!   own presses, so a clickable first cell (a name that opens the
 //!   record, a link) works on a reorderable row.
+//! - `Table(drag_from_row = true)` adds no grip: the whole row starts the
+//!   drag instead, composed over the row's own press. With a mouse the row
+//!   picks up once the pointer moves past the slop, so a click still opens
+//!   the row; on a touch screen, where a swipe scrolls, a hold picks it up
+//!   (a virtualized table with `on_row_menu`: the hold opens the menu and
+//!   moving on from it picks the row up — close the menu in
+//!   `on_row_drag_start`, which hears every drag start).
 //! - `Table(grip_on_hover = true)` shows each grip only while its row is
 //!   hovered (transparent, still grabbable, otherwise); where the primary
 //!   pointer cannot hover, the grips stay shown.
@@ -424,7 +431,10 @@
 //!   bottom edge, and `cb(from, to)` gets ROW INDICES (every row is
 //!   draggable) — apply the move in the callback ([`move_in_place`]). The
 //!   grid keeps the held row's cells mounted however far it scrolls, so
-//!   the drag survives. `grip_on_hover` works as on a plain table. Row
+//!   the drag survives. `grip_on_hover` and `drag_from_row` work as on a
+//!   plain table; with `drag_from_row`, on a touch screen, a row with
+//!   `on_row_menu` opens it on a hold and is picked up as the finger moves
+//!   on. Row
 //!   groups need every row mounted: a virtualized table panics if given
 //!   `on_group_reorder` or children.
 //! - `row_drag = Some(RowDrag::new(&ctx, |row| payload))` offers that
@@ -559,6 +569,7 @@ pub use styles::*;
 /// `body_cell` arm does not.
 pub type RowTone = TableTone;
 use rows::{decorate_added_cell, row_meta, RowInteraction, RowMeta};
+use row_press::row_drag_touch;
 use select::{select_all_box, select_row_box};
 use crate::components::icon::Icon;
 pub use table::ColSpan;
@@ -955,6 +966,22 @@ pub struct TableProps {
     /// screen) the grips stay shown. The hidden grip is still grabbable.
     #[prop(static)]
     pub grip_on_hover: bool,
+    /// Start a reorder drag from anywhere on a body row instead of from a
+    /// grip, which is then not added. With a mouse the row is picked up
+    /// once the pointer has moved past a few pixels, so a click still
+    /// opens it and a right-click its menu. On a touch screen a vertical
+    /// swipe still scrolls: a hold opens the row's menu (virtualized
+    /// `on_row_menu`) and moving on from it picks the row up — close the
+    /// menu in [`on_row_drag_start`](Self::on_row_drag_start) — and with no
+    /// menu the hold picks the row up. Needs `on_reorder`; a plain table
+    /// cannot combine it with `on_group_reorder`, whose bands drag by grip.
+    #[prop(static)]
+    pub drag_from_row: bool,
+    /// Called with the row a reorder drag picks up (from its grip or, with
+    /// `drag_from_row`, the row), as `on_reorder` numbers it. Close a row
+    /// menu here: on a touch screen the menu opens on the hold that the
+    /// drag continues.
+    pub on_row_drag_start: Option<Rc<dyn Fn(usize)>>,
     /// What a table with no body rows says: one row under the header
     /// spanning every column (past the selection and grip columns).
     /// `Some("No crew yet".into())`, or any element. Decided from the
@@ -1100,6 +1127,11 @@ pub fn Table(mut props: TableProps) -> Element {
         (body, x)
     });
 
+    assert!(
+        !props.drag_from_row || (props.on_reorder.is_some() && props.on_group_reorder.is_none()),
+        "Table: `drag_from_row` starts the reorder drag from the row, so it needs `on_reorder`, and \
+         can't be combined with `on_group_reorder`, whose bands drag by their grip"
+    );
     // Group drag: the groups whose band is draggable, in order, each with
     // its row count (band included).
     let group_reorder = props.on_group_reorder.map(|cb| {
@@ -1132,7 +1164,7 @@ pub fn Table(mut props: TableProps) -> Element {
 
     // The columns the table adds before the author's, in order.
     let lead: Vec<Builtin> = [
-        (props.on_reorder.is_some() || group_reorder.is_some()).then_some(Builtin::Grip),
+        ((props.on_reorder.is_some() && !props.drag_from_row) || group_reorder.is_some()).then_some(Builtin::Grip),
         props.selection.is_some().then_some(Builtin::Select),
     ]
     .into_iter()
@@ -1217,7 +1249,9 @@ pub fn Table(mut props: TableProps) -> Element {
             None => (true, None),
         })
         .collect();
-    let reorder = props.on_reorder.map(|cb| Reorder::new(&body, cb));
+    let drag_from_row = props.drag_from_row;
+    let reorder =
+        props.on_reorder.map(|cb| Reorder::new(&body, cb, drag_from_row, props.on_row_drag_start.clone()));
     let selection = props.selection;
     let select_row_label = props.select_row_label.clone();
     // A band's content pins past the frozen columns the table adds, takes
@@ -1343,6 +1377,9 @@ pub fn Table(mut props: TableProps) -> Element {
         for child in &children {
             table::visit_rows(child, |row| {
                 if kinds[row_i] == RowKind::Body {
+                    if drag_from_row {
+                        drag_from_cells(reorder, body_i, row);
+                    }
                     reorder.wire_row(body_i, row);
                     body_i += 1;
                 }
@@ -2088,6 +2125,22 @@ pub fn TableRow(props: TableRowProps) -> Element {
 /// native). Taps on plain content or empty space fall through to the row.
 /// This replaces the earlier web-only full-bleed overlay, which physically
 /// covered the cell's content and so swallowed a button's click.
+/// `Table(drag_from_row = true)` on a plain table: each of body row
+/// `body_index`'s cells starts the row's drag, composed over whatever the
+/// cell already handles (a clickable row's tap), which stands down once
+/// the drag picks the row up ([`row_drag_touch`]).
+fn drag_from_cells(reorder: &Reorder, body_index: usize, row: &Element) {
+    let (Some(drag), Some(held)) = (reorder.grip_handler(body_index), reorder.is_held(body_index)) else {
+        return;
+    };
+    table::visit_row_cells(row, |cell| {
+        let (drag, held) = (drag.clone(), held.clone());
+        table::map_cell_touch(cell, move |press| {
+            Some(row_drag_touch(press, Rc::new(RefCell::new(Some(drag))), false, Some(held)).handler)
+        });
+    });
+}
+
 fn make_row_cell_interactive(
     cell: Element,
     hovered: Signal<bool>,

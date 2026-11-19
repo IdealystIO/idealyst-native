@@ -235,6 +235,8 @@ pub(super) struct VirtualReorder {
     /// this on. See the module docs, "No fades".
     settling: Signal<bool>,
     settle_frame: RefCell<Option<ScheduledTask>>,
+    /// `Table(on_row_drag_start = …)`: told the row a drag picks up.
+    on_start: Option<Rc<dyn Fn(usize)>>,
     me: Weak<VirtualReorder>,
 }
 
@@ -247,6 +249,7 @@ impl VirtualReorder {
         count: Rc<dyn Fn() -> usize>,
         grid: Rc<RefCell<Option<VirtualGridHandle>>>,
         row_drag: Option<RowDrag>,
+        on_start: Option<Rc<dyn Fn(usize)>>,
     ) -> Rc<Self> {
         let me = Rc::new_cyclic(|me| VirtualReorder {
             on_reorder,
@@ -268,6 +271,7 @@ impl VirtualReorder {
             ghosted: signal(false),
             settling: signal(false),
             settle_frame: RefCell::new(None),
+            on_start,
             me: me.clone(),
         });
         // The landing spring publishes each step, and ends the landing when
@@ -304,16 +308,31 @@ impl VirtualReorder {
     /// (or after a hold), but the row is measured from the PRESS: measured
     /// from the commit point it would trail the pointer by the slop.
     pub(super) fn grip_handler(&self, row: Memo<usize>) -> TouchHandler {
+        // The grip is the row's first cell, so the cell's corner is the row's.
+        self.drag_handler(row, Activation::scroll_aware(ScrollAxis::Vertical), Rc::new(|| 0.0), Rc::new(|| {}))
+    }
+
+    /// The drag recognizer for a cell of `row` that starts with
+    /// `activation`. `cell_left` is the cell's left edge in the scrollport
+    /// when the press lands (0 for the grip), so the row is measured from
+    /// its own corner; `committed` runs as the drag picks the row up.
+    pub(super) fn drag_handler(
+        &self,
+        row: Memo<usize>,
+        activation: Activation,
+        cell_left: Rc<dyn Fn() -> f32>,
+        committed: Rc<dyn Fn()>,
+    ) -> TouchHandler {
         let me = self.me.clone();
-        // The press in the window, and within the grip cell: the grip is
-        // the row's first cell, so the cell's corner is the row's.
+        // The press in the window, and within the row.
         let origin = TouchPoint::new(0.0, 0.0);
         let pressed: Rc<Cell<(TouchPoint, TouchPoint)>> = Rc::new(Cell::new((origin, origin)));
         let at = pressed.clone();
-        let recognizer = DragRecognizer::new(Activation::scroll_aware(ScrollAxis::Vertical), move |phase| {
+        let recognizer = DragRecognizer::new(activation, move |phase| {
             let Some(me) = me.upgrade() else { return };
             match phase {
                 DragPhase::Began(s) => {
+                    committed();
                     let r = runtime_core::untrack(|| row.get());
                     let (window, grab) = at.get();
                     me.begin(r, window, grab);
@@ -327,7 +346,8 @@ impl VirtualReorder {
         .into_handler();
         Rc::new(move |ev: &runtime_core::TouchEvent| {
             if ev.phase == runtime_core::TouchPhase::Began {
-                pressed.set((ev.window_position, ev.position));
+                let grab = TouchPoint::new(ev.position.x + cell_left(), ev.position.y);
+                pressed.set((ev.window_position, grab));
             }
             recognizer(ev)
         })
@@ -441,7 +461,7 @@ impl VirtualReorder {
             scroll,
             origin: (window.x - grab.x, window.y - grab.y),
             pointer_dx: 0.0,
-            // The grip is frozen at the scrollport's left edge.
+            // `grab.x` is measured from the scrollport's left edge.
             port_x0: grab.x,
             away: false,
         };
@@ -464,6 +484,9 @@ impl VirtualReorder {
         self.lift.set(0.0);
         self.over.set(Some(from));
         self.from.set(Some(from));
+        if let Some(on_start) = &self.on_start {
+            on_start(from);
+        }
         let me = self.me.clone();
         *self.autoscroll.borrow_mut() = Some(runtime_core::raf_loop(move || {
             if let Some(me) = me.upgrade() {
@@ -627,6 +650,7 @@ mod tests {
                 Rc::new(|| 10),
                 Rc::new(RefCell::new(None)),
                 Some(RowDrag::new(&ctx, |row| row * 100)),
+                None,
             );
             reorder.set_preview(Rc::new(|_| runtime_core::view(Vec::new()).into()));
             let at = |x: f32, y: f32| TouchPoint::new(x, y);
@@ -665,6 +689,7 @@ mod tests {
                 Rc::new(|| 10),
                 Rc::new(RefCell::new(None)),
                 Some(RowDrag::new(&ctx, |row| row)),
+                None,
             );
             reorder.set_preview(Rc::new(|_| runtime_core::view(Vec::new()).into()));
             let fades = |r: &VirtualReorder| {
@@ -711,6 +736,7 @@ mod tests {
                 Rc::new(|| 10),
                 Rc::new(RefCell::new(None)),
                 Some(RowDrag::new(&ctx, |row| row)),
+                None,
             );
             reorder.set_preview(Rc::new(|_| runtime_core::view(Vec::new()).into()));
             reorder.begin(3, TouchPoint::new(20.0, 170.0), TouchPoint::new(10.0, 10.0));

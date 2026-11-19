@@ -26,7 +26,7 @@
 //!   frames stay at their layout position while the cells translate, so
 //!   hit-testing never oscillates with the slide.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use dnd::{Activation, DragContext, Draggable, Droppable, ScrollAxis};
@@ -111,11 +111,30 @@ pub(super) struct Reorder {
     groups: Rc<Vec<Option<RowId>>>,
     rows: Vec<DragRow>,
     on_reorder: Rc<dyn Fn(usize, usize)>,
+    /// `drag_from` as of now: the signal's write is staged until the
+    /// event's flush, and [`Reorder::is_held`] is asked within the event.
+    held: Rc<Cell<Option<usize>>>,
 }
 
 impl Reorder {
     /// Wiring for body rows described by `(draggable, group)`, in order.
-    pub(super) fn new(body: &[(bool, Option<RowId>)], on_reorder: Rc<dyn Fn(usize, usize)>) -> Self {
+    /// `from_row`: the drag starts from the whole row
+    /// (`Table(drag_from_row = true)`), so on a touch screen it waits for a
+    /// hold — a swipe either way must scroll. `on_start` is told the
+    /// ordinal a drag picks up.
+    pub(super) fn new(
+        body: &[(bool, Option<RowId>)],
+        on_reorder: Rc<dyn Fn(usize, usize)>,
+        from_row: bool,
+        on_start: Option<Rc<dyn Fn(usize)>>,
+    ) -> Self {
+        let activation = if !from_row {
+            Activation::scroll_aware(ScrollAxis::Vertical)
+        } else if runtime_core::platform().is_mobile() {
+            Activation::long_press()
+        } else {
+            Activation::immediate()
+        };
         let ctx: DragContext<usize> = DragContext::new();
         let drag_from: Signal<Option<usize>> = signal(None);
         let over_slot: Signal<Option<usize>> = signal(None);
@@ -130,12 +149,15 @@ impl Reorder {
         let count = groups.len();
         let heights = Rc::new(RefCell::new(vec![0.0_f32; count]));
         let row_refs: Rc<Vec<Ref<ViewHandle>>> = Rc::new((0..count).map(|_| Ref::new()).collect());
+        let held: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
         let rows = (0..count)
             .map(|k| {
                 let start_heights = heights.clone();
                 let start_refs = row_refs.clone();
+                let on_start = on_start.clone();
+                let (start_held, release_held) = (held.clone(), held.clone());
                 let drag = Draggable::new(&ctx, move || k)
-                    .activation(Activation::scroll_aware(ScrollAxis::Vertical))
+                    .activation(activation)
                     .on_start(move || {
                         {
                             let mut hs = start_heights.borrow_mut();
@@ -148,10 +170,15 @@ impl Reorder {
                             }
                         }
                         drag_from.set(Some(k));
+                        start_held.set(Some(k));
                         // No gap until the pointer crosses another row.
                         over_slot.set(Some(k));
+                        if let Some(on_start) = &on_start {
+                            on_start(k);
+                        }
                     })
                     .on_release(move |_| {
+                        release_held.set(None);
                         drag_from.set(None);
                         over_slot.set(None);
                     });
@@ -171,6 +198,7 @@ impl Reorder {
             groups: Rc::new(groups),
             rows,
             on_reorder,
+            held,
         }
     }
 
@@ -179,6 +207,15 @@ impl Reorder {
     pub(super) fn grip_handler(&self, body_index: usize) -> Option<TouchHandler> {
         let k = self.ordinals.get(body_index).copied().flatten()?;
         Some(self.rows[k].handler.clone())
+    }
+
+    /// Whether body row `body_index` is the held row now: a
+    /// row's cells ask it after each touch event to learn the drag picked
+    /// the row up (`drag_from_row`).
+    pub(super) fn is_held(&self, body_index: usize) -> Option<Rc<dyn Fn() -> bool>> {
+        let k = self.ordinals.get(body_index).copied().flatten()?;
+        let held = self.held.clone();
+        Some(Rc::new(move || held.get() == Some(k)))
     }
 
     /// Wire body row `body_index` — every cell in place, grip included:
@@ -402,7 +439,7 @@ mod tests {
     #[test]
     fn regression_lifted_row_keeps_its_frozen_column_frozen() {
         with_test_world(|| {
-            let reorder = Reorder::new(&[(true, None), (true, None)], Rc::new(|_, _| {}));
+            let reorder = Reorder::new(&[(true, None), (true, None)], Rc::new(|_, _| {}), false, None);
             let (held, other) = (row(true), row(true));
             reorder.wire_row(0, &held);
             reorder.wire_row(1, &other);
@@ -476,6 +513,8 @@ mod tests {
             let reorder = Reorder::new(
                 &[(true, Some("a".into())), (false, None), (true, Some("b".into()))],
                 Rc::new(|_, _| {}),
+                false,
+                None,
             );
             assert!(reorder.grip_handler(0).is_some());
             assert!(reorder.grip_handler(1).is_none(), "a locked row has no grip");

@@ -2842,6 +2842,23 @@ pub fn set_cell_interaction(cell: &Element, on_touch: TouchHandler, on_hover: Ho
     });
 }
 
+/// Replace a built cell's touch handler with `f(current)`: compose a
+/// recognizer over whatever the cell already handles (a clickable row's
+/// tap) rather than replacing it, as [`set_cell_touch`] does.
+pub fn map_cell_touch(cell: &Element, f: impl FnOnce(Option<TouchHandler>) -> Option<TouchHandler>) {
+    let mut f = Some(f);
+    visit_cell(cell, &mut |view, table_cell| {
+        let slot = match (view, table_cell) {
+            (Some(p), _) => &mut p.on_touch,
+            (None, Some(p)) => &mut p.on_touch,
+            (None, None) => return,
+        };
+        if let Some(f) = f.take() {
+            *slot = f(slot.take());
+        }
+    });
+}
+
 /// Give a built cell's own node (native grid item / web `<td>`-`<th>`) a
 /// robot/automation anchor. A cell is the row's one node every lowering has:
 /// a native row dissolves into the grid, and the row's tap lands on its cells.

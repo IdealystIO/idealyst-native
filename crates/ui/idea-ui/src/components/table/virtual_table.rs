@@ -71,6 +71,7 @@ use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
+use dnd::Activation;
 use runtime_core::primitives::virtual_grid::{virtual_grid_recycled, FrozenPanes, VirtualGridHandle};
 use runtime_core::{
     effect, memo, signal, tap, ui, Element, Length, Memo, Reactive, Ref, Signal, StyleApplication, StyleRules,
@@ -79,7 +80,7 @@ use runtime_core::{
 
 use super::columns::{live_width, ColumnResizeHandle};
 use super::reorder::GRIP_COLUMN_WIDTH_PX;
-use super::row_press::{row_press, RowMenu};
+use super::row_press::{row_drag_touch, row_press, RowMenu};
 use super::scroller::detach_on_cleanup;
 use super::select::{select_all_line, select_row_box_live};
 use super::styles::{TableSlotStyles, TableStyles};
@@ -417,6 +418,11 @@ struct Shared {
     reorder: Option<Rc<VirtualReorder>>,
     /// `Table(grip_on_hover = true)`: a row's grip shows while it is hovered.
     grip_on_hover: bool,
+    /// `Table(drag_from_row = true)`: every body cell starts the reorder.
+    drag_from_row: bool,
+    /// Column `c`'s left edge in the scrollport now, for measuring a row
+    /// drag from its row's corner. Set once the column widths are known.
+    cell_left: RefCell<Option<Rc<dyn Fn(usize) -> f32>>>,
 }
 
 impl Shared {
@@ -490,8 +496,12 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
          have"
     );
 
+    assert!(
+        !props.drag_from_row || props.on_reorder.is_some(),
+        "virtualized Table: `drag_from_row` starts the reorder drag from the row, so it needs `on_reorder`"
+    );
     let mut cols: Vec<GridCol> = Vec::with_capacity(props.columns.len() + 2);
-    if props.on_reorder.is_some() {
+    if props.on_reorder.is_some() && !props.drag_from_row {
         cols.push(GridCol::Grip);
     }
     if props.selection.is_some() {
@@ -562,6 +572,7 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
             count,
             handle.clone(),
             props.row_drag.clone(),
+            props.on_row_drag_start.clone(),
         )
     });
     let shared = Rc::new(Shared {
@@ -585,6 +596,8 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
         on_column_resize: props.on_column_resize.clone(),
         reorder,
         grip_on_hover: props.grip_on_hover,
+        drag_from_row: props.drag_from_row,
+        cell_left: RefCell::new(None),
     });
 
     // Column widths: live entries (a resize drag) and fixed specs keep
@@ -622,6 +635,23 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
             column_widths(viewport_w.get(), &specs)
         })
     };
+
+    if shared.drag_from_row {
+        let (frozen, handle) = (shared.frozen, handle.clone());
+        *shared.cell_left.borrow_mut() = Some(Rc::new(move |c| {
+            let widths = runtime_core::untrack(|| col_widths.get());
+            let (left, right) = frozen;
+            let before: f32 = widths.iter().take(c).sum();
+            if c < left {
+                before
+            } else if c + right >= widths.len() {
+                let port = runtime_core::untrack(|| viewport_w.get());
+                port - widths.iter().skip(c).sum::<f32>()
+            } else {
+                before - handle.borrow().as_ref().map_or(0.0, |h| h.scroll_offset().0)
+            }
+        }));
+    }
 
     // What a `RowDrag`'s drag layer draws for a held row: the row again,
     // at the columns' widths, cut to the table's visible width. Weak: the
@@ -1109,6 +1139,7 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
     let touch: Option<TouchHandler> = match (&shared.cols[col], shared.reorder.as_ref()) {
         (GridCol::Grip, Some(reorder)) => Some(reorder.grip_handler(row)),
         (GridCol::Grip, None) => None,
+        (_, Some(reorder)) if shared.drag_from_row => Some(row_drag_cell(&shared, reorder, row, col)),
         _ => {
             let pressed = shared.pressed;
             let on_tap = shared.rows.on_row_click.clone().map(|cb| Rc::new(move || cb(here())) as Rc<dyn Fn()>);
@@ -1173,6 +1204,42 @@ fn grip_glyph(shared: &Shared, row: Memo<usize>) -> Element {
         }) as Rc<dyn Fn() -> bool>
     });
     super::grip_mark_revealed(revealed, quiet)
+}
+
+/// A body cell's touch with `Table(drag_from_row = true)`: the row's press
+/// (tap, menu) and the reorder drag in one handler ([`row_drag_touch`]).
+/// With a mouse the drag picks the row up once it has moved the slop. On a
+/// touch screen, where a vertical swipe must scroll, a hold opens the
+/// row's menu and moving on from it picks the row up; with no menu the
+/// hold itself picks it up.
+fn row_drag_cell(shared: &Rc<Shared>, reorder: &Rc<VirtualReorder>, row: Memo<usize>, col: usize) -> TouchHandler {
+    let here = move || runtime_core::untrack(|| row.get());
+    let touch_first = runtime_core::platform().is_mobile();
+    let gated = touch_first && shared.rows.on_row_menu.is_some();
+    let activation = if touch_first && !gated { Activation::long_press() } else { Activation::immediate() };
+    let arm: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let pressed = shared.pressed;
+    let on_tap = shared.rows.on_row_click.clone().map(|cb| Rc::new(move || cb(here())) as Rc<dyn Fn()>);
+    let on_menu = shared.rows.on_row_menu.clone().map(|f| {
+        let arm = arm.clone();
+        Rc::new(move |at| {
+            f(here(), at);
+            let arm = arm.borrow().clone();
+            if let Some(arm) = arm {
+                arm();
+            }
+        }) as RowMenu
+    });
+    let press = row_press(on_tap, on_menu, move |down| pressed.set(down.then(here)));
+    let drag = Rc::new(RefCell::new(None));
+    let touch = row_drag_touch(press, drag.clone(), gated, None);
+    *arm.borrow_mut() = Some(touch.arm.clone());
+    let cell_left = {
+        let shared = shared.clone();
+        Rc::new(move || shared.cell_left.borrow().as_ref().map_or(0.0, |f| f(col))) as Rc<dyn Fn() -> f32>
+    };
+    *drag.borrow_mut() = Some(reorder.drag_handler(row, activation, cell_left, touch.committed.clone()));
+    touch.handler
 }
 
 /// Row `row` drawn on its own, for a [`RowDrag`](super::RowDrag)'s drag

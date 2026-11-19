@@ -1408,6 +1408,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`Table(drag_from_row = true)`: drag a whole row to reorder, without a grip** (`idea-ui` minor,
+  `table` minor). The row's cells start the reorder drag, composed over the row's own press, and
+  no grip column is added; plain and virtualized tables both. With a mouse the row picks up once
+  the pointer moves past the slop, so a click still opens the row and a right-click its menu. On
+  a touch screen a swipe still scrolls: a hold picks the row up, and on a virtualized table with
+  `on_row_menu` the hold opens the menu and moving on from it picks the row up. The new
+  `on_row_drag_start(row)` hears every drag start (grip or row), so an app can close that menu.
+  `drag_from_row` needs `on_reorder` and can't be combined with `on_group_reorder`. The `table`
+  SDK gains `map_cell_touch`, which composes a cell's touch handler over the one it has.
+
 - **`DragContext::cancel` and `DragContext::pointer_position`** (`dnd` minor). `cancel` ends the
   drag in flight from outside: nothing is delivered, and a `Draggable` whose drag it ends reports
   `DropOutcome::Cancelled` when its pointer lifts. `pointer_position` is where the pointer is in

@@ -592,6 +592,14 @@ fn reorderable() -> (Fixture, Rc<RefCell<Vec<(usize, usize)>>>) {
 
 /// [`reorderable`], with `props` adjusting the table's props.
 fn reorderable_with(props: impl FnOnce(&mut TableProps)) -> (Fixture, Rc<RefCell<Vec<(usize, usize)>>>) {
+    reorderable_rows_with(props, |r| r)
+}
+
+/// [`reorderable_with`], with `rows` adjusting the rows too.
+fn reorderable_rows_with(
+    props: impl FnOnce(&mut TableProps),
+    rows: impl FnOnce(VirtualRows) -> VirtualRows,
+) -> (Fixture, Rc<RefCell<Vec<(usize, usize)>>>) {
     let moves: Rc<RefCell<Vec<(usize, usize)>>> = Rc::new(RefCell::new(Vec::new()));
     let m = moves.clone();
     let rows_cell: Rc<std::cell::Cell<Option<Signal<Vec<String>>>>> = Rc::new(std::cell::Cell::new(None));
@@ -608,7 +616,7 @@ fn reorderable_with(props: impl FnOnce(&mut TableProps)) -> (Fixture, Rc<RefCell
             }
         }));
         props(p);
-        r.row_height(40.0)
+        rows(r.row_height(40.0))
     });
     rows_cell.set(Some(f.rows));
     host_mock::set_virtual_grid_scrollport(f.grid_node(), Scrollport::overlay(800.0, 400.0));
@@ -1000,4 +1008,97 @@ fn regression_a_row_box_is_named_from_its_row_and_follows_a_reused_cell() {
     let all = Robot::new().find_all(Query::test_id(idea_ui::SELECT_ALL_TEST_ID));
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].label.as_deref(), Some(idea_ui::SELECT_ALL_NAME));
+}
+
+// ---------------------------------------------------------------------------
+// `drag_from_row`: the row itself starts the reorder.
+// ---------------------------------------------------------------------------
+
+/// What a `drag_from_row` fixture records: rows opened, menus opened, drags
+/// started.
+#[derive(Default)]
+struct RowEvents {
+    clicks: RefCell<Vec<usize>>,
+    menus: RefCell<Vec<usize>>,
+    starts: RefCell<Vec<usize>>,
+}
+
+fn drag_from_row_table() -> (Fixture, Rc<RefCell<Vec<(usize, usize)>>>, Rc<RowEvents>) {
+    let events = Rc::new(RowEvents::default());
+    let (e1, e2, e3) = (events.clone(), events.clone(), events.clone());
+    let (f, moves) = reorderable_rows_with(
+        move |p| {
+            p.drag_from_row = true;
+            p.on_row_drag_start = Some(Rc::new(move |row| e1.starts.borrow_mut().push(row)));
+        },
+        move |r| {
+            r.on_row_click(move |row| e2.clicks.borrow_mut().push(row))
+                .on_row_menu(move |row, _| e3.menus.borrow_mut().push(row))
+        },
+    );
+    (f, moves, events)
+}
+
+/// CrewForge: a reorder could only start from the grip. With
+/// `drag_from_row` no grip column is added, and with a mouse any cell of
+/// the row picks it up once the pointer moves: the drop reorders, the app
+/// hears the drag start, and the press it began as opens nothing.
+#[test]
+fn drag_from_row_picks_the_row_up_from_any_cell() {
+    let (f, moves, events) = drag_from_row_table();
+    assert_eq!((f.grid().col_count)(), 5, "selection + four columns, no grip");
+    // Body row 3 is grid row 4; column 2 is "email", not frozen.
+    let email = f.mount(2, 4);
+    f.drag(email, &[12.0, 100.0]);
+    assert_eq!(*events.starts.borrow(), vec![3], "the app hears the row picked up");
+    f.release(email, 100.0);
+    assert_eq!(*moves.borrow(), vec![(3, 6)]);
+    assert!(events.clicks.borrow().is_empty(), "the drag's press opens nothing");
+    assert!(events.menus.borrow().is_empty());
+}
+
+/// A press that does not move is still the row's click.
+#[test]
+fn drag_from_row_keeps_a_still_press_a_click() {
+    let (f, moves, events) = drag_from_row_table();
+    let email = f.mount(2, 4);
+    f.touch(email, press(runtime_core::TouchPhase::Began, 0.0, 0));
+    f.touch(email, press(runtime_core::TouchPhase::Ended, 0.0, 80));
+    assert_eq!(*events.clicks.borrow(), vec![3]);
+    assert!(moves.borrow().is_empty());
+    assert!(events.starts.borrow().is_empty());
+}
+
+/// On a touch screen a swipe must scroll, so moving without a hold drags
+/// nothing; a hold opens the row's menu, and moving on from it picks the
+/// row up (the app closes its menu in `on_row_drag_start`).
+#[test]
+fn drag_from_row_on_touch_holds_for_the_menu_then_moves_to_drag() {
+    use runtime_core::TouchPhase;
+    host_mock::pump::install_scheduler();
+    let (f, moves, events) = drag_from_row_table();
+    runtime_shared::host::install_current_platform(runtime_core::Platform::Ios);
+    let email = f.mount(2, 4);
+
+    // A swipe: no hold, no drag.
+    f.drag(email, &[12.0, 100.0]);
+    f.touch(email, press(TouchPhase::Cancelled, 100.0, 200));
+    assert!(events.starts.borrow().is_empty(), "a swipe is the scroller's");
+
+    // Hold: the menu opens.
+    f.touch(email, press(TouchPhase::Began, 0.0, 1_000));
+    f.h.world.enter(host_mock::pump::pump_timers);
+    f.h.flush();
+    assert_eq!(*events.menus.borrow(), vec![3], "the hold opens the menu");
+    assert!(events.starts.borrow().is_empty(), "and picks nothing up yet");
+
+    // Move on from it: the row is picked up and dropped.
+    for (i, y) in [12.0, 100.0].iter().enumerate() {
+        f.touch(email, press(TouchPhase::Moved, *y, 1_600 + 16 * i as u64));
+    }
+    assert_eq!(*events.starts.borrow(), vec![3]);
+    f.release(email, 100.0);
+    assert_eq!(*moves.borrow(), vec![(3, 6)]);
+    assert!(events.clicks.borrow().is_empty());
+    runtime_shared::host::install_current_platform(runtime_core::Platform::Custom(""));
 }

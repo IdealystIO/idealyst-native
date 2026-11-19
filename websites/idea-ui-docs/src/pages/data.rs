@@ -777,6 +777,16 @@ TableFooter {
                         desc: "Show a row's drag grip only while the row is hovered (still grabbable when hidden; always shown where the pointer cannot hover). Default false.",
                     },
                     Prop {
+                        name: "drag_from_row",
+                        ty: "bool",
+                        desc: "Start a reorder drag from anywhere on a body row, with no grip column. A mouse picks the row up once it moves a few pixels, so a click still opens the row; on a touch screen a swipe scrolls and a hold picks the row up (with a virtualized on_row_menu, the hold opens the menu and moving on picks the row up). Needs on_reorder; not with on_group_reorder. Default false.",
+                    },
+                    Prop {
+                        name: "on_row_drag_start",
+                        ty: "Option<Rc<dyn Fn(usize)>>",
+                        desc: "Called with the row a reorder drag picks up, numbered as on_reorder numbers it. Close a row menu here: on a touch screen the menu opens on the hold the drag continues. Default None.",
+                    },
+                    Prop {
                         name: "empty",
                         ty: "Option<TableEmpty>",
                         desc: "What a table with no body rows says: one row under the header spanning every column past the added ones. Some(\"…\".into()) or any element. Default None.",
