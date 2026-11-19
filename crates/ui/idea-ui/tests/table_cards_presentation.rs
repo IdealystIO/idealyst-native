@@ -302,3 +302,32 @@ fn regression_hairline_row_hold_opens_the_row_menu() {
     assert_eq!(*menus.borrow(), vec![1], "the hold opened row 1's menu");
     assert!(clicks.borrow().is_empty(), "and not the row");
 }
+
+/// CrewForge: inside a page that scrolls as a whole, the windowed list has no
+/// bounded parent to take its height from, and on iOS it resolved 0 tall and
+/// drew no rows. `content_sized` draws every card in a plain column — no
+/// virtualizer — and follows the rows as they change.
+#[test]
+fn regression_content_sized_cards_draw_every_row_without_a_virtualizer() {
+    let h = Harness::new();
+    let rows: std::cell::Cell<Option<Signal<usize>>> = std::cell::Cell::new(None);
+    let _r = mount(&h, || {
+        let columns = vec![TableColumn::new("name").card(CardSlot::Title), TableColumn::new("hours").label("Hours")];
+        let count = signal(2usize);
+        rows.set(Some(count));
+        ui! { TableCards(columns = columns, row_count = count, cell = cell(), content_sized = true) }
+    });
+    let tree = live(&h);
+    assert!(!tree.contains("virtualizer"), "no windowed list:\n{tree}");
+    assert!(tree.contains("name-0") && tree.contains("name-1"), "both rows, unasked:\n{tree}");
+
+    let count = rows.take().unwrap();
+    h.world.enter(|| count.set(3));
+    h.flush();
+    let tree = live(&h);
+    assert!(tree.contains("name-2"), "a row added later is drawn:\n{tree}");
+    h.world.enter(|| count.set(1));
+    h.flush();
+    let tree = live(&h);
+    assert!(tree.contains("name-0") && !tree.contains("name-1"), "a removed row goes:\n{tree}");
+}

@@ -33,7 +33,10 @@
 //! The list is virtualized with MEASURED heights: each card is laid out
 //! and measured as it mounts, so a card's height is whatever its content
 //! is — no height model to keep in step with the sheets. `on_end_reached`
-//! fetches the next page as the reader nears the end.
+//! fetches the next page as the reader nears the end. A windowed list
+//! scrolls itself, so it takes its height from a bounded parent; for a
+//! short list inside a page that scrolls as a whole (a form, a day view),
+//! `content_sized = true` draws every card in a plain column instead.
 //!
 //! The wide and narrow forms are two components because a table's rows
 //! are built before the table runs and cannot be rebuilt as cards — so
@@ -267,8 +270,19 @@ pub struct TableCardsProps {
     pub empty: Option<String>,
     /// Scrolls this list to a row: see [`TableScroller`]. Only rows it has been
     /// given can be reached; an id past the last loaded page does nothing.
+    /// Not used when `content_sized`.
     #[prop(static)]
     pub scroller: Option<TableScroller>,
+    /// Draw every card in a plain column as tall as its cards, for a short
+    /// list inside a page that scrolls as a whole (a form, a day view)
+    /// rather than a list that is the screen's scroller. The default list
+    /// is windowed: it takes its height from a bounded parent and scrolls
+    /// itself, and inside a page sized to its content it has no height to
+    /// take, so on native it shows no rows. Every card is mounted, so keep
+    /// this for lists of tens of rows; `on_end_reached` and `scroller` are
+    /// not used. Default `false`.
+    #[prop(static)]
+    pub content_sized: bool,
 }
 
 impl Default for TableCardsProps {
@@ -291,6 +305,7 @@ impl Default for TableCardsProps {
             selection_header: true,
             empty: None,
             scroller: None,
+            content_sized: false,
             styles: Default::default(),
         }
     }
@@ -410,43 +425,10 @@ pub fn TableCards(props: &TableCardsProps) -> Element {
         select_all_line(selection, visible, label)
     });
     let header_style = TableStyles::cards_header().overridden(props.styles.cards_header.as_ref());
-    let render_model = model.clone();
-    let estimate = if hairline { CARD_ROW_ESTIMATE_PX } else { CARD_ESTIMATE_PX };
-    let list = flat_list::<_, _, (), _>(
-        items,
-        |_, item: &(RowId, u64)| row_key(&item.0),
-        FlatListItemSize::Measured(Rc::new(move |_, _| estimate)),
-        move |i, _| {
-            if hairline {
-                ui! { TableCardRow(model = render_model.clone(), index = i) }
-            } else {
-                ui! { TableCardItem(model = render_model.clone(), index = i) }
-            }
-        },
-    )
-    // Hairline rows sit flush: the separator is their border.
-    .gap(if hairline { 0.0 } else { CARD_GAP_PX })
-    .end_reached_threshold(CARD_LOAD_AHEAD_PX)
-    .with_style(TableStyles::cards_list().overridden(props.styles.cards_list.as_ref()));
-    let list = match props.scroller.clone() {
-        Some(scroller) => {
-            let attached = scroller.clone();
-            let token = std::rc::Rc::new(std::cell::Cell::new(None));
-            let filled = token.clone();
-            detach_on_cleanup_cell(scroller, token);
-            list.on_handle(move |h| {
-                filled.set(Some(attached.attach(Rc::new(move |id: &RowId| {
-                    if let Some(i) = items.with(|rows| rows.iter().position(|(row, _)| row == id)) {
-                        h.scroll_to_index(i);
-                    }
-                }))));
-            })
-        }
-        None => list,
-    };
-    let list = match props.on_end_reached.clone() {
-        Some(cb) => list.on_end_reached(move || cb()).into_element(),
-        None => list.into_element(),
+    let list = if props.content_sized {
+        content_sized_cards(model.clone(), items, hairline)
+    } else {
+        windowed_cards(props, model.clone(), items, hairline)
     };
     let empty_text = props.empty.clone().unwrap_or_default();
     let has_empty = props.empty.is_some();
@@ -473,6 +455,79 @@ pub fn TableCards(props: &TableCardsProps) -> Element {
                 on_dismiss = Some(Rc::new(move || detail_row.set(None)) as Rc<dyn Fn()>),
                 content = move || detail_sheet(&detail_model),
             )
+        }
+    }
+}
+
+/// The default list: windowed over its own scroller (see the module docs).
+fn windowed_cards(props: &TableCardsProps, model: Rc<CardsModel>, items: Signal<Vec<(RowId, u64)>>, hairline: bool) -> Element {
+    let render_model = model;
+    let estimate = if hairline { CARD_ROW_ESTIMATE_PX } else { CARD_ESTIMATE_PX };
+    let list = flat_list::<_, _, (), _>(
+        items,
+        |_, item: &(RowId, u64)| row_key(&item.0),
+        FlatListItemSize::Measured(Rc::new(move |_, _| estimate)),
+        move |i, _| record(&render_model, i, hairline),
+    )
+    // Hairline rows sit flush: the separator is their border.
+    .gap(if hairline { 0.0 } else { CARD_GAP_PX })
+    .end_reached_threshold(CARD_LOAD_AHEAD_PX)
+    .with_style(TableStyles::cards_list().overridden(props.styles.cards_list.as_ref()));
+    let list = match props.scroller.clone() {
+        Some(scroller) => {
+            let attached = scroller.clone();
+            let token = std::rc::Rc::new(std::cell::Cell::new(None));
+            let filled = token.clone();
+            detach_on_cleanup_cell(scroller, token);
+            list.on_handle(move |h| {
+                filled.set(Some(attached.attach(Rc::new(move |id: &RowId| {
+                    if let Some(i) = items.with(|rows| rows.iter().position(|(row, _)| row == id)) {
+                        h.scroll_to_index(i);
+                    }
+                }))));
+            })
+        }
+        None => list,
+    };
+    match props.on_end_reached.clone() {
+        Some(cb) => list.on_end_reached(move || cb()).into_element(),
+        None => list.into_element(),
+    }
+}
+
+
+/// Row `i` as a hairline row or a framed card.
+fn record(model: &Rc<CardsModel>, i: usize, hairline: bool) -> Element {
+    if hairline {
+        ui! { TableCardRow(model = model.clone(), index = i) }
+    } else {
+        ui! { TableCardItem(model = model.clone(), index = i) }
+    }
+}
+
+/// A content-sized card's key: its row's id and the data generation, so a
+/// change to the rows rebuilds every card and each reads its new index.
+fn built_key((id, generation): &(RowId, u64)) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    generation.hash(&mut h);
+    h.finish()
+}
+
+/// `TableCards(content_sized = true)`'s rows: every card, in a column as
+/// tall as they are. Each change to the rows rebuilds them (their keys
+/// carry the data's generation, as the windowed list's do), so each card
+/// reads its current index.
+fn content_sized_cards(model: Rc<CardsModel>, items: Signal<Vec<(RowId, u64)>>, hairline: bool) -> Element {
+    use runtime_core::{Length, StyleRules, Tokenized};
+    let gap = if hairline { 0.0 } else { CARD_GAP_PX };
+    let column = StyleRules { gap: Some(Tokenized::Literal(Length::Px(gap))), ..Default::default() };
+    let indexed = memo(move || items.with(|v| v.iter().cloned().enumerate().collect::<Vec<(usize, (RowId, u64))>>()));
+    ui! {
+        view(style = column) {
+            for entry in indexed, key = built_key(&entry.1) {
+                { record(&model, entry.0, hairline) }
+            }
         }
     }
 }

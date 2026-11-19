@@ -1408,6 +1408,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`TableCards(content_sized = true)` for a short list inside a scrolling page** (`idea-ui`
+  minor). `TableCards` is a windowed list that takes its height from a bounded parent; inside a
+  page that scrolls as a whole there is none, and on iOS the list resolved 0 tall and drew no rows
+  (`virtualizer-collapsed`), while the web sized it to its cards. `content_sized` draws every card
+  in a plain column as tall as its cards, so the page scrolls; `on_end_reached` and `scroller` are
+  not used. CrewForge: a timesheet day's crews and Absent list, an equipment type's linked
+  templates, a report's share page.
+
 - **`Table(drag_from_row = true)`: drag a whole row to reorder, without a grip** (`idea-ui` minor,
   `table` minor). The row's cells start the reorder drag, composed over the row's own press, and
   no grip column is added; plain and virtualized tables both. With a mouse the row picks up once
