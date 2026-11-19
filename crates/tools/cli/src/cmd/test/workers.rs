@@ -425,10 +425,8 @@ pub(super) fn run_size(
                 .envs(suite_env(size, *port, env))
                 .env("IDEALYST_ROBOT_BRIDGE", bridge.to_string())
                 .env(robot_test::RESULTS_ENV, &na_files[slot]);
-            if let Some(control) = control {
-                cmd.env(robot_test::browser_control::ENV, control.to_string());
-                cmd.env(robot_test::browser_control::ENGINE_ENV, engine.name());
-            }
+            // Workers are web-only.
+            cmd.envs(super::runner_env(*control, true, *engine, "web"));
             cmd.args(["--exact", name]);
             if ignored(name) {
                 cmd.arg("--include-ignored");

@@ -646,7 +646,10 @@ idealyst test --jobs 2 <project>                   # two platforms at once
 key, its suites' output in a log file the run names). Builds and
 emulators are heavy: raise it only on a machine with room, and never
 several Android emulators on a laptop. Tests see their class as
-`IDEALYST_TEST_CLASS` and a web row's engine as `IDEALYST_TEST_ENGINE`.
+`IDEALYST_TEST_CLASS`, their platform as `IDEALYST_TEST_PLATFORM`, and a
+web row's engine as `IDEALYST_TEST_ENGINE` (set on web rows only). A
+native row waits for the app's build however long it takes; the
+readiness wait after it covers only launching and connecting.
 
 The flags below replace the matrix for one run.
 

@@ -3787,6 +3787,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`idealyst test` no longer tells a device row it runs in a browser** (`idealyst-cli`). A
+  phone or tablet row serves its screen's control socket, and the runner set
+  `IDEALYST_TEST_ENGINE` whenever a control socket existed, so every iOS and Android suite read
+  `chromium`. The engine is now set on web rows only, and every row's suite gets its platform as
+  `IDEALYST_TEST_PLATFORM`.
+- **`idealyst test` waits out a cold native build** (`idealyst-cli`). The 240 s readiness wait
+  started before the build, so a cold iOS build longer than four minutes failed with "app not
+  ready within 240s". `idealyst dev` now reports each native target's first build
+  (`build_started` / `build_finished` for `ios`, `android`, `macos`, `linux`, `windows`), and the
+  runner waits for that `build_finished` before it starts the clock. A failed build ends the wait
+  with the build's error.
 - **A drag no longer sticks when a scroll unmounts its source** (`dnd`). Auto-scrolling a
   virtualized list far enough unmounted the dragged item, and its view took the drag's moves and
   release with it: the ghost stayed up, `dragging()` stayed true, and an auto-scroll driven by an

@@ -837,7 +837,9 @@ desktop = { web = "1440x900", macos = "1440x900", linux = "1440x900", windows = 
   is swapped between them. For Firefox and WebKit the runner, which holds
   the browser's one WebDriver session, answers `load_url`, the cookie
   verbs, `open_page` and `screenshot` (`robot-test` routes them there;
-  suites see the engine as `IDEALYST_TEST_ENGINE`).
+  suites see the engine as `IDEALYST_TEST_ENGINE`, which only web rows
+  get). Every row's suite sees its platform as `IDEALYST_TEST_PLATFORM`
+  (`web`, `ios`, `android`, `macos`, …).
 - `ios`: a simulator name, `@ iOS <version>` to pin its runtime.
 - `android`: an AVD name, `<hardware profile> @ <API level>`, or
   `serial:<adb serial>` for an attached device. A profile spec runs on

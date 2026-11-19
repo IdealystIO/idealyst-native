@@ -2190,15 +2190,17 @@ fn launch_target(
 ) -> Result<()> {
     match target {
         Target::Web => launch_web(dir, args, runtime_server_port, children),
-        Target::Ios => launch_ios(dir, args, runtime_server_port),
-        Target::Android => launch_android(dir, args, runtime_server_port),
+        Target::Ios => initial_native_build("ios", || launch_ios(dir, args, runtime_server_port)),
+        Target::Android => initial_native_build("android", || launch_android(dir, args, runtime_server_port)),
         Target::Roku => anyhow::bail!(
             "Roku has no dev-mode story yet; use `idealyst build roku` for the package"
         ),
-        Target::Macos => launch_macos(dir, args, children, macos_app_pid, runtime_server_port),
+        Target::Macos => initial_native_build("macos", || {
+            launch_macos(dir, args, children, macos_app_pid, runtime_server_port)
+        }),
         Target::Terminal => launch_terminal(dir, args, runtime_server_port),
-        Target::Linux => launch_linux(dir, args, children, macos_app_pid),
-        Target::Windows => launch_windows(dir, args, children, macos_app_pid),
+        Target::Linux => initial_native_build("linux", || launch_linux(dir, args, children, macos_app_pid)),
+        Target::Windows => initial_native_build("windows", || launch_windows(dir, args, children, macos_app_pid)),
     }
 }
 
@@ -5360,6 +5362,30 @@ fn launch_ios(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Resu
         register_local_relauncher("ios", move || launch_ios_once(&dir, &args, None));
     }
     Ok(())
+}
+
+/// Run a native target's first build + launch, reported as its initial
+/// build. These launchers return once the app is started (web reports its
+/// own builds; the terminal target blocks for the app's life). `idealyst
+/// test` starts its readiness clock at this `BuildFinished`, so a cold
+/// build of any length is not counted against the app's launch.
+fn initial_native_build(target: &'static str, build: impl FnOnce() -> Result<()>) -> Result<()> {
+    crate::dev_log::emit(dev_events::DevEvent::BuildStarted {
+        target: target.into(),
+        cause: dev_events::BuildCause::Initial,
+    });
+    let started = std::time::Instant::now();
+    let result = build();
+    let outcome = match &result {
+        Ok(()) => dev_events::BuildOutcome::Ready { gen: 1 },
+        Err(e) => dev_events::BuildOutcome::Failed { error: format!("{e:#}") },
+    };
+    crate::dev_log::emit(dev_events::DevEvent::BuildFinished {
+        target: target.into(),
+        outcome,
+        ms: started.elapsed().as_millis() as u64,
+    });
+    result
 }
 
 fn launch_ios_once(dir: &Path, args: &Args, runtime_server_port: Option<u16>) -> Result<()> {

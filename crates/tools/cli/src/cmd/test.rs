@@ -510,6 +510,25 @@ fn suite_env(size: &Size, port: u16, user_env: &[(String, String)]) -> Vec<(Stri
     env
 }
 
+/// What a suite run is told about the runner: its control socket (a web
+/// row's browser, a device row's screen), the platform it runs on
+/// (`IDEALYST_TEST_PLATFORM`), and on a web row the browser engine. Not the
+/// engine on a device row: its control socket is the screen's, and a suite
+/// that read `chromium` there took an iOS run for a web one.
+fn runner_env(control: Option<SocketAddr>, web: bool, engine: engines::Engine, platform: &str) -> Vec<(String, String)> {
+    let mut env = vec![(PLATFORM_ENV.to_string(), platform.to_string())];
+    if let Some(control) = control {
+        env.push((robot_test::browser_control::ENV.into(), control.to_string()));
+    }
+    if web {
+        env.push((robot_test::browser_control::ENGINE_ENV.into(), engine.name().into()));
+    }
+    env
+}
+
+/// The platform a suite run is on: `web`, `ios`, `android`, `macos`, …
+const PLATFORM_ENV: &str = "IDEALYST_TEST_PLATFORM";
+
 /// How one suite run ended.
 #[derive(Debug, Clone, PartialEq)]
 enum Outcome {
@@ -1233,6 +1252,10 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
     let preexisting: Vec<SocketAddr> = if args.attach { Vec::new() } else { discover_all_in(dir, &apps_dirs) };
     let mut kill = Kill(Vec::new());
     let dev_log: Option<PathBuf> = (!args.attach).then(|| dev_log_path(platform, index));
+    // A native session reports when its initial build finished
+    // (`wait_for_initial_build`); web serves its page once built instead.
+    let dev_events: Option<PathBuf> =
+        (!args.attach && platform != "web").then(|| dev_log.as_ref().unwrap().with_extension("events.jsonl"));
     let see_log = |what: &str| match &dev_log {
         Some(log) => format!("{what} — the dev session's output is in {}", log.display()),
         None => what.to_string(),
@@ -1259,6 +1282,10 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
         // with nothing to go on.
         let log = dev_log.as_ref().expect("set when not attaching");
         let file = std::fs::File::create(log).with_context(|| format!("creating {}", log.display()))?;
+        if let Some(events) = &dev_events {
+            let _ = std::fs::remove_file(events);
+            cmd.arg("--events-file").arg(events);
+        }
         cmd.arg(dir).stdout(file.try_clone()?).stderr(file);
         note!("dev session log: {}", log.display());
         kill.0.push(own_group(&mut cmd).spawn().context("spawning `idealyst dev`")?);
@@ -1290,6 +1317,14 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
     // A phone or tablet row's screen, which the runner turns where the app
     // can't (`rotation`): an Android display, a multitasking iPad app's
     // simulator. Dropped at the end of the launch, which puts it back.
+    // The app's launch clock starts when its build is done: a cold native
+    // build can run far past `wait_until_ready`'s budget, which is for
+    // launching and dialing in.
+    if let Some(events) = &dev_events {
+        note!("waiting for the {platform} build…");
+        let launched = Launched { platform, child: kill.0.last_mut(), log: dev_log.as_deref() };
+        wait_for_initial_build(events, launched).with_context(|| see_log("the app did not build"))?;
+    }
     let device_screen: Option<Arc<rotation::DeviceScreen>> = match launch.target_device.as_deref() {
         Some(device) if !args.attach => rotation::DeviceScreen::new(platform, device).map(Arc::new),
         _ => None,
@@ -1362,13 +1397,10 @@ fn run_launch(ctx: &LaunchCtx, launch: &Launch, results: &mut Vec<RunResult>) ->
                 .env("IDEALYST_ROBOT_BRIDGE", addr.to_string())
                 .env(robot_test::RESULTS_ENV, &na_file);
 
-            if let Some(control) = control {
-                suite_cmd.env(robot_test::browser_control::ENV, control.to_string());
-                suite_cmd.env(robot_test::browser_control::ENGINE_ENV, size.engine.name());
-            }
             // The platform the app itself reports (an attached app may not be
             // the default `--web`); an app too old to say is taken at the flag.
             let here = app_platform(addr).unwrap_or_else(|| platform.to_string());
+            suite_cmd.envs(runner_env(control, web, size.engine, &here));
             let selection = select_tests(tests, &here, args.filter.as_deref(), &args.suites);
             for (name, on) in &selection.elsewhere {
                 note!("not on {here}: {name} (runs on {})", on.join(", "));
@@ -2239,6 +2271,40 @@ fn turn_upright(addr: SocketAddr, screen: Option<&rotation::DeviceScreen>) {
     note!("could not turn the screen upright before the suite; it runs as the device is: {why}");
 }
 
+/// Wait for the launched native session's initial build to finish, read
+/// from its `--events-file`. No deadline of its own: the build ends, or
+/// the session exits and says why.
+fn wait_for_initial_build(events: &Path, mut launched: Launched) -> Result<()> {
+    loop {
+        let text = std::fs::read_to_string(events).unwrap_or_default();
+        match initial_build_outcome(&text, launched.platform) {
+            Some(Ok(())) => return Ok(()),
+            Some(Err(error)) => anyhow::bail!("the {} build failed: {error}", launched.platform),
+            None => {}
+        }
+        if let Some(child) = launched.child.as_mut() {
+            if let Some(status) = child.try_wait().context("waiting on `idealyst dev`")? {
+                let log = launched.log.and_then(|p| std::fs::read_to_string(p).ok());
+                anyhow::bail!(dev_exit_message(&status.to_string(), log.as_deref()));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// How `target`'s first build ended, from a session's JSON-lines events:
+/// `None` until its `build_finished` is there.
+fn initial_build_outcome(events: &str, target: &str) -> Option<std::result::Result<(), String>> {
+    use dev_events::{BuildOutcome, DevEvent, Envelope};
+    events.lines().find_map(|line| match serde_json::from_str::<Envelope>(line).ok()?.event {
+        DevEvent::BuildFinished { target: t, outcome, .. } if t == target => Some(match outcome {
+            BuildOutcome::Failed { error } => Err(error),
+            _ => Ok(()),
+        }),
+        _ => None,
+    })
+}
+
 /// Poll until the app answers a ping, reconnecting each attempt — the bridge
 /// isn't pingable until the app dials the relay, which can be long after the
 /// relay (and thus the registration) comes up.
@@ -2648,6 +2714,48 @@ mod tests {
     }
 
     use super::*;
+
+    /// REGRESSION (CrewForge): an iOS row serves the device screen's
+    /// control socket, and the engine went out with any control socket, so
+    /// every iOS suite was told `IDEALYST_TEST_ENGINE=chromium`.
+    #[test]
+    fn regression_a_device_row_is_not_told_a_browser_engine() {
+        let control: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let ios = runner_env(Some(control), false, engines::Engine::Chromium, "ios");
+        assert!(!ios.iter().any(|(k, _)| k == robot_test::browser_control::ENGINE_ENV), "{ios:?}");
+        assert!(ios.contains(&(PLATFORM_ENV.into(), "ios".into())), "{ios:?}");
+        assert!(ios.contains(&(robot_test::browser_control::ENV.into(), control.to_string())));
+
+        let web = runner_env(Some(control), true, engines::Engine::Firefox, "web");
+        assert!(web.contains(&(robot_test::browser_control::ENGINE_ENV.into(), "firefox".into())), "{web:?}");
+        assert!(web.contains(&(PLATFORM_ENV.into(), "web".into())));
+    }
+
+    /// The initial build is read from the session's events: only its own
+    /// target's `build_finished` counts, a failure carries its error, and
+    /// a half-written last line is no event yet.
+    #[test]
+    fn the_initial_build_is_read_from_the_session_events() {
+        use dev_events::{BuildCause, BuildOutcome, DevEvent, Envelope};
+        let line = |event| serde_json::to_string(&Envelope { v: 1, seq: 1, at_ms: 0, event }).unwrap();
+        let started = line(DevEvent::BuildStarted { target: "ios".into(), cause: BuildCause::Initial });
+        let server = line(DevEvent::BuildFinished {
+            target: dev_events::SERVER_TARGET.into(),
+            outcome: BuildOutcome::Ready { gen: 1 },
+            ms: 1,
+        });
+        assert_eq!(initial_build_outcome(&format!("{started}\n{server}\n{{\"v\":1,"), "ios"), None);
+
+        let ok = line(DevEvent::BuildFinished { target: "ios".into(), outcome: BuildOutcome::Ready { gen: 1 }, ms: 9 });
+        assert_eq!(initial_build_outcome(&format!("{started}\n{ok}\n"), "ios"), Some(Ok(())));
+
+        let failed = line(DevEvent::BuildFinished {
+            target: "ios".into(),
+            outcome: BuildOutcome::Failed { error: "linker".into() },
+            ms: 9,
+        });
+        assert_eq!(initial_build_outcome(&failed, "ios"), Some(Err("linker".into())));
+    }
 
     /// The runner's browser profile goes where `idealyst dev`'s
     /// `project_state_dir` puts the session's state, isolated or not.
