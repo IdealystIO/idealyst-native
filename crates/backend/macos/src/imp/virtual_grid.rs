@@ -98,6 +98,10 @@ pub(crate) struct VirtualGridInstance {
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
     /// `VirtualGridHandle::keep_row_mounted`'s row.
     kept_row: Rc<std::cell::Cell<Option<usize>>>,
+    /// The last `scroll_to` / `scroll_to_cell`, until the re-window has
+    /// sized the document and the clip view has a size to land it in
+    /// (`GridMetrics::landed_offset`).
+    pending_offset: Rc<std::cell::Cell<Option<(f32, f32)>>>,
     /// Buffer outside the visible window, in viewport extents — the
     /// author's `.overscan(..)`.
     overscan: f32,
@@ -203,6 +207,7 @@ pub(crate) fn create(
             last_window: Rc::new(RefCell::new(None)),
             frozen: Rc::new(std::cell::Cell::new(FrozenPanes::NONE)),
             kept_row: Rc::new(std::cell::Cell::new(None)),
+            pending_offset: Rc::new(std::cell::Cell::new(None)),
             overscan,
             incomplete: Rc::new(std::cell::Cell::new(false)),
             follow_up: Rc::new(std::cell::Cell::new(false)),
@@ -368,6 +373,7 @@ struct GridHandles {
     last_window: Rc<RefCell<Option<MountedWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
     kept_row: Rc<std::cell::Cell<Option<usize>>>,
+    pending_offset: Rc<std::cell::Cell<Option<(f32, f32)>>>,
     overscan: f32,
     /// The registry key, for the follow-up sync that finishes the overscan.
     key: usize,
@@ -508,6 +514,7 @@ fn sync_in(registry: &GridRegistry, key: usize) {
             last_window: inst.last_window.clone(),
             frozen: inst.frozen.clone(),
             kept_row: inst.kept_row.clone(),
+            pending_offset: inst.pending_offset.clone(),
             overscan: inst.overscan,
             key,
             incomplete: inst.incomplete.clone(),
@@ -560,6 +567,14 @@ fn sync_now(h: &GridHandles) {
         // Layout hasn't run. Bail WITHOUT caching, so the next pass
         // retries instead of remembering an empty window as current.
         return;
+    }
+    // A scroll requested before the document was sized lands now.
+    if let Some(request) = h.pending_offset.take() {
+        let viewport = (clip_bounds.size.width as f32, clip_bounds.size.height as f32);
+        if let Some((x, y)) = metrics.borrow().landed_offset(request, viewport) {
+            scroll_clip_to(&scroll, x, y);
+            clip_bounds = unsafe { msg_send![&clip, bounds] };
+        }
     }
 
     let overscan = h.overscan;
@@ -947,7 +962,7 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for MacosVirtualGr
             }
         });
         let Some((x, y)) = origin.get() else { return };
-        scroll_clip_to(view, x, y);
+        request_offset(view, key, x, y);
     }
 
     fn keep_row_mounted(&self, node: &dyn std::any::Any, row: Option<usize>) {
@@ -972,7 +987,7 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for MacosVirtualGr
 
     fn scroll_to(&self, node: &dyn std::any::Any, x: f32, y: f32) {
         if let Some(MacosNode::View(view)) = node.downcast_ref::<MacosNode>() {
-            scroll_clip_to(view, x, y);
+            request_offset(view, &**view as *const NSView as usize, x, y);
         }
     }
 
@@ -1050,6 +1065,24 @@ fn clip_offset_and_size(scroll: &NSView) -> ((f32, f32), (f32, f32)) {
     let Some(clip) = clip else { return ((0.0, 0.0), (0.0, 0.0)) };
     let b: CGRect = unsafe { msg_send![&clip, bounds] };
     ((b.origin.x as f32, b.origin.y as f32), (b.size.width as f32, b.size.height as f32))
+}
+
+/// Scroll to `(x, y)` now, and hold the request until the next re-window
+/// lands it against the document's written size: AppKit clamps
+/// `scrollToPoint:` against the document frame, which the queued re-window
+/// writes, so one issued in the flush that gave the grid its data was
+/// clamped to 0 (`GridMetrics::landed_offset`). Re-applying a request that
+/// already landed is a no-op.
+fn request_offset(scroll: &Retained<NSView>, key: usize, x: f32, y: f32) {
+    crate::imp::with_backend(|b| {
+        if let Some(inst) = b.virtual_grid_registry.get(&key) {
+            inst.pending_offset.set(Some((x, y)));
+            sync_in(&b.virtual_grid_registry, key);
+        }
+    });
+    // The queued sync drains with the pass this arms.
+    crate::imp::schedule_layout_pass();
+    scroll_clip_to(scroll, x, y);
 }
 
 fn scroll_clip_to(scroll: &Retained<NSView>, x: f32, y: f32) {

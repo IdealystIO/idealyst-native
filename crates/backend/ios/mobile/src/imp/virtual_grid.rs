@@ -99,6 +99,10 @@ pub(crate) struct VirtualGridInstance {
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
     /// `VirtualGridHandle::keep_row_mounted`'s row.
     kept_row: Rc<std::cell::Cell<Option<usize>>>,
+    /// The last `scroll_to` / `scroll_to_cell`, until the re-window has
+    /// written the content size and the grid has a viewport to land it
+    /// in (`GridMetrics::landed_offset`).
+    pending_offset: Rc<std::cell::Cell<Option<(f32, f32)>>>,
     /// Buffer outside the visible window, in viewport extents — the
     /// author's `.overscan(..)`.
     overscan: f32,
@@ -172,6 +176,7 @@ pub(crate) fn create(
             last_window: Rc::new(RefCell::new(None)),
             frozen: Rc::new(std::cell::Cell::new(FrozenPanes::NONE)),
             kept_row: Rc::new(std::cell::Cell::new(None)),
+            pending_offset: Rc::new(std::cell::Cell::new(None)),
             overscan,
             recycling: Rc::new(RefCell::new(None)),
             _delegate: delegate,
@@ -205,6 +210,7 @@ struct GridHandles {
     last_window: Rc<RefCell<Option<MountedWindow>>>,
     frozen: Rc<std::cell::Cell<FrozenPanes>>,
     kept_row: Rc<std::cell::Cell<Option<usize>>>,
+    pending_offset: Rc<std::cell::Cell<Option<(f32, f32)>>>,
     overscan: f32,
     recycling: Rc<RefCell<Option<GridRecycling>>>,
 }
@@ -435,6 +441,7 @@ pub(crate) fn sync(backend: &mut crate::imp::IosBackend, key: usize) {
             last_window: inst.last_window.clone(),
             frozen: inst.frozen.clone(),
             kept_row: inst.kept_row.clone(),
+            pending_offset: inst.pending_offset.clone(),
             overscan: inst.overscan,
             recycling: inst.recycling.clone(),
         },
@@ -460,7 +467,6 @@ fn sync_now(h: &GridHandles) {
         let _: () = unsafe { msg_send![&scroll, setContentSize: size] };
     }
 
-    let offset: CGPoint = unsafe { msg_send![&scroll, contentOffset] };
     let bounds: CGRect = unsafe { msg_send![&scroll, bounds] };
     // A zero-sized viewport means layout hasn't run yet; windowing
     // against it would mount nothing and then cache that empty window
@@ -468,6 +474,15 @@ fn sync_now(h: &GridHandles) {
     if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
         return;
     }
+    // A scroll requested before the content size was written lands now.
+    if let Some(request) = h.pending_offset.take() {
+        let viewport = (bounds.size.width as f32, bounds.size.height as f32);
+        if let Some((x, y)) = metrics.borrow().landed_offset(request, viewport) {
+            let to = CGPoint { x: x as f64, y: y as f64 };
+            let _: () = unsafe { msg_send![&scroll, setContentOffset: to, animated: false] };
+        }
+    }
+    let offset: CGPoint = unsafe { msg_send![&scroll, contentOffset] };
 
     let overscan = h.overscan;
     let frozen = h.frozen.get();
@@ -782,7 +797,7 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for IosVirtualGrid
         })
         .flatten();
         let Some((x, y)) = origin else { return };
-        set_offset(n, x, y);
+        request_offset(n, key, x, y);
     }
 
     fn scroll_offset(&self, node: &dyn std::any::Any) -> (f32, f32) {
@@ -795,7 +810,7 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for IosVirtualGrid
 
     fn scroll_to(&self, node: &dyn std::any::Any, x: f32, y: f32) {
         if let Some(n) = node.downcast_ref::<IosNode>() {
-            set_offset(n, x, y);
+            request_offset(n, n.as_view() as *const UIView as usize, x, y);
         }
     }
 
@@ -827,6 +842,22 @@ impl runtime_shared::primitives::virtual_grid::VirtualGridOps for IosVirtualGrid
             Box::new(move |w, h| callback(Scrollport::overlay(w, h))),
         )
     }
+}
+
+/// Scroll to `(x, y)` now, and hold the request until the next re-window
+/// applies it against the grid's written content size: one issued in the
+/// flush that gave the grid its data is otherwise clamped to 0 (see
+/// `GridMetrics::landed_offset`). Re-applying a request that already landed is a
+/// no-op.
+fn request_offset(node: &IosNode, key: usize, x: f32, y: f32) {
+    let pending = crate::imp::with_backend(|b| b.virtual_grid_registry.get(&key).map(|i| i.pending_offset.clone())).flatten();
+    if let Some(pending) = pending {
+        pending.set(Some((x, y)));
+        crate::imp::with_backend(|b| sync(b, key));
+        // As `data_changed`: a queued re-window needs a pass to drain it.
+        crate::imp::schedule_layout_pass();
+    }
+    set_offset(node, x, y);
 }
 
 fn set_offset(node: &IosNode, x: f32, y: f32) {

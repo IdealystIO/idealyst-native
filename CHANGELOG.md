@@ -3805,6 +3805,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A `virtual_grid` scrolled as it opens lands where it was asked on iOS, macOS and Android**
+  (`runtime-shared` minor, `backend-ios-mobile`, `backend-macos`, `backend-android-mobile`). A
+  scroll issued in the flush that gave the grid its data (a schedule seeking to today) was clamped
+  against a content size the grid had not written yet, so the grid stayed at offset 0. An app
+  whose own header and footer follow the offset it asked for then showed other columns than the
+  body: CrewForge's schedule read Mon 16 – Fri 20 over the cells for Nov 5–9. The backends now hold
+  the request and land it once the content is sized and the grid has a viewport, clamped as the
+  web clamps (`GridMetrics::landed_offset`).
+
 - **`SplitView`'s inspector shows on a phone** (`idea-ui-layout`). At phone width the inspector
   docks under the content in a dock sized to its content (up to 45%). Native layout seeds a
   vertical scroller with a 0 flex basis, so the pane's scroller counted as 0 tall, the dock

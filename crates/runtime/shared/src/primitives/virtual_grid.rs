@@ -371,6 +371,27 @@ impl GridMetrics {
         )
     }
 
+    /// Where a scroll `request` lands in this content seen through
+    /// `viewport`: clamped to `[0, content − viewport]` per axis, as the
+    /// web's `scrollLeft` / `scrollTop` are. `None` while the viewport has
+    /// no size (layout has not run): the request has to wait.
+    ///
+    /// For backends whose scroller clamps against a content size they
+    /// write later than the metrics change (UIKit's `contentSize`,
+    /// AppKit's document frame, both written in the grid's queued
+    /// re-window): a scroll issued in the flush that gave the grid its
+    /// data was clamped against a stale size of 0 and the grid stayed at
+    /// offset 0. They hold the request and land it with this once the
+    /// size is written.
+    pub fn landed_offset(&self, request: (f32, f32), viewport: (f32, f32)) -> Option<(f32, f32)> {
+        if viewport.0 <= 0.0 || viewport.1 <= 0.0 {
+            return None;
+        }
+        let (cw, ch) = self.content_size();
+        let clamp = |want: f32, content: f32, port: f32| want.clamp(0.0, (content - port).max(0.0));
+        Some((clamp(request.0, cw, viewport.0), clamp(request.1, ch, viewport.1)))
+    }
+
     /// `(col_count, row_count)` these metrics were built for.
     pub fn counts(&self) -> (usize, usize) {
         (
@@ -964,6 +985,18 @@ pub trait VirtualGridOps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REGRESSION (CrewForge, iOS): a schedule grid seeks to today in the
+    /// flush that gives it its data. Before layout the request waits; with
+    /// a viewport it lands where it was asked, clamped to the content.
+    #[test]
+    fn regression_a_scroll_requested_before_layout_lands_once_there_is_a_viewport() {
+        let m = GridMetrics::build(40, 12, &|_| 100.0, &|_| 50.0);
+        assert_eq!(m.landed_offset((440.0, 0.0), (0.0, 0.0)), None, "no viewport yet: wait");
+        assert_eq!(m.landed_offset((440.0, 0.0), (375.0, 600.0)), Some((440.0, 0.0)));
+        assert_eq!(m.landed_offset((5000.0, 900.0), (375.0, 400.0)), Some((3625.0, 200.0)), "past the end: the end");
+        assert_eq!(m.landed_offset((-20.0, 50.0), (375.0, 800.0)), Some((0.0, 0.0)), "content shorter than the port");
+    }
 
     /// A 5-column × 4-row grid: columns 100 wide, rows 50 tall.
     fn metrics() -> GridMetrics {

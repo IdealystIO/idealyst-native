@@ -58,6 +58,14 @@ class RustVirtualGrid(context: Context, private val nativePtr: Long) : ViewGroup
     private var contentWidth = 0
     private var contentHeight = 0
 
+    /** The last `scrollToDp`, in dp, until the grid has a viewport and
+     *  content to land it in. `scrollTo` clamps at call time, so one
+     *  requested in the flush that gave the grid its data (a schedule
+     *  seeking to today as it opens) was clamped against a content size
+     *  of 0 and the grid stayed at 0. Landed by `landPendingScroll`, the
+     *  rule `GridMetrics::landed_offset` states for the other backends. */
+    private var pendingScroll: FloatArray? = null
+
     /** Per-child content-space frames, parallel to the child list. */
     private val frames = HashMap<View, IntArray>()
 
@@ -77,6 +85,7 @@ class RustVirtualGrid(context: Context, private val nativePtr: Long) : ViewGroup
         // end; clamp before the next draw or the grid shows a blank
         // region it can't scroll back from.
         clampScroll()
+        landPendingScroll()
         requestLayout()
     }
 
@@ -124,6 +133,7 @@ class RustVirtualGrid(context: Context, private val nativePtr: Long) : ViewGroup
         // A size change means a new viewport, so the visible window
         // may have grown or shrunk on either axis.
         if (changed) nativeViewportChanged(nativePtr, width, height)
+        landPendingScroll()
     }
 
     private fun maxScrollX() = (contentWidth - width).coerceAtLeast(0)
@@ -235,13 +245,24 @@ class RustVirtualGrid(context: Context, private val nativePtr: Long) : ViewGroup
     /** Programmatic scroll from `VirtualGridHandle`. Input is dp;
      *  `scrollTo` takes device pixels. */
     fun scrollToDp(x: Float, y: Float) {
+        pendingScroll = floatArrayOf(x, y)
+        landPendingScroll()
+    }
+
+    /** Scroll to the pending request, clamped to the content; it stays
+     *  pending until the grid has both a viewport and a content size. */
+    private fun landPendingScroll() {
+        val p = pendingScroll ?: return
         val density = resources.displayMetrics.density
         if (density <= 0f) return
         scroller.forceFinished(true)
         scrollTo(
-            (x * density).roundToInt().coerceIn(0, maxScrollX()),
-            (y * density).roundToInt().coerceIn(0, maxScrollY()),
+            (p[0] * density).roundToInt().coerceIn(0, maxScrollX()),
+            (p[1] * density).roundToInt().coerceIn(0, maxScrollY()),
         )
+        if (width > 0 && height > 0 && (contentWidth > 0 || contentHeight > 0)) {
+            pendingScroll = null
+        }
     }
 
     private external fun nativeOnScroll(ptr: Long, x: Float, y: Float)
