@@ -427,11 +427,9 @@ impl<T: Clone + 'static> DragContext<T> {
     /// at `top: 0; left: 0` and these values drive its transform). Translate is
     /// the only positioning that NEVER affects layout on any backend — a real
     /// `top`/`left` offset that grows as you drag can expand whatever container
-    /// the overlay lowers into. The cost is that `AnimatedValue::bind` only
-    /// applies on the *next* change after the node mounts, so we'd flash at the
-    /// origin for one frame; to avoid that we re-apply the current value on a
-    /// microtask, which lands after the overlay has mounted (and its ref
-    /// filled) but before paint.
+    /// the overlay lowers into. The ghost is not mounted yet when this runs, so
+    /// the bound translate can't reach it here: [`crate::drag_layer`] applies
+    /// the current position as the ghost mounts ([`Self::place_ghost`]).
     pub(crate) fn set_preview(&self, builder: PreviewBuilder, x: f32, y: f32) {
         let (gx, gy) = {
             let mut inner = self.inner.borrow_mut();
@@ -442,15 +440,6 @@ impl<T: Clone + 'static> DragContext<T> {
         gy.cancel();
         gx.set(x);
         gy.set(y);
-        // Re-apply the *current* value once the ghost has mounted, so the bound
-        // translate isn't stuck unapplied for the first frame.
-        let (gx2, gy2) = (gx, gy);
-        // `schedule_microtask` is a permanent-substrate scheduling entry glue
-        // does not re-export yet (a one-line gap, reported).
-        runtime_shared::scheduling::schedule_microtask(move || {
-            gx2.set(gx2.get());
-            gy2.set(gy2.get());
-        });
     }
 
     /// The ghost's current top-left in **window** coordinates (the value last
@@ -493,6 +482,17 @@ impl<T: Clone + 'static> DragContext<T> {
             Some(b) => b(),
             None => runtime_core::fragment(Vec::new()),
         }
+    }
+
+    /// Write the ghost's current window position to `ghost`'s translate.
+    /// [`crate::drag_layer`] calls it as the ghost mounts, before its first
+    /// paint: [`bind_ghost`](Self::bind_ghost)'s binding reaches the node
+    /// only on the position's next change, or after mount, and in between
+    /// the ghost painted a frame at the window's top-left.
+    pub fn place_ghost(&self, ghost: &ViewHandle) {
+        let (x, y) = self.ghost_position();
+        ghost.set_animated_f32(AnimProp::TranslateX, x);
+        ghost.set_animated_f32(AnimProp::TranslateY, y);
     }
 
     /// Bind the ghost's window position to `target`'s translate. Used by

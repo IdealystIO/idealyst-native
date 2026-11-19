@@ -1204,10 +1204,72 @@ fn scrolling_with_no_drag_in_flight_is_a_no_op() {
 #[test]
 fn regression_the_drag_layer_stacks_above_z_indexed_content() {
     world(|| {
-        let app = runtime_core::StyleApplication::new(crate::layer::ghost_sheet());
+        // The layer's outer box (the window clip) carries the stacking.
+        let app = runtime_core::StyleApplication::new(crate::layer::clip_sheet());
         let rules = runtime_core::resolve_style(&app);
         assert_eq!(rules.z_index, Some(crate::DRAG_LAYER_Z));
         assert_eq!(rules.pointer_events, Some(runtime_core::PointerEvents::None));
         assert_eq!(rules.position, Some(runtime_core::Position::Absolute));
+        let ghost = runtime_core::resolve_style(&runtime_core::StyleApplication::new(crate::layer::ghost_sheet()));
+        assert_eq!(ghost.pointer_events, Some(runtime_core::PointerEvents::None));
+        assert_eq!(ghost.position, Some(runtime_core::Position::Absolute));
+    });
+}
+
+/// REGRESSION (Timely): a wide ghost carried to the window's edge widened
+/// the page — it was absolutely placed in the app root, so nothing clipped
+/// what overhung the window, and the page gained a horizontal scrollbar.
+/// The ghost sits in a clip pinned to the window's four edges that hides
+/// what overhangs them and stays deaf to the pointer.
+#[test]
+fn regression_the_drag_ghost_is_clipped_to_the_window() {
+    world(|| {
+        let px0 = Some(runtime_core::Tokenized::Literal(runtime_core::Length::Px(0.0)));
+        let clip = runtime_core::resolve_style(&runtime_core::StyleApplication::new(crate::layer::clip_sheet()));
+        assert_eq!(clip.position, Some(runtime_core::Position::Absolute));
+        assert_eq!((&clip.top, &clip.right, &clip.bottom, &clip.left), (&px0, &px0, &px0, &px0), "pinned to all four edges");
+        assert_eq!(clip.overflow, Some(runtime_core::Overflow::Hidden), "what overhangs the window is clipped");
+        assert_eq!(clip.pointer_events, Some(runtime_core::PointerEvents::None));
+    });
+    // Mounted: the ghost is the clip's only child.
+    with_mounted_layer(|h, ctx| {
+        use runtime_core::{text, IntoElement};
+        h.world.enter(|| {
+            ctx.set_preview(Rc::new(|| text("ghost").into_element()), 10.0, 20.0);
+            ctx.begin(7);
+        });
+        h.flush();
+        let screen = live_screen(h);
+        let clip = screen.lines().position(|l| l.trim_start().starts_with("view")).expect(&screen);
+        let ghost = screen.lines().skip(clip + 1).position(|l| l.trim_start().starts_with("view")).expect(&screen);
+        assert_eq!(ghost, 0, "the ghost view sits directly in the clip:\n{screen}");
+    });
+}
+
+/// REGRESSION (Timely): the ghost sometimes painted one frame at the
+/// window's top-left. Its translate is bound through a `Ref`, which the
+/// binding can only write once the ghost has mounted — and the re-apply
+/// meant to cover that ran on a microtask that could land before the ghost
+/// mounted. The ghost's position is now written in its mount handler: the
+/// mount itself writes the translate, before any timer or frame runs.
+#[test]
+fn regression_the_drag_ghost_is_placed_as_it_mounts() {
+    install_test_scheduler_once();
+    reset_test_clock();
+    with_mounted_layer(|h, ctx| {
+        use runtime_core::{text, IntoElement};
+        host_mock::take_animated_log();
+        h.world.enter(|| {
+            ctx.set_preview(Rc::new(|| text("ghost").into_element()), 10.0, 20.0);
+            ctx.begin(7);
+        });
+        h.flush();
+        // No timer has run (the test scheduler queues them until `advance_ms`).
+        let log = host_mock::take_animated_log();
+        let wrote = |prop: &str, v: &str| {
+            log.iter().any(|l| l.starts_with("set_animated_f32") && l.contains(prop) && l.ends_with(v))
+        };
+        assert!(wrote("TranslateX", "10"), "the mount writes the ghost's x:\n{}", log.join("\n"));
+        assert!(wrote("TranslateY", "20"), "and its y:\n{}", log.join("\n"));
     });
 }

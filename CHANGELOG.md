@@ -1408,6 +1408,23 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`Tooltip` waits before it shows, then shows at once while warm** (`idea-ui` minor). Two new
+  props: `delay_ms` (default `TOOLTIP_DELAY_MS`, 500) is how long the pointer rests on a trigger
+  before the first tooltip shows, so sweeping across a toolbar shows nothing; once one has shown,
+  every tooltip of the app shows the moment the pointer enters its trigger. That lasts until the
+  pointer has left a shown tooltip for `skip_delay_ms` (default `TOOLTIP_SKIP_DELAY_MS`, 300)
+  without entering another; `0` makes every tooltip wait. Long-press on touch is unchanged. A
+  tooltip removed while showing closes the warm window behind it, and a long-press dismiss timer
+  no longer writes a tooltip that has unmounted.
+- **`view(..).on_mount(|handle| …)`** (`runtime-vocabulary` minor). Runs
+  with the node's handle in its mount handler, before the first paint. A view's `on_handle`
+  receivers now compose: `bind(ref)` and `on_mount` on one view both get the handle (a second
+  receiver used to replace the first). `world_local` is re-exported through `runtime_core`.
+- **`ScheduledTask::detach()` and `#[must_use]`** (`runtime-shared` minor). Dropping the handle
+  `after_animation_frame` / `after_ms` return cancels the callback, so `after_animation_frame(..);`
+  as a statement never ran. The handle is `#[must_use]` now, and `.detach()` lets a callback run
+  with nothing holding it. `after_ms_detached(ms, f)` is `after_ms(ms, f).detach()`.
+
 - **A virtualized `Table`'s row drag can leave the table** (`idea-ui` minor, `dnd` minor).
   `Table(row_drag = Some(RowDrag::new(&ctx, |row| payload)))` offers the grip drag to a
   `DragContext` outside the table. Inside the table it reorders as before; over one of the
@@ -3764,6 +3781,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **No fades on the wrong row after a virtualized `Table` drop** (`idea-ui`). Cells are
+  positional, so after a drop the row that took the held row's index faded its grip out
+  (`grip_on_hover`) and, with `row_drag`, faded its cells in from nothing. The grip and cell
+  opacity fades are now off with the background fade while a row is held or lands, and for one
+  frame after a drop target takes the row; they come back for ordinary hover.
+- **The drag ghost no longer flashes at the window's top-left** (`dnd`). Its position was
+  re-applied on a microtask that could run before the ghost mounted; it is now written as the
+  ghost mounts, before its first paint.
+- **A wide drag ghost no longer widens the page** (`dnd`). `drag_layer` puts the ghost in a box
+  pinned to the window's four edges that clips what overhangs and ignores the pointer, so a row
+  ghost carried to the edge no longer adds a horizontal scrollbar. The app root needs no
+  `overflow` or positioning for it.
 
 - **`dnd::drag_layer` draws over an app shell** (`dnd`). The ghost relied on being the last
   sibling, and content with a `z_index` of its own (an `AppShell`'s page and drawer) painted
