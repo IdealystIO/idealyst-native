@@ -1408,6 +1408,20 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A virtualized `Table`'s row drag can leave the table** (`idea-ui` minor, `dnd` minor).
+  `Table(row_drag = Some(RowDrag::new(&ctx, |row| payload)))` offers the grip drag to a
+  `DragContext` outside the table. Inside the table it reorders as before; over one of the
+  context's drop targets the target gets `is_over` and takes the row through `on_drop`, and
+  `on_reorder` is not called; let go outside the table on nothing, the row goes back. The dragged
+  row is drawn by the context's `dnd::drag_layer` — a copy of the row that follows the pointer
+  over the whole page, above the sticky header and frozen columns and unclipped by the table —
+  while the row's own cells are hidden and the others slide to show where it would land. Mount
+  `drag_layer(&ctx)` once, last in the app's root.
+- **`dnd`: a drag a component drives itself** (`dnd` minor). `DragContext::start_drag(payload, at,
+  preview)` opens the session a `Draggable` opens and returns a `DragSession`: `moved` says
+  whether a drop target is under the pointer, `finish` delivers the payload, and dropping it
+  cancels. `DragContext::is_over_target` and `DragPreview` come with it.
+
 - **`idea-ui-layout`: hints, a section action, a carded inspector pane** (`idea-ui-layout` minor).
   - `Section` and `SectionHeading` take `hint` (a `?` beside the title whose tooltip explains it)
     and `action` (a verb at the heading's right end). `LabelValue` takes `hint` beside its label.
@@ -3750,6 +3764,33 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **`dnd::drag_layer` draws over an app shell** (`dnd`). The ghost relied on being the last
+  sibling, and content with a `z_index` of its own (an `AppShell`'s page and drawer) painted
+  over it: the preview was mounted and invisible. The layer now has `DRAG_LAYER_Z`.
+- **A held row stacks over the rows it crosses in a virtualized table** (`backend-web` patch).
+  `virtual_grid` sets a frozen cell's `z-index` inline, so the lifted row's frozen cells could
+  not rise over another row's and slid under them. The row kept mounted for a drag
+  (`keep_row_mounted`) is now raised as a whole, under the frozen bands.
+
+- **Collapsing `AppFrame`'s sidebar to its icon rail no longer pops the labels or moves the icons**
+  (`idea-ui-layout` minor, `idea-ui-nav` minor, `idea-ui` minor). `SidebarItem` swapped a list
+  row for an icon button when the sidebar collapsed, so the label vanished and the glyph changed
+  size and place on the first frame of the slide. It is now one row in both forms: the glyph
+  holds its size and place, the label fades over the slide, and the row's tooltip is on only in
+  the rail. `AppShell` eases a live sidebar width with the content's offset (it snapped), and
+  exports the duration as `SIDEBAR_SLIDE_MS`. `Tooltip` gains `disabled`. A sidebar's content
+  should be inset `SIDEBAR_INSET` (8) for the glyphs to stand in the middle of the rail; an
+  item with no icon now shows its initial in both forms.
+- **`SidebarToggle` is named for what a press does** (`idea-ui-layout`). "Menu" for the drawer,
+  "Collapse sidebar" and "Expand sidebar" on a desktop (was "Menu" for all three), the desktop
+  forms with a tooltip. `collapse_label` / `expand_label` change the words.
+- **A `Dialog`'s head keeps its height when the back arrow appears** (`idea-ui-layout`). The arrow
+  was a size larger than the ✕, so the title and rule moved down about 8 px.
+- **`ListStates`' Retry has the test id `list-retry`** (`idea-ui-layout`).
+- **A virtualized `Table`'s grip and row tint follow a reordered row** (`idea-ui` patch). The
+  hovered row is held by index and a drop did not update it, so with `grip_on_hover` the grip
+  showed on whichever row took the dragged row's old index until the pointer left.
 
 - **A restyled view no longer flashes unstyled when another view is styled in the same turn**
   (`backend-web` patch). A restyle released the node's old CSS rule while its class swap was still
