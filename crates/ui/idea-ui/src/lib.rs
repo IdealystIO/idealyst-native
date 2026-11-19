@@ -281,7 +281,7 @@ pub use components::table::{
     dragged_width, move_in_place, page_window_text, pager_count_text, rows_picker_matters, select_all_state,
     slide_offset, toggle_select_all, CardPresentation, CardSlot, CellAlign, CellPadding, CellTone, ColSpan, ColumnId,
     ColumnPin, ColumnResizeCallback, ColumnWidths, RowId, RowTone, SelectAllState, SelectRowLabel, SortState,
-    Table, TableCards, TableCardsProps, TableCell, TableCellProps, TableColumn, TableDensity,
+    RowDrag, RowRelease, Table, TableCards, TableCardsProps, TableCell, TableCellProps, TableColumn, TableDensity,
     TableEmpty, TableFooter, TableFooterProps, TableGroup, TableGroupProps, TableInset, TablePager, TablePagerProps,
     TableProps, TableRestyle, TableRow, TableRowProps, TableScroller, TableSlotStyles, TableStyles, TableTone, TableHeadEdge, TableVariant,
     VirtualRows,

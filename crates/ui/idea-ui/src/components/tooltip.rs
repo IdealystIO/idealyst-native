@@ -110,6 +110,10 @@ pub struct TooltipProps {
     /// auto-dismissing, in ms. Ignored for hover. Default
     /// [`TOOLTIP_DISMISS_MS`].
     pub dismiss_ms: u32,
+    /// No bubble while `true`: for a hint that only applies in one state
+    /// of its trigger (a row whose label is hidden), without unmounting
+    /// the trigger to take the tooltip off. Default `false`.
+    pub disabled: bool,
     /// The trigger the tooltip wraps and anchors to.
     #[prop(example = ui! { Button(label = "Hover me") })]
     pub children: Vec<Element>,
@@ -123,6 +127,7 @@ impl Default for TooltipProps {
             align: Reactive::Static(ElementAlign::Center),
             offset: Reactive::Static(6.0),
             dismiss_ms: Reactive::Static(TOOLTIP_DISMISS_MS),
+            disabled: Reactive::Static(false),
             children: Vec::new(),
             styles: Default::default(),
         }
@@ -168,6 +173,7 @@ pub fn Tooltip(props: TooltipProps) -> Element {
     let align = props.align.get();
     let offset = props.offset.get();
     let dismiss_ms = props.dismiss_ms.get() as i32;
+    let disabled = props.disabled;
 
     // Touch path: long-press shows the bubble, then auto-dismisses. The
     // `long_press` recognizer reports recognition (press start) only — no
@@ -206,7 +212,7 @@ pub fn Tooltip(props: TooltipProps) -> Element {
     // macro's closed-branch placeholder is out of flow, so toggling
     // visibility never shifts layout.
     let bubble = ui! {
-        if open.get() {
+        if open.get() && !disabled.get() {
             {
                 runtime_core::anchored_overlay(
                     AnchorTarget::from(anchor_ref),

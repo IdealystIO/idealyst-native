@@ -39,6 +39,17 @@
 //!   the tint leaves those cells instantly and stays on the moved row; the
 //!   fade comes back as it lands, so its tint fades out in its new slot.
 //!
+//! - **Outside the table** (`Table(row_drag = …)`, [`RowDrag`]). The drag
+//!   is also a `dnd` drag of the row's payload, and the row is drawn by
+//!   the context's drag layer rather than in the grid: a copy of the row
+//!   follows the pointer over the whole page, above everything and
+//!   unclipped, while the row's own cells are hidden and the others slide
+//!   to show where it would land. With the pointer over one of the
+//!   context's drop targets, or outside the table, no landing is shown and
+//!   the table does not scroll; released on a target, the target takes the
+//!   row and `on_reorder` is not called; released outside the table on
+//!   nothing, the row goes back.
+//!
 //! Geometry is read in window coordinates and from the grid's scroll
 //! callback, never per move from layout: a cell's own coordinates move
 //! with the scroll on native backends and not on the web, and a layout
@@ -47,13 +58,15 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use dnd::{Activation, DragPhase, DragRecognizer, ScrollAxis};
+use dnd::{Activation, DragPhase, DragPreview, DragRecognizer, ScrollAxis};
 use runtime_core::animation::{AnimProp, AnimatedValue, SpringTo};
 use runtime_core::primitives::virtual_grid::VirtualGridHandle;
 use runtime_core::{
-    effect, signal, Easing, Memo, RafLoop, Ref, Signal, StyleApplication, StyleRules, TouchHandler, Transition,
-    ViewHandle,
+    effect, signal, Easing, Element, Memo, RafLoop, Ref, Signal, StyleApplication, StyleRules, Tokenized, TouchHandler,
+    TouchPoint, Transition, ViewHandle,
 };
+
+use super::row_drag::{ActiveRowDrag, RowDrag};
 
 /// How close to the scrollport's top (under the header) or bottom edge the
 /// pointer must be for the grid to autoscroll, px: about one row at the
@@ -125,6 +138,15 @@ struct Session {
     /// The grid's scroll at the grab, and now (from its scroll callback).
     scroll_y0: f32,
     scroll: (f32, f32),
+    /// The row's top-left in the window at the grab, and the pointer's
+    /// sideways travel since: where a [`RowDrag`]'s preview is drawn.
+    origin: (f32, f32),
+    pointer_dx: f32,
+    /// The pointer's x in the scrollport at the grab.
+    port_x0: f32,
+    /// A [`RowDrag`]'s pointer is over one of its drop targets or outside
+    /// the table: the table shows no landing and does not scroll.
+    away: bool,
 }
 
 impl Session {
@@ -133,6 +155,41 @@ impl Session {
     fn lift(&self) -> f32 {
         self.pointer_dy + (self.scroll.1 - self.scroll_y0)
     }
+
+    /// The preview's top-left in the window: the row's, moved with the
+    /// pointer on both axes.
+    fn preview_at(&self) -> (f32, f32) {
+        (self.origin.0 + self.pointer_dx, self.origin.1 + self.pointer_dy)
+    }
+}
+
+/// What a [`RowDrag`] release does to the row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowRelease {
+    /// A drop target outside the table took it: nothing lands here.
+    Taken,
+    /// It lands in the table, in the slot under it.
+    Lands,
+    /// Let go outside the table on nothing: it goes back to its slot.
+    Returns,
+}
+
+/// What releasing a [`RowDrag`] does: a target that `took` the row wins;
+/// otherwise the row lands where it is if the pointer is `in_table`, and
+/// goes back if it was carried out and dropped on nothing — a near miss of
+/// a target must not reorder the list by the table's nearest edge.
+pub fn row_release(took: bool, in_table: bool) -> RowRelease {
+    match (took, in_table) {
+        (true, _) => RowRelease::Taken,
+        (false, true) => RowRelease::Lands,
+        (false, false) => RowRelease::Returns,
+    }
+}
+
+/// Whether a pointer at `(x, y)` in a scrollport `width` by `height` is
+/// within it: where a [`RowDrag`] release still means "reorder".
+pub fn within_scrollport(x: f32, y: f32, width: f32, height: f32) -> bool {
+    (0.0..=width).contains(&x) && (0.0..=height).contains(&y)
 }
 
 /// A virtualized table's reorder state — one per table, shared by every
@@ -158,6 +215,14 @@ pub(super) struct VirtualReorder {
     landing_sub: RefCell<Option<runtime_core::animation::Subscription<f32>>>,
     session: Cell<Option<Session>>,
     autoscroll: RefCell<Option<RafLoop>>,
+    /// The outside context the drag joins (`Table(row_drag = …)`), the
+    /// drag in flight there, and what builds the row's preview for its
+    /// drag layer (set by the table once its columns are known).
+    row_drag: Option<RowDrag>,
+    active: RefCell<Option<ActiveRowDrag>>,
+    preview: RefCell<Option<Rc<dyn Fn(usize) -> Element>>>,
+    /// The held row is drawn by the drag layer, so its cells are hidden.
+    ghosted: Signal<bool>,
     me: Weak<VirtualReorder>,
 }
 
@@ -169,6 +234,7 @@ impl VirtualReorder {
         row_height: f32,
         count: Rc<dyn Fn() -> usize>,
         grid: Rc<RefCell<Option<VirtualGridHandle>>>,
+        row_drag: Option<RowDrag>,
     ) -> Rc<Self> {
         let me = Rc::new_cyclic(|me| VirtualReorder {
             on_reorder,
@@ -184,6 +250,10 @@ impl VirtualReorder {
             landing_sub: RefCell::new(None),
             session: Cell::new(None),
             autoscroll: RefCell::new(None),
+            row_drag,
+            active: RefCell::new(None),
+            preview: RefCell::new(None),
+            ghosted: signal(false),
             me: me.clone(),
         });
         // The landing spring publishes each step, and ends the landing when
@@ -202,6 +272,8 @@ impl VirtualReorder {
         runtime_core::on_scope_drop(move || {
             if let Some(me) = weak.upgrade() {
                 drop(me.autoscroll.borrow_mut().take());
+                // Cancels a drag still in flight in the outside context.
+                drop(me.active.borrow_mut().take());
                 drop(me.landing_sub.borrow_mut().take());
                 me.landing_spring.cancel();
             }
@@ -218,30 +290,37 @@ impl VirtualReorder {
     /// from the commit point it would trail the pointer by the slop.
     pub(super) fn grip_handler(&self, row: Memo<usize>) -> TouchHandler {
         let me = self.me.clone();
-        // The press's window y and its y within the row.
-        let pressed: Rc<Cell<(f32, f32)>> = Rc::new(Cell::new((0.0, 0.0)));
+        // The press in the window, and within the grip cell: the grip is
+        // the row's first cell, so the cell's corner is the row's.
+        let origin = TouchPoint::new(0.0, 0.0);
+        let pressed: Rc<Cell<(TouchPoint, TouchPoint)>> = Rc::new(Cell::new((origin, origin)));
         let at = pressed.clone();
         let recognizer = DragRecognizer::new(Activation::scroll_aware(ScrollAxis::Vertical), move |phase| {
             let Some(me) = me.upgrade() else { return };
             match phase {
                 DragPhase::Began(s) => {
                     let r = runtime_core::untrack(|| row.get());
-                    let (window_y, grab_y) = at.get();
-                    me.begin(r, window_y, grab_y);
-                    me.moved(s.window_position.y);
+                    let (window, grab) = at.get();
+                    me.begin(r, window, grab);
+                    me.moved(s.window_position);
                 }
-                DragPhase::Moved(s) => me.moved(s.window_position.y),
-                DragPhase::Ended { .. } => me.finish(true),
+                DragPhase::Moved(s) => me.moved(s.window_position),
+                DragPhase::Ended { window_position, .. } => me.released(window_position),
                 DragPhase::Cancelled => me.finish(false),
             }
         })
         .into_handler();
         Rc::new(move |ev: &runtime_core::TouchEvent| {
             if ev.phase == runtime_core::TouchPhase::Began {
-                pressed.set((ev.window_position.y, ev.position.y));
+                pressed.set((ev.window_position, ev.position));
             }
             recognizer(ev)
         })
+    }
+
+    /// What builds row `r`'s preview for a [`RowDrag`]'s drag layer.
+    pub(super) fn set_preview(&self, build: Rc<dyn Fn(usize) -> Element>) {
+        *self.preview.borrow_mut() = Some(build);
     }
 
     /// The `drag` arm for a cell showing `row`: `lifted` for the held row
@@ -264,6 +343,16 @@ impl VirtualReorder {
             background_transition: Some(Transition::new(0, Easing::Linear)),
             ..Default::default()
         })
+    }
+
+    /// `app` for a body cell showing `row`, hidden while the row is held
+    /// and drawn by a [`RowDrag`]'s drag layer instead: the page shows one
+    /// copy of the row, and the slot it left reads as a gap.
+    pub(super) fn hidden_while_ghosted(&self, row: usize, app: StyleApplication) -> StyleApplication {
+        if !(self.ghosted.get() && self.from.get() == Some(row)) {
+            return app;
+        }
+        app.with_inline_merged(StyleRules { opacity: Some(Tokenized::Literal(0.0)), ..Default::default() })
     }
 
     /// Whether `row` is the held row.
@@ -315,14 +404,35 @@ impl VirtualReorder {
         self.update(s);
     }
 
-    fn begin(&self, from: usize, window_y: f32, grab_y: f32) {
+    fn begin(&self, from: usize, window: TouchPoint, grab: TouchPoint) {
         let h = self.row_height;
         let scroll = self.grid.borrow().as_ref().map_or((0.0, 0.0), |g| g.scroll_offset());
         // Grid row `from + 1` (the header is row 0) sits at `(from + 1) * h`
-        // in the content; the pointer is `grab_y` into it.
-        let port_y0 = (from + 1) as f32 * h - scroll.1 + grab_y.clamp(0.0, h);
-        let s = Session { from, window_y0: window_y, pointer_dy: 0.0, port_y0, scroll_y0: scroll.1, scroll };
+        // in the content; the pointer is `grab.y` into it.
+        let port_y0 = (from + 1) as f32 * h - scroll.1 + grab.y.clamp(0.0, h);
+        let s = Session {
+            from,
+            window_y0: window.y,
+            pointer_dy: 0.0,
+            port_y0,
+            scroll_y0: scroll.1,
+            scroll,
+            origin: (window.x - grab.x, window.y - grab.y),
+            pointer_dx: 0.0,
+            // The grip is frozen at the scrollport's left edge.
+            port_x0: grab.x,
+            away: false,
+        };
         self.session.set(Some(s));
+        // Join the outside context: the drag layer draws the row from
+        // here on, so the grid's copy is hidden.
+        let preview = self.preview.borrow().clone();
+        if let (Some(drag), Some(build)) = (self.row_drag.as_ref(), preview) {
+            let (x, y) = s.origin;
+            let shown = DragPreview::new(move || build(from), x, y);
+            *self.active.borrow_mut() = Some(drag.start(from, window, shown));
+            self.ghosted.set(true);
+        }
         if let Some(g) = self.grid.borrow().as_ref() {
             g.keep_row_mounted(Some(from + 1));
         }
@@ -340,11 +450,54 @@ impl VirtualReorder {
         }));
     }
 
-    fn moved(&self, window_y: f32) {
+    fn moved(&self, window: TouchPoint) {
         let Some(mut s) = self.session.get() else { return };
-        s.pointer_dy = window_y - s.window_y0;
+        s.pointer_dx = window.x - (s.origin.0 + s.port_x0);
+        s.pointer_dy = window.y - s.window_y0;
+        if let Some(active) = self.active.borrow().as_ref() {
+            let on_target = active.moved(window, s.preview_at());
+            s.away = on_target || !self.pointer_in_table(s);
+        }
         self.session.set(Some(s));
         self.update(s);
+    }
+
+    /// Whether session `s`'s pointer is inside the table's scrollport.
+    fn pointer_in_table(&self, s: Session) -> bool {
+        let Some(port) = self.grid.borrow().as_ref().and_then(|g| g.scrollport()) else { return true };
+        within_scrollport(s.port_x0 + s.pointer_dx, s.port_y0 + s.pointer_dy, port.width, port.height)
+    }
+
+    /// The pointer was let go at window `at`. In an outside context
+    /// ([`RowDrag`]) a drop target under it takes the row; otherwise the
+    /// row lands in the table, or goes back if it was let go outside it.
+    fn released(&self, at: TouchPoint) {
+        let active = self.active.borrow_mut().take();
+        let Some(active) = active else { return self.finish(true) };
+        let in_table = self.session.get().is_some_and(|s| self.pointer_in_table(s));
+        match row_release(active.finish(at), in_table) {
+            RowRelease::Taken => self.finish_taken(),
+            RowRelease::Lands => self.finish(true),
+            RowRelease::Returns => self.finish(false),
+        }
+    }
+
+    /// A drop target outside the table took the row: nothing lands here.
+    /// No landing spring either — the app may be removing the row, and a
+    /// row sliding home would be the wrong story for one that left.
+    fn finish_taken(&self) {
+        drop(self.autoscroll.borrow_mut().take());
+        if self.session.take().is_none() {
+            return;
+        }
+        if let Some(g) = self.grid.borrow().as_ref() {
+            g.keep_row_mounted(None);
+        }
+        self.ghosted.set(false);
+        self.landing_spring.set(0.0);
+        self.landing.set(None);
+        self.over.set(None);
+        self.from.set(None);
     }
 
     /// The held row's landing slot for session `s`.
@@ -361,12 +514,18 @@ impl VirtualReorder {
     /// signals' own equality check drops a write of the unchanged slot.
     fn update(&self, s: Session) {
         self.lift.set(s.lift());
-        self.over.set(Some(self.slot(s)));
+        // Away from the table the rows rest: no slot is on offer.
+        self.over.set(Some(if s.away { s.from } else { self.slot(s) }));
     }
 
     /// One frame of autoscroll: scroll toward the edge the pointer is near.
     fn autoscroll_frame(&self) {
         let Some(mut s) = self.session.get() else { return };
+        // Over a drop target or outside the table the drag is not about
+        // this list, and the edge the pointer left by must not scroll it.
+        if s.away {
+            return;
+        }
         let Some(grid) = self.grid.borrow().clone() else { return };
         let Some(port) = grid.scrollport() else { return };
         let h = self.row_height;
@@ -395,6 +554,9 @@ impl VirtualReorder {
     /// let go.
     fn finish(&self, landed: bool) {
         drop(self.autoscroll.borrow_mut().take());
+        // A cancelled gesture cancels the drag in the outside context too.
+        drop(self.active.borrow_mut().take());
+        self.ghosted.set(false);
         let Some(s) = self.session.take() else { return };
         if let Some(g) = self.grid.borrow().as_ref() {
             g.keep_row_mounted(None);
@@ -420,6 +582,77 @@ impl VirtualReorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row drag offered to an outside context: the context sees the
+    /// drag and the row's payload, the grid's copy of the row is hidden
+    /// while the layer carries it, and a release inside the table is
+    /// still a reorder. No grid here, so the pointer always reads as
+    /// inside the table.
+    #[test]
+    fn a_row_drag_joins_the_outside_context_and_still_reorders_in_the_table() {
+        idea_theme::testing::with_test_world(|| {
+            let ctx: dnd::DragContext<usize> = dnd::DragContext::new();
+            let moved = Rc::new(Cell::new(None));
+            let out = moved.clone();
+            let reorder = VirtualReorder::new(
+                Rc::new(move |from, to| out.set(Some((from, to)))),
+                40.0,
+                Rc::new(|| 10),
+                Rc::new(RefCell::new(None)),
+                Some(RowDrag::new(&ctx, |row| row * 100)),
+            );
+            reorder.set_preview(Rc::new(|_| runtime_core::view(Vec::new()).into()));
+            let at = |x: f32, y: f32| TouchPoint::new(x, y);
+
+            reorder.begin(3, at(20.0, 170.0), at(10.0, 10.0));
+            idea_theme::testing::commit();
+            assert!(ctx.dragging().get(), "the context has a drag in flight");
+            assert_eq!(ctx.payload(), Some(300), "carrying the row's payload");
+            assert!(reorder.ghosted.get() && reorder.from.get() == Some(3));
+
+            // Two rows down, and let go there.
+            reorder.moved(at(60.0, 250.0));
+            reorder.released(at(60.0, 250.0));
+            idea_theme::testing::commit();
+            assert_eq!(moved.get(), Some((3, 5)), "a release in the table reorders");
+            assert!(!ctx.dragging().get() && ctx.payload().is_none(), "and ends the context's drag");
+            assert!(!reorder.ghosted.get() && reorder.from.get().is_none());
+        });
+    }
+
+    /// A cancelled gesture cancels the outside drag with it.
+    #[test]
+    fn a_cancelled_row_drag_leaves_no_drag_in_the_outside_context() {
+        idea_theme::testing::with_test_world(|| {
+            let ctx: dnd::DragContext<usize> = dnd::DragContext::new();
+            let reorder = VirtualReorder::new(
+                Rc::new(|_, _| panic!("a cancelled drag reorders nothing")),
+                40.0,
+                Rc::new(|| 10),
+                Rc::new(RefCell::new(None)),
+                Some(RowDrag::new(&ctx, |row| row)),
+            );
+            reorder.set_preview(Rc::new(|_| runtime_core::view(Vec::new()).into()));
+            reorder.begin(3, TouchPoint::new(20.0, 170.0), TouchPoint::new(10.0, 10.0));
+            reorder.moved(TouchPoint::new(20.0, 250.0));
+            reorder.finish(false);
+            idea_theme::testing::commit();
+            assert!(!ctx.dragging().get() && !reorder.ghosted.get());
+        });
+    }
+
+    /// A target that took the row wins; a release in the table lands; a
+    /// row carried out of the table and dropped on nothing goes back.
+    #[test]
+    fn a_row_released_outside_the_table_on_nothing_goes_back() {
+        assert_eq!(row_release(true, true), RowRelease::Taken);
+        assert_eq!(row_release(true, false), RowRelease::Taken);
+        assert_eq!(row_release(false, true), RowRelease::Lands);
+        assert_eq!(row_release(false, false), RowRelease::Returns);
+        assert!(within_scrollport(10.0, 10.0, 300.0, 200.0));
+        assert!(!within_scrollport(-1.0, 10.0, 300.0, 200.0), "left of the table");
+        assert!(!within_scrollport(10.0, 201.0, 300.0, 200.0), "below it");
+    }
 
     #[test]
     fn the_landing_slot_is_the_row_under_the_held_rows_centre() {

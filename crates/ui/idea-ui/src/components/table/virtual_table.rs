@@ -480,6 +480,11 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
          built from `columns`)"
     );
     assert!(
+        props.row_drag.is_none() || props.on_reorder.is_some(),
+        "virtualized Table: `row_drag` offers the reorder drag to a drag context, so it needs \
+         `on_reorder`"
+    );
+    assert!(
         props.on_group_reorder.is_none(),
         "virtualized Table: `on_group_reorder` needs row groups, which a virtualized table doesn't \
          have"
@@ -548,9 +553,16 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
     let widths = props.column_widths.unwrap_or_else(|| signal(ColumnWidths::new()));
     let viewport_w = signal(0.0f32);
     let handle: Rc<RefCell<Option<VirtualGridHandle>>> = Rc::new(RefCell::new(None));
+    let hovered = signal(None);
     let reorder = props.on_reorder.clone().map(|on_reorder| {
         let count: Rc<dyn Fn() -> usize> = Rc::new(move || items.with_untracked(|v| v.len()));
-        VirtualReorder::new(on_reorder, row_height, count, handle.clone())
+        VirtualReorder::new(
+            reorder_keeping_hover(on_reorder, hovered),
+            row_height,
+            count,
+            handle.clone(),
+            props.row_drag.clone(),
+        )
     });
     let shared = Rc::new(Shared {
         cols,
@@ -565,7 +577,7 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
         selection: props.selection,
         select_row_label: props.select_row_label.clone(),
         select_all,
-        hovered: signal(None),
+        hovered,
         pressed: signal(None),
         scroll_x: signal((0.0, 0.0)),
         head_scrolled: signal(false),
@@ -610,6 +622,21 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
             column_widths(viewport_w.get(), &specs)
         })
     };
+
+    // What a `RowDrag`'s drag layer draws for a held row: the row again,
+    // at the columns' widths, cut to the table's visible width. Weak: the
+    // reorder state is one of `shared`'s fields.
+    if let (Some(reorder), true) = (shared.reorder.as_ref(), props.row_drag.is_some()) {
+        let weak = Rc::downgrade(&shared);
+        reorder.set_preview(Rc::new(move |row| match weak.upgrade() {
+            Some(shared) => {
+                let widths = runtime_core::untrack(|| col_widths.get());
+                let visible = runtime_core::untrack(|| viewport_w.get());
+                row_preview(shared, row, widths, visible, row_height)
+            }
+            None => ui! { view() },
+        }));
+    }
 
     // The scrollport subscription lives exactly as long as the table: it
     // is filled at mount (`on_handle`) and dropped with the table's scope.
@@ -1054,7 +1081,7 @@ fn body_cell(shared: &Rc<Shared>, col: usize, row: Memo<usize>) -> Element {
                 Some(arm) => app.with("drag", arm),
                 None => app,
             };
-            reorder.quiet_background(app)
+            reorder.hidden_while_ghosted(row.get(), reorder.quiet_background(app))
         }
     };
     let cell_ref: Ref<ViewHandle> = Ref::new();
@@ -1127,9 +1154,110 @@ fn grip_glyph(shared: &Shared, row: Memo<usize>) -> Element {
     super::grip_mark_revealed(revealed)
 }
 
+/// Row `row` drawn on its own, for a [`RowDrag`](super::RowDrag)'s drag
+/// layer: each column's cell at its width in `widths`, in the held row's
+/// tint, lifted, and no wider than `visible` (the table's scrollport) — a
+/// row of a table that scrolls sideways is carried as the part on show.
+fn row_preview(shared: Rc<Shared>, row: usize, widths: Vec<f32>, visible: f32, row_height: f32) -> Element {
+    let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+    let total: f32 = widths.iter().sum();
+    let width = if visible > 0.0 { total.min(visible) } else { total };
+    let size = StyleRules { width: px(width), height: px(row_height), ..Default::default() };
+    ui! {
+        view(style = RowPreview().into_style_application().with_inline_merged(size)) {
+            for col in 0..shared.cols.len() {
+                preview_cell(&shared, row, col, widths.get(col).copied().unwrap_or(0.0), row_height)
+            }
+        }
+    }
+}
+
+/// One cell of [`row_preview`]: column `col`'s content for `row`, in a box
+/// `width` by `height`, in the held row's opaque tint.
+fn preview_cell(shared: &Rc<Shared>, row: usize, col: usize, width: f32, height: f32) -> Element {
+    let px = |v: f32| Some(Tokenized::Literal(Length::Px(v)));
+    let content: Element = match &shared.cols[col] {
+        GridCol::Grip => super::grip_mark_revealed(None),
+        GridCol::Select => ui! { view() },
+        GridCol::Author(c) => match &shared.rows.cell {
+            CellSource::Reusable(f) => f(memo(move || row), &c.id),
+            CellSource::Fixed(f) => f(row, &c.id),
+        },
+    };
+    let cell = shared.inset(col, cell_app(shared, false, col)).with("row_hovered", "on").with("divider", "off");
+    let seat = StyleRules {
+        width: px(width),
+        height: px(height),
+        flex_shrink: Some(Tokenized::Literal(0.0)),
+        ..Default::default()
+    };
+    ui! {
+        view(style = seat) {
+            view(style = cell) {
+                view(style = cell_inner(shared, col)) { content }
+            }
+        }
+    }
+}
+
+runtime_core::stylesheet! {
+    // The dragged row as the drag layer carries it: a strip cut from the
+    // table, lifted off the page.
+    RowPreview<crate::theme::IdeaThemeRef> {
+        base(t) {
+            flex_direction: runtime_core::FlexDirection::Row,
+            overflow: runtime_core::Overflow::Hidden,
+            background: t.color.surface(),
+            border_radius: t.radius.md(),
+            shadow: runtime_core::Shadow {
+                x: 0.0,
+                y: ROW_PREVIEW_SHADOW_Y,
+                blur: ROW_PREVIEW_SHADOW_BLUR,
+                color: t.effect.shadow(),
+            },
+        }
+    }
+}
+
+/// The carried row's lift off the page.
+const ROW_PREVIEW_SHADOW_Y: f32 = 4.0;
+const ROW_PREVIEW_SHADOW_BLUR: f32 = 16.0;
+
+/// `on_reorder`, followed by moving the hovered row to the slot the row
+/// landed in. The table knows the hovered row by INDEX, and a drop puts
+/// the dragged row (the one under the pointer) at another index with no
+/// pointer event to say so: left alone, the grip and the tint show on
+/// whichever row now holds the old index until the pointer leaves.
+fn reorder_keeping_hover(
+    on_reorder: Rc<dyn Fn(usize, usize)>,
+    hovered: Signal<Option<usize>>,
+) -> Rc<dyn Fn(usize, usize)> {
+    Rc::new(move |from, to| {
+        on_reorder(from, to);
+        hovered.set(Some(to));
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The CrewForge report (11-19): after dropping row 3 on slot 7 the
+    /// grip showed on the row that had moved up into index 3, because the
+    /// hovered index was never told about the move.
+    #[test]
+    fn regression_the_hovered_row_follows_a_reordered_row_to_its_slot() {
+        idea_theme::testing::with_test_world(|| {
+            let hovered: Signal<Option<usize>> = signal(Some(3));
+            let seen = Rc::new(std::cell::Cell::new(None));
+            let out = seen.clone();
+            let moved = reorder_keeping_hover(Rc::new(move |from, to| out.set(Some((from, to)))), hovered);
+            moved(3, 7);
+            idea_theme::testing::commit();
+            assert_eq!(seen.get(), Some((3, 7)), "the app's callback still runs");
+            assert_eq!(hovered.get(), Some(7), "the landed row is the hovered one");
+        });
+    }
 
     /// Fixed columns keep their width; the rest share the remainder
     /// equally; a capped column gives its surplus to the others.

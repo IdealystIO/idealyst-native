@@ -427,6 +427,16 @@
 //!   the drag survives. `grip_on_hover` works as on a plain table. Row
 //!   groups need every row mounted: a virtualized table panics if given
 //!   `on_group_reorder` or children.
+//! - `row_drag = Some(RowDrag::new(&ctx, |row| payload))` offers that
+//!   drag to a `dnd` context outside the table ([`RowDrag`]). Inside the
+//!   table it reorders as above; over one of the context's drop targets
+//!   the target takes the row (`is_over`, then `on_drop`) and `on_reorder`
+//!   is not called; let go outside the table on nothing, the row goes
+//!   back. The dragged row is drawn by the context's `dnd::drag_layer`
+//!   (mount it once, last in the app's root): a copy of the row follows
+//!   the pointer above the header, the frozen columns and the rest of the
+//!   page, unclipped by the table, while the row's own cells are hidden
+//!   and the others slide to show where it would land.
 //! - Bound it like a `scroll_y` table: `max_height` fits the rows up to
 //!   the cap; without it the table fills its (bounded) parent.
 //! - Linux, Windows, the terminal, the CPU renderer and SSR have no
@@ -502,6 +512,7 @@ mod columns;
 mod group;
 mod pager;
 mod reorder;
+mod row_drag;
 mod row_press;
 mod rows;
 mod scroller;
@@ -521,8 +532,10 @@ pub use columns::{
 pub use group::{TableGroup, TableGroupProps};
 pub use pager::{page_window_text, pager_count_text, rows_picker_matters, TablePager, TablePagerProps};
 pub use reorder::{move_in_place, slide_offset, GRIP_COLUMN_WIDTH_PX};
+pub use row_drag::RowDrag;
 pub use virtual_reorder::{
-    autoscroll_step, landing_slot, uniform_slide, AUTOSCROLL_EDGE_PX, AUTOSCROLL_MAX_STEP_PX,
+    autoscroll_step, landing_slot, row_release, uniform_slide, within_scrollport, RowRelease, AUTOSCROLL_EDGE_PX,
+    AUTOSCROLL_MAX_STEP_PX,
 };
 pub use scroller::TableScroller;
 pub use rows::RowId;
@@ -925,6 +938,16 @@ pub struct TableProps {
     /// groups slide aside, and this is called with `(from, to)` — ordinals
     /// over the draggable groups — on drop. Rows outside a group stay put.
     pub on_group_reorder: Option<Rc<dyn Fn(usize, usize)>>,
+    /// A virtualized table's row drag, offered to a drag-and-drop context
+    /// outside the table: `Some(RowDrag::new(&ctx, |row| payload))`. The
+    /// grip drag still reorders inside the table; over one of the
+    /// context's drop targets the target takes the row and `on_reorder` is
+    /// not called. The dragged row is drawn by the context's
+    /// `dnd::drag_layer`, above the page and unclipped, so mount that once
+    /// at the app's root. Needs `on_reorder` and `virtualized`. See
+    /// [`RowDrag`].
+    #[prop(static)]
+    pub row_drag: Option<RowDrag>,
     /// Show each row's drag grip only while the row is hovered (and while
     /// it is dragged). Where the primary pointer cannot hover (a touch
     /// screen) the grips stay shown. The hidden grip is still grabbable.
