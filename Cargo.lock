@@ -3786,7 +3786,7 @@ dependencies = [
 
 [[package]]
 name = "dnd"
-version = "8.3.0"
+version = "8.3.1"
 dependencies = [
  "host-mock",
  "runtime-core",
@@ -6552,7 +6552,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-layout"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "host-mock",
  "icons-lucide",
@@ -6603,7 +6603,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.6.0"
+version = "2.6.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7788,7 +7788,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.4.6"
+version = "2.4.7"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -11071,7 +11071,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "9.6.2"
+version = "9.6.3"
 dependencies = [
  "dev-hot",
  "host-mock",
