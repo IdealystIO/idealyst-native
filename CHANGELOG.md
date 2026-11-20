@@ -3827,6 +3827,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   over the whole screen and took every touch. A screen with no node of its own is now wrapped in
   one view, which takes the flow-fill and lays its roots out as a column, as the web does.
 
+- **Exiting `presence` content no longer outlives its owner** (`runtime-vocabulary`). A presence
+  playing its exit when its own scope dropped (a dialog closing as `Create` navigated, which
+  disposed the screen) kept the exiting content alive until the exit timer, though the state that
+  content read had been freed with the screen. The robot's label search then read a label through
+  the freed signal and panicked the app (`stale-signal-handle`), aborting the web module. A
+  presence that tears down now finishes its exits at once: detaches their nodes and drops them.
+
 - **`idealyst test` tests one build of the tree** (`idealyst-cli`). Its dev session watched the
   sources like any other, so in a shared checkout another session's saves rebuilt and reloaded
   the app mid-run, and every test until the rebuild landed failed at its first call. The session

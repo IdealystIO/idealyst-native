@@ -131,6 +131,11 @@ its props. `PresenceAnim::fade(ms, easing)` is a one-liner for the opacity-only
 case. See `describe(kind: "recipe", name: "animated_toast")` for the full appearing-and-leaving
 pattern.
 
+An exit plays only while the `presence` itself stays mounted. If its own
+owner goes away mid-exit (the screen is disposed, say), the exiting child
+is removed at once rather than finishing its animation: it reads that
+owner's state, which no longer exists.
+
 ### Continuous motion on a mounted node → `animated!`
 
 `AnimatedValue` is the per-frame motion handle. Construct one with `animated!`:

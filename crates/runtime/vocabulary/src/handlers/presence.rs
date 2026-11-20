@@ -28,9 +28,15 @@
 //!   mid-exit flicker.
 //!
 //! The exit timer is deliberately NOT cancelled on re-present: the
-//! `ScheduledTask` closure owns the retired subtree AND its pending
-//! `remove_child` calls — cancelling would drop the scope without ever
-//! detaching the nodes, leaving a permanent ghost view in the tree.
+//! retired subtree's finish (detach its nodes, then drop its scope) runs
+//! only from the timer, and cancelling without it would leave a permanent
+//! ghost view in the tree.
+//!
+//! - **Owner drops mid-exit**: when the presence itself tears down (its
+//!   screen is disposed, say), every exit still playing finishes at once.
+//!   The exiting subtree reads signals its owner held, so it must not
+//!   outlive that owner: a robot label read through the freed signals
+//!   panicked the app.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -42,6 +48,17 @@ use runtime_world::effect;
 
 use crate::caps::{A11yOps, IntrospectionOps, PresenceOps};
 use crate::prims::{PresencePrim, PrimCell};
+
+/// An exiting subtree's detach-and-drop, run once by whichever comes
+/// first: its exit timer or the presence's teardown.
+type Finish = Rc<RefCell<Option<Box<dyn FnOnce()>>>>;
+
+fn run_finish(finish: &Finish) {
+    let f = finish.borrow_mut().take();
+    if let Some(f) = f {
+        f();
+    }
+}
 
 /// Mount a `presence`.
 pub fn mount_presence<H>(
@@ -97,7 +114,10 @@ where
     // (enter): holding a ScheduledTask keeps its callback alive;
     // overwriting with None cancels it.
     let pending_enter: Rc<RefCell<Option<ScheduledTask>>> = Rc::new(RefCell::new(None));
-    let pending_exit: Rc<RefCell<Option<ScheduledTask>>> = Rc::new(RefCell::new(None));
+    // Every exit still playing: its finish (detach + drop) and its timer.
+    // Each timer runs and removes its own entry; the presence's teardown
+    // runs whatever is left.
+    let exiting: Rc<RefCell<Vec<(Finish, ScheduledTask)>>> = Rc::new(RefCell::new(Vec::new()));
 
     // The structural hole: guarded on the presence boolean (the
     // `last_active`-style dedup — a predicate reading extra signals must
@@ -113,7 +133,7 @@ where
     // Exit half — the retire hook.
     let backend_for_retire = backend.clone();
     let pending_enter_for_retire = pending_enter.clone();
-    let pending_exit_for_retire = pending_exit.clone();
+    let exiting_for_retire = exiting.clone();
     let hole = hole.with_retire(move |old| {
         let retired = old
             .downcast::<Retired<H::Node>>()
@@ -144,19 +164,32 @@ where
                 // BEFORE the scope drops (the spliced dispose rule: a
                 // reactive effect in the exiting subtree must never
                 // fire against a half-detached node).
-                let backend_for_timer = backend_for_retire.clone();
-                let pending_exit_clear = pending_exit_for_retire.clone();
-                let task = after_ms(anim.duration_ms as i32, move || {
+                let backend_for_finish = backend_for_retire.clone();
+                let finish: Finish = Rc::new(RefCell::new(Some(Box::new(move || {
                     {
-                        let mut b = backend_for_timer.borrow_mut();
+                        let mut b = backend_for_finish.borrow_mut();
                         for n in &nodes {
                             b.remove_child(&parent, n);
                         }
                     }
                     drop(realized);
-                    *pending_exit_clear.borrow_mut() = None;
+                }))));
+                let task = after_ms(anim.duration_ms as i32, {
+                    let finish = finish.clone();
+                    let exiting = exiting_for_retire.clone();
+                    move || {
+                        run_finish(&finish);
+                        // Drops this (spent) task with its entry.
+                        let mine = {
+                            let mut list = exiting.borrow_mut();
+                            list.iter()
+                                .position(|(f, _)| Rc::ptr_eq(f, &finish))
+                                .map(|at| list.remove(at))
+                        };
+                        drop(mine);
+                    }
                 });
-                *pending_exit_for_retire.borrow_mut() = Some(task);
+                exiting_for_retire.borrow_mut().push((finish, task));
             }
             None => {
                 // No exit animation: drop the scope immediately, then
@@ -171,6 +204,16 @@ where
     });
 
     cx.realize_children_into(&mut placeholder, vec![hole]);
+
+    // The owner is going: finish every exit now rather than when its timer
+    // fires (module docs, "Owner drops mid-exit").
+    crate::style_attach::on_teardown(move || {
+        let left: Vec<_> = exiting.borrow_mut().drain(..).collect();
+        for (finish, task) in left {
+            drop(task);
+            run_finish(&finish);
+        }
+    });
 
     // Reach the hole's live slot so the animation effect can find the
     // freshly built child on each mount.

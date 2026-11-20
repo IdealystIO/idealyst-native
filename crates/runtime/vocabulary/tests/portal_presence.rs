@@ -594,3 +594,61 @@ fn regression_escape_passes_over_a_portal_held_for_its_exit() {
     pump_timers(); // the fade ends; the flyout is released
     h.flush();
 }
+
+/// CrewForge (web): `Create` in a dialog navigated, and the push disposed
+/// the screen whose state the dialog's `Select` label read, while the
+/// dialog's exit animation still held its content. The robot's label
+/// search then read that label through the freed signal and panicked the
+/// app. A presence that tears down finishes its exits at once, so nothing
+/// exiting outlives the scope that owned it.
+#[test]
+fn regression_a_presence_torn_down_mid_exit_drops_its_exiting_content() {
+    use runtime_vocabulary::robot::{Query, Robot};
+    let robot = Robot::new();
+    robot.reset();
+    let h = harness();
+    let (screen_on, open) = h.world.enter(|| (signal(true), signal(true)));
+    let drops = Rc::new(Cell::new(0usize));
+    let drops_c = drops.clone();
+    let _root = h.mount(
+        view()
+            .child(dyn_keyed(
+                move || screen_on.get(),
+                move |&on| {
+                    if !on {
+                        // Registers nothing, so no new entry reuses a freed
+                        // slot the exiting content still names as its parent.
+                        return runtime_scene::fragment(Vec::new());
+                    }
+                    // The screen's own state, read by the dialog's label.
+                    let value = signal("Estimate".to_string());
+                    let drops_c = drops_c.clone();
+                    // A dialog: the presence holds a portal, as `Modal` does.
+                    presence(move || {
+                        drop_probe(&drops_c);
+                        portal(PortalTarget::Viewport(ViewportPlacement::Center))
+                            .child(text().content(move || value.get()))
+                            .build()
+                    })
+                    .present(open)
+                    .exit(fade(150))
+                    .build()
+                },
+            ))
+            .build(),
+    );
+    assert_eq!(robot.find_all(Query::label("Estimate")).len(), 1);
+
+    open.set(false);
+    h.flush();
+    assert_eq!(drops.get(), 0, "the exit is playing");
+
+    screen_on.set(false);
+    h.flush();
+    assert_eq!(drops.get(), 1, "the exiting content went with its screen");
+    assert!(robot.find_all(Query::label("Estimate")).is_empty(), "and left the robot's registry");
+
+    pump_timers();
+    assert_eq!(drops.get(), 1, "the spent exit timer does nothing");
+    robot.reset();
+}
