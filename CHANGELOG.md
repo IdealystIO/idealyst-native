@@ -3827,6 +3827,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   over the whole screen and took every touch. A screen with no node of its own is now wrapped in
   one view, which takes the flow-fill and lays its roots out as a column, as the web does.
 
+- **A fragment screen in a swap navigator fills its slot again** (`runtime-vocabulary`). The view
+  wrapped around a screen with no node of its own took the flow-fill only from the navigator's
+  placement, and a swap navigator passes none, so the wrapper was content-sized and a
+  `flex_grow` page in it collapsed to its header: a virtualized body in it was 0 tall and drew no
+  rows. The wrapper now carries the flow-fill on every navigator.
+
 - **`tap_native` refuses a control its scroller clips away** (`runtime-vocabulary`). The point
   check looked at the window only, so on iOS a sheet's button below the sheet's fold (in the
   window, clipped to zero height by the sheet's scroll view) "tapped" with `{"mechanism":

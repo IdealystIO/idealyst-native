@@ -521,6 +521,35 @@ fn regression_a_fragment_screen_gets_one_root_view_with_the_flow_fill() {
     });
 }
 
+/// CrewForge (web, 1440): a swap navigator passes no placement to its
+/// screens, so the view wrapped around a fragment screen was
+/// content-sized; the `flex_grow` page in it collapsed to its header and
+/// a virtualized body was 0 tall. The wrapper fills on every navigator.
+#[test]
+fn regression_a_fragment_screen_in_a_swap_navigator_fills_its_slot() {
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        let element = swap_navigator(&HOME)
+            .screen(HOME, |_| {
+                runtime_scene::Element::Fragment(vec![
+                    text().content("page").build(),
+                    view().build(), // a closed overlay
+                ])
+            })
+            .layout(|| view().child(navigator_outlet()).build())
+            .build();
+        let _realized = realize(&h.backend, &h.registry, element);
+        let log = h.ops();
+        assert!(!log.iter().any(|l| l.starts_with("create ") && l.ends_with(" anchor")), "no layout-less anchor: {log:?}");
+        assert!(
+            log.iter().any(|l| l.starts_with("apply_style")
+                && l.contains("width=Literal(Percent(100.0)) height=none flex_grow=Literal(1.0)")),
+            "the screen's view carries the flow-fill: {log:?}"
+        );
+    });
+}
+
 // ===========================================================================
 // Screen-scope teardown: `on_scope_drop` from a screen body
 // ===========================================================================

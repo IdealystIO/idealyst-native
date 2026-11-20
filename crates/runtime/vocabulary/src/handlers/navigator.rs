@@ -554,8 +554,15 @@ fn realize_screen<H: NavCaps + 'static>(
     // node to land on, and iOS laid each root out as its own full-screen
     // root, so a closed overlay's empty `view {}` covered the screen and
     // took every touch.
+    //
+    // The wrapper carries the flow-fill itself, whatever the navigator: it
+    // stands in for the screen's slot, so the roots inside size against
+    // that slot as they would without it. Not only via `overlay`: a swap
+    // navigator passes none, and a content-sized wrapper collapsed a
+    // `flex_grow` page in it to its header (a virtualized body 0 tall).
     if !has_node_root(&element) {
         element = crate::builders::view().child(element).build();
+        fold_style_overrides(&mut element, &screen_flow_fill_rules());
     }
     // Handler-requested screen placement (the stack's flow-fill) rides
     // the root element's style OVERRIDE layer, composing with the
