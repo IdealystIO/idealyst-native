@@ -83,6 +83,9 @@ macro_rules! builtin_tone {
             fn glow(&self, $theme: &dyn IdeaTheme) -> Option<Tokenized<Color>> {
                 $glow
             }
+            fn soft_bg_state(&self, theme: &dyn IdeaTheme, press: bool) -> Option<Tokenized<Color>> {
+                crate::theme::soft_state_token($key, &theme.$group().$block.soft_bg, theme, press)
+            }
         }
 
         // Reactive-prop coercion: `tone = tone::Primary` into a

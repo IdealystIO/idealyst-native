@@ -1120,6 +1120,26 @@ mod tests {
     });
     }
 
+    /// CrewForge: a Soft button showed no hover. It took the filled
+    /// variants' opacity dim, which does not show on a pale wash. A Soft
+    /// button now steps its fill deeper on hover and further on press, with
+    /// no dim.
+    #[test]
+    fn regression_a_soft_button_steps_its_fill_on_hover_and_press() {
+        with_test_world(|| {
+            theme();
+            for (tone, prefix) in [("primary", "intent"), ("danger", "intent")] {
+                let app = ButtonStyles::root().raw("tone", tone).raw("variant", "soft").into_style_application();
+                let bg = |rules: &StyleRules| rules.background.as_ref().and_then(|b| b.name().map(str::to_string));
+                let hovered = resolve_style(&app.clone().with("__state_hovered", "on"));
+                assert_eq!(bg(&hovered), Some(format!("{prefix}-{tone}-soft-bg-hover")), "{tone}");
+                assert_ne!(hovered.opacity.as_ref().map(|t| t.resolve()), Some(0.92), "{tone}: no dim");
+                let pressed = resolve_style(&app.with("__state_pressed", "on"));
+                assert_eq!(bg(&pressed), Some(format!("{prefix}-{tone}-soft-bg-pressed")), "{tone}");
+            }
+        });
+    }
+
     /// The pressable's evaluated `disabled` state.
     fn pressable_disabled(el: Element) -> Option<bool> {
         match classify(el) {

@@ -3837,6 +3837,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   over the whole screen and took every touch. A screen with no node of its own is now wrapped in
   one view, which takes the flow-fill and lays its roots out as a column, as the web does.
 
+- **A Soft button shows its hover and press** (`idea-theme`, `idea-ui`). Soft took the filled
+  variants' opacity dim (0.92 / 0.85), which does not show on a pale wash. On the seven intents it
+  now steps its fill to `intent-<intent>-soft-bg-hover` / `-pressed`: the intent's `soft_bg` with
+  the theme's `hover_overlay` / `pressed_overlay` over it, computed as the theme installs, so they
+  follow a theme swap. The 14 names are canonical (`CANONICAL_SOFT_STATE_TOKENS`,
+  `canonical_color`); `Tone` gains `soft_bg_state`, which a custom tone can implement and which
+  defaults to `None` (the dim).
+
 - **Action menus draw an entry in its `Action::tone`** (`idea-ui-layout`). `ActionMenu` and
   `ActionMenuSurface` passed only the label, icon, handler and test id to each row, so
   `Action::new(..).tone(tone::Danger)` drew a destructive verb in the default ink. The row's label

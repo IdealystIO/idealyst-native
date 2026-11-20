@@ -151,7 +151,7 @@ pub use theme::{
     is_canonical_color_token, is_canonical_length_token, is_canonical_token, light_theme,
     set_idea_theme, theme_color, theme_length, Colors, Effects, IdeaTheme, IdeaThemeDefaults,
     IdeaThemeRef, IntentColors, Intents, Palette, Radius, Spacing, Typography,
-    CANONICAL_EFFECT_TOKENS, CANONICAL_INTENT_TOKENS, CANONICAL_LENGTH_TOKENS, CANONICAL_NEUTRAL_TOKENS, CANONICAL_PALETTE_TOKENS,
+    CANONICAL_EFFECT_TOKENS, CANONICAL_INTENT_TOKENS, CANONICAL_SOFT_STATE_TOKENS, CANONICAL_LENGTH_TOKENS, CANONICAL_NEUTRAL_TOKENS, CANONICAL_PALETTE_TOKENS,
     DEFAULT_FONT_STACK, INTENT_NAMES, INTENT_SLOTS, PALETTE_NAMES,
 };
 

@@ -94,6 +94,16 @@ pub trait Tone: 'static {
     fn glow(&self, _theme: &dyn IdeaTheme) -> Option<Tokenized<Color>> {
         None
     }
+
+    /// The fill a Soft surface of this tone takes while hovered
+    /// (`press == false`) or pressed. A soft fill is already a pale wash,
+    /// so the opacity dim the other filled variants take does not show on
+    /// it. The seven intents return a token the theme installs (their
+    /// `soft_bg` under the theme's hover / pressed overlay); `None` (the
+    /// default: a palette hue's, a custom tone's) keeps the opacity dim.
+    fn soft_bg_state(&self, _theme: &dyn IdeaTheme, _press: bool) -> Option<Tokenized<Color>> {
+        None
+    }
 }
 
 /// Typed handle wrapping `Rc<dyn Tone>` so prop fields accept

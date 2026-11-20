@@ -799,7 +799,7 @@ fn intent_slot_token(intent: &str, slot: &str) -> &'static str {
 /// tooling/lints (and the regression test) that want to flag a token name
 /// the registry would otherwise ignore.
 pub fn is_canonical_token(name: &str) -> bool {
-    if CANONICAL_NEUTRAL_TOKENS.contains(&name) {
+    if CANONICAL_NEUTRAL_TOKENS.contains(&name) || CANONICAL_SOFT_STATE_TOKENS.contains(&name) {
         return true;
     }
     // intent-<intent>-<slot>
@@ -964,6 +964,13 @@ pub const fn is_canonical_color_token(name: &str) -> bool {
         }
         e += 1;
     }
+    let mut f = 0;
+    while f < CANONICAL_SOFT_STATE_TOKENS.len() {
+        if const_str_eq(CANONICAL_SOFT_STATE_TOKENS[f], name) {
+            return true;
+        }
+        f += 1;
+    }
     false
 }
 
@@ -1072,9 +1079,109 @@ impl ThemeTokens for IdeaThemeRef {
     /// keying the entry off `"ok-surface"` would land the value where
     /// nothing reads it and the override would silently no-op. The
     /// derived name is the one every sheet references.
+    ///
+    /// Plus the soft fills' hover and press steps ([`soft_state_entries`]),
+    /// computed from this theme's own values, so a theme swap recomputes
+    /// them with everything else.
     fn tokens(&self) -> Vec<TokenEntry> {
-        IdeaThemeDefaults::from_theme(self).token_entries()
+        let mut entries = IdeaThemeDefaults::from_theme(self).token_entries();
+        entries.extend(soft_state_entries(self));
+        entries
     }
+}
+
+// =============================================================================
+// Soft fills under the pointer
+// =============================================================================
+
+/// `(tone key, hover token, pressed token)`, for one group's tones.
+type SoftStateNames = (&'static str, &'static str, &'static str);
+
+macro_rules! soft_state_names {
+    ($prefix:literal; $($key:literal),+ $(,)?) => {
+        [$(($key, concat!($prefix, "-", $key, "-soft-bg-hover"), concat!($prefix, "-", $key, "-soft-bg-pressed"))),+]
+    };
+}
+
+/// The seven intents' soft hover / pressed tokens. The intents only: the
+/// clickable surfaces that take a hover (Button, IconButton) draw the
+/// semantic tones, never the palette hues.
+const INTENT_SOFT_STATES: [SoftStateNames; 7] =
+    soft_state_names!("intent"; "primary", "secondary", "neutral", "success", "danger", "warning", "info");
+
+macro_rules! soft_state_list {
+    ($($key:literal),+ $(,)?) => {
+        [$(concat!("intent-", $key, "-soft-bg-hover"), concat!("intent-", $key, "-soft-bg-pressed")),+]
+    };
+}
+
+/// The soft fills' hover and pressed tokens (`intent-<intent>-soft-bg-hover`
+/// / `-pressed`). Canonical, so `color_token!` / [`canonical_color`] accept
+/// them, but not fields of a theme: the install path computes their values
+/// from each theme's `soft_bg` and overlays ([`soft_state_entries`]).
+pub const CANONICAL_SOFT_STATE_TOKENS: [&str; 14] =
+    soft_state_list!("primary", "secondary", "neutral", "success", "danger", "warning", "info");
+
+/// The soft fill an intent tone's Soft surface takes while hovered
+/// (`press == false`) or pressed: its `soft_bg` with the theme's
+/// [`hover_overlay`](IdeaTheme::hover_overlay) /
+/// [`pressed_overlay`](IdeaTheme::pressed_overlay) laid over it, as a token
+/// the theme installs ([`soft_state_entries`]). A Soft fill is already a
+/// pale wash, so the opacity dim the filled variants take does not show
+/// on it. `None` for a key that is not one of the seven intents.
+pub(crate) fn soft_state_token(
+    key: &str,
+    soft_bg: &Tokenized<Color>,
+    theme: &dyn IdeaTheme,
+    press: bool,
+) -> Option<Tokenized<Color>> {
+    let (_, hover, pressed) = INTENT_SOFT_STATES.iter().find(|(k, ..)| *k == key)?;
+    let overlay = if press { theme.pressed_overlay() } else { theme.hover_overlay() };
+    let fallback = Color(composite_over(&overlay.value().0, &soft_bg.value().0));
+    Some(Tokenized::token(if press { pressed } else { hover }, fallback))
+}
+
+/// Every intent's soft hover and pressed fill for `theme`.
+fn soft_state_entries(theme: &dyn IdeaTheme) -> Vec<TokenEntry> {
+    let i = theme.intents();
+    let soft_of = |key: &str| -> &Tokenized<Color> {
+        match key {
+            "primary" => &i.primary.soft_bg,
+            "secondary" => &i.secondary.soft_bg,
+            "neutral" => &i.neutral.soft_bg,
+            "success" => &i.success.soft_bg,
+            "danger" => &i.danger.soft_bg,
+            "warning" => &i.warning.soft_bg,
+            _ => &i.info.soft_bg,
+        }
+    };
+    let hover = theme.hover_overlay().value().0.clone();
+    let pressed = theme.pressed_overlay().value().0.clone();
+    INTENT_SOFT_STATES
+        .iter()
+        .flat_map(|(key, hover_name, pressed_name)| {
+            let soft = soft_of(key).value().0.clone();
+            [
+                TokenEntry { name: hover_name, value: TokenValue::Color(Color(composite_over(&hover, &soft))) },
+                TokenEntry { name: pressed_name, value: TokenValue::Color(Color(composite_over(&pressed, &soft))) },
+            ]
+        })
+        .collect()
+}
+
+/// `top` laid over `bottom` (source-over, straight alpha), as an `rgba()`
+/// string. Either may be translucent: the dark theme's soft fills are.
+fn composite_over(top: &str, bottom: &str) -> String {
+    use runtime_core::color::{parse_or, Rgba};
+    let (t, b) = (parse_or(top, Rgba::TRANSPARENT), parse_or(bottom, Rgba::TRANSPARENT));
+    let (ta, ba) = (f32::from(t.a) / 255.0, f32::from(b.a) / 255.0);
+    let a = ta + ba * (1.0 - ta);
+    if a <= 0.0 {
+        return "rgba(0, 0, 0, 0)".to_string();
+    }
+    let ch = |tc: u8, bc: u8| ((f32::from(tc) * ta + f32::from(bc) * ba * (1.0 - ta)) / a).round() as u8;
+    let alpha = (a * 1000.0).round() / 1000.0;
+    format!("rgba({}, {}, {}, {alpha})", ch(t.r, b.r), ch(t.g, b.g), ch(t.b, b.b))
 }
 
 // =============================================================================
@@ -2125,6 +2232,24 @@ mod tests {
         }
     }
 
+    /// The soft fills' hover / pressed steps install with the theme: the
+    /// tone's soft_bg under the theme's overlays, so each differs from the
+    /// resting wash and from the other, in both stock themes.
+    #[test]
+    fn soft_state_tokens_install_a_deeper_wash_per_theme() {
+        use crate::theme_runtime::ThemeTokens;
+        for stock in [light_theme(), dark_theme()] {
+            let soft = stock.intents.primary.soft_bg.value().0.clone();
+            let toks = IdeaThemeRef::new(stock).tokens();
+            let get = |n: &str| find_color(&toks, n).0.clone();
+            let (hover, pressed) = (get("intent-primary-soft-bg-hover"), get("intent-primary-soft-bg-pressed"));
+            assert!(hover != soft && pressed != hover, "{soft} / {hover} / {pressed}");
+            let _ = get("intent-info-soft-bg-pressed");
+        }
+        // Light primary: #eef2ff under rgba(127,127,140,0.14).
+        assert_eq!(composite_over("rgba(127, 127, 140, 0.14)", "#eef2ff"), "rgba(222, 226, 239, 1)");
+    }
+
     /// A theme that recolours `surface` and never sets `table_surface`
     /// keeps framed tables on its own surface; one that sets it gets it.
     #[test]
@@ -2274,6 +2399,9 @@ mod tests {
             assert!(is_canonical_token(name), "Effects::{label} → non-canonical '{name}'");
             read_names.push(name);
         }
+        // The soft fills' hover / pressed steps: no field holds them; a
+        // sheet reads them through `Tone::soft_bg_state`.
+        read_names.extend(CANONICAL_SOFT_STATE_TOKENS);
         read_names.sort_unstable();
 
         // The install path's color keys, for comparison.

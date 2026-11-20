@@ -148,6 +148,15 @@ control over how tokens are produced. The trait's required getters are `colors`,
 `hover_overlay`, `pressed_overlay` and `extension_tones` have defaults you can
 override to ship a brand face, tuned state layers or app tones.
 
+The state layers are what a clickable control shows under the pointer. A Ghost
+or Outlined button paints `hover_overlay` / `pressed_overlay` over its
+transparent rest; a Soft button on one of the seven intents steps its own wash
+deeper, to `intent-<intent>-soft-bg-hover` / `-pressed`. Those are the intent's
+`soft_bg` with the overlay laid over it, computed by the theme as it installs
+(so they follow a light/dark swap and a tuned overlay); name them with
+`canonical_color` in a restyle. Filled buttons, and a Soft button on a custom
+tone, dim their opacity instead.
+
 ## Light / dark and runtime swaps
 
 Swap the active theme at any time with `set_idea_theme(...)`. For a toggle driven

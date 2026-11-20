@@ -39,6 +39,10 @@ pub enum InteractState {
 /// - **Ghost / Outlined** (transparent-resting): a translucent neutral
 ///   `background` fill (`theme.hover_overlay()` / `pressed_overlay()`). This is
 ///   the toolbar-button feel — for these variants the fill *is* the affordance.
+/// - **Soft**, on one of the seven intents: its soft fill a step deeper (the tone's
+///   `soft_bg` under the theme's hover / pressed overlay, a token the theme
+///   installs — [`Tone::soft_bg_state`](super::Tone::soft_bg_state)). The
+///   opacity dim below does not show on a pale wash.
 /// - **Filled / Soft** (and any custom variant): a uniform `opacity` dim, which
 ///   never clobbers the tone fill. (Compositing a translucent layer over a
 ///   tone fill would need a real overlay layer; opacity is the faithful,
@@ -64,6 +68,12 @@ pub fn variant_state_overlay(
                 ..Default::default()
             }
         }
+        // soft: a step deeper on its own wash, where the tone has one — an
+        // opacity dim on a pale wash does not show.
+        "soft" if ctx.tone.soft_bg_state(ctx.theme, matches!(state, InteractState::Press)).is_some() => StyleRules {
+            background: ctx.tone.soft_bg_state(ctx.theme, matches!(state, InteractState::Press)),
+            ..Default::default()
+        },
         // filled, soft, and any custom variant: a tone-preserving opacity dim.
         // Filled and Gradient also cast the tone's glow (transparent unless
         // the theme lights it — see `Effects`). Only those two: their opaque

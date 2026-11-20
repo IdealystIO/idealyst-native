@@ -415,8 +415,13 @@ mod tests {
         declared.sort_unstable();
         installed_sorted.sort_unstable();
 
-        let missing: Vec<_> =
-            installed_sorted.iter().filter(|n| !declared.contains(n)).collect();
+        // The soft fills' hover / pressed steps are computed from each
+        // theme, not fields of it, so the vocabulary has no accessor for
+        // them; they are reached by name (`canonical_color`).
+        let missing: Vec<_> = installed_sorted
+            .iter()
+            .filter(|n| !declared.contains(n) && !crate::theme::CANONICAL_SOFT_STATE_TOKENS.contains(n))
+            .collect();
         assert!(missing.is_empty(), "installed but not referenceable from IdeaTokens: {missing:?}");
         let unreachable: Vec<_> =
             declared.iter().filter(|n| !installed_sorted.contains(n)).collect();
