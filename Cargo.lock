@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "10.3.6"
+version = "10.3.7"
 dependencies = [
  "css",
  "dev-client",
@@ -6448,7 +6448,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "14.0.0"
+version = "14.1.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6469,7 +6469,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "24.0.0"
+version = "24.1.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6552,7 +6552,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-layout"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "host-mock",
  "icons-lucide",
@@ -7788,7 +7788,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.4.8"
+version = "2.4.9"
 dependencies = [
  "catalog-scan",
  "inventory",

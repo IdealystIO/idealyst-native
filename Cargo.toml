@@ -539,7 +539,7 @@ dev-hot = { path = "crates/dev/hot", version = "1.7.1", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "4.3.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "2.0.0", registry = "idealyst" }
 runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "4.5.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "2.4.8", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "2.4.9", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "5.0.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server", version = "7.0.1", registry = "idealyst" }
 mcp-design-server = { path = "crates/mcp/design-server", version = "3.1.0", registry = "idealyst" }
@@ -608,7 +608,7 @@ backend-roku-macros = { path = "crates/backend/roku/macros", version = "1.5.2", 
 backend-roku-transpile = { path = "crates/backend/roku/transpile", version = "1.5.2", registry = "idealyst" }
 backend-terminal = { path = "crates/backend/terminal", version = "9.0.0", registry = "idealyst" }
 backend-cpu = { path = "crates/backend/cpu", version = "8.0.0", registry = "idealyst" }
-backend-web = { path = "crates/backend/web", version = "10.3.6", registry = "idealyst" }
+backend-web = { path = "crates/backend/web", version = "10.3.7", registry = "idealyst" }
 backend-ssr = { path = "crates/backend/ssr", version = "8.0.0", registry = "idealyst" }
 backend-email = { path = "crates/backend/email", version = "8.0.0", registry = "idealyst" }
 backend-windows = { path = "crates/backend/windows", version = "9.0.0", registry = "idealyst" }
@@ -639,12 +639,12 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # One core: these crates carry no core-selector feature any more, so the
 # workspace specs are plain — a `{ workspace = true }` consumer gets each
 # crate's own defaults.
-idea-theme = { path = "crates/ui/idea-theme", version = "14.0.0", registry = "idealyst" }
+idea-theme = { path = "crates/ui/idea-theme", version = "14.1.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "21.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "24.0.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "24.1.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "8.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "21.0.0", registry = "idealyst" }
-idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "1.0.0", registry = "idealyst" }
+idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "1.1.0", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "8.0.0", registry = "idealyst" }
 pan = { path = "crates/sdk/client/pan", version = "8.0.0", registry = "idealyst" }
 zoom = { path = "crates/sdk/client/zoom", version = "8.0.0", registry = "idealyst" }
