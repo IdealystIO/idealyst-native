@@ -126,14 +126,14 @@ fn a_function_is_called_by_name_with_named_arguments() {
 fn list_functions_reports_docs_and_signatures() {
     setup();
     let list: Value = serde_json::from_str(&invoke_command("list_functions", &json!({})).unwrap()).unwrap();
-    // The robot's own `clock.*` / `net.*` functions are always there; the
-    // app's own follow, sorted by name.
+    // The robot's own `clock.*` / `net.*` / `urls.*` functions are always
+    // there; the app's own follow, sorted by name.
     let all: Vec<&Value> = list.as_array().unwrap().iter().collect();
     let names: Vec<&str> = all.iter().map(|f| f["name"].as_str().unwrap()).collect();
-    for builtin in ["clock.set", "clock.clear", "net.intercept", "net.release"] {
+    for builtin in ["clock.set", "clock.clear", "net.intercept", "net.release", "urls.capture", "urls.opened"] {
         assert!(names.contains(&builtin), "{builtin}: {names:?}");
     }
-    let robot_own = |n: &str| n.starts_with("clock.") || n.starts_with("net.");
+    let robot_own = |n: &str| ["clock.", "net.", "urls."].iter().any(|p| n.starts_with(p));
     let app: Vec<&Value> = all.into_iter().filter(|f| !robot_own(f["name"].as_str().unwrap())).collect();
     let names: Vec<&str> = app.iter().map(|f| f["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["demo.seed", "demo.wait", "ping_unit", "set_balance"], "sorted by name");
