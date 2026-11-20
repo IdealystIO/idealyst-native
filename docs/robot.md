@@ -752,6 +752,11 @@ machine with `IDEALYST_WINDOWS_REMOTE` (docs/windows.md); `--linux` needs a
 Linux host. `--attach` drives an app already running — never one another
 `idealyst test` run launched (its registration is `under_test`).
 
+The session runs with `--no-watch`: the run builds the tree once and
+tests that build to the end. A save during the run (yours, or another
+session's in a shared checkout) does not rebuild or reload the app under
+the suite; the next run picks it up.
+
 The session gets its own port (`--port`, else a free one) on every
 platform, so a full-stack app's server — and the `IDEALYST_SERVER_URL` a
 native app dials — is the run's, never the developer's `idealyst dev`.

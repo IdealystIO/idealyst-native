@@ -1816,9 +1816,14 @@ struct DevOpts<'a> {
 ///   resumes the last session's base and replays its hot patches, and a
 ///   patch only reaches code the page calls after it lands — so the
 ///   suite could run code that is not the source on disk.
+/// - `--no-watch`: the run tests one snapshot of the tree. Watching, a save
+///   by another session in a shared checkout rebuilt and reloaded the app
+///   mid-run, and every test until the rebuild landed failed at its first
+///   call (the app busy past the relay's timeout). Nothing in the run asks
+///   for a rebuild, so the queued saves are never applied.
 fn dev_command(self_exe: &Path, o: &DevOpts) -> Command {
     let mut cmd = Command::new(self_exe);
-    cmd.arg("dev").arg("--local").arg(format!("--{}", o.platform));
+    cmd.arg("dev").arg("--local").arg(format!("--{}", o.platform)).arg("--no-watch");
     cmd.args(["--port", &o.port.to_string()]);
     if let Some(key) = o.isolated {
         cmd.args(["--isolated", key]);
@@ -2795,7 +2800,20 @@ mod tests {
         let envs = envs(&cmd);
         assert!(envs.contains(&("IDEALYST_DEV_NO_RESUME".into(), "1".into())), "{envs:?}");
         assert!(envs.contains(&("IDEALYST_TEST_DRIVER".into(), "1".into())), "{envs:?}");
-        assert_eq!(argv(&cmd), ["dev", "--local", "--web", "--port", "8080"]);
+        assert_eq!(argv(&cmd), ["dev", "--local", "--web", "--no-watch", "--port", "8080"]);
+    }
+
+    /// CrewForge, shared checkout: another session's saves rebuilt and
+    /// reloaded the test's own web app mid-run, and every test until the
+    /// rebuild landed timed out at its first call (3 real failures became
+    /// 30). The session the run launches does not act on saves, on any
+    /// platform.
+    #[test]
+    fn regression_the_test_session_ignores_saves_made_during_the_run() {
+        for platform in ["web", "ios", "android", "macos", "linux", "windows"] {
+            let argv = argv(&dev_command(Path::new("idealyst"), &opts(platform, 8080, None, &[])));
+            assert!(argv.iter().any(|a| a == "--no-watch"), "{platform}: {argv:?}");
+        }
     }
 
     /// A bare `cargo test` of the suite, run while `idealyst test` had the
@@ -2845,13 +2863,13 @@ mod tests {
         assert_eq!(
             argv(&cmd),
             [
-                "dev", "--local", "--ios", "--port", "9000", "--simulator", "iPhone 15",
+                "dev", "--local", "--ios", "--no-watch", "--port", "9000", "--simulator", "iPhone 15",
                 "--app-env", "DATABASE_URL=postgres://x/test?a=b", "--app-env", "EMPTY=",
             ]
         );
         assert!(envs(&cmd).contains(&("DATABASE_URL".into(), "postgres://x/test?a=b".into())), "the server inherits it");
         let cmd = dev_command(Path::new("idealyst"), &opts("android", 9000, Some("Pixel_8_API_35"), &[]));
-        assert_eq!(argv(&cmd), ["dev", "--local", "--android", "--port", "9000", "--emulator", "Pixel_8_API_35"]);
+        assert_eq!(argv(&cmd), ["dev", "--local", "--android", "--no-watch", "--port", "9000", "--emulator", "Pixel_8_API_35"]);
         assert!(parse_env(&["NOEQUALS".into()]).is_err());
         assert!(parse_env(&["=v".into()]).is_err());
     }

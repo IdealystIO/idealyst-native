@@ -555,6 +555,9 @@ idealyst test --windows  <project>     # a Windows host, or IDEALYST_WINDOWS_REM
 - builds the app fresh and launches it (`idealyst dev --local`) on a free
   port, so a full-stack app's server is the run's own, never the one your
   `idealyst dev` is using;
+- builds that tree once and tests it to the end (`--no-watch`): a save
+  during the run, yours or another session's in a shared checkout, does
+  not rebuild or reload the app under the suite;
 - runs that session as `idealyst dev --isolated test`: its build dirs,
   log, lock and relay files are its own, so it runs beside your
   `idealyst dev` of the same project, and its build cache stays warm

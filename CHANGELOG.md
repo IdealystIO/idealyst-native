@@ -3827,6 +3827,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   over the whole screen and took every touch. A screen with no node of its own is now wrapped in
   one view, which takes the flow-fill and lays its roots out as a column, as the web does.
 
+- **`idealyst test` tests one build of the tree** (`idealyst-cli`). Its dev session watched the
+  sources like any other, so in a shared checkout another session's saves rebuilt and reloaded
+  the app mid-run, and every test until the rebuild landed failed at its first call. The session
+  now runs with `--no-watch`; saves made during a run wait for the next one.
+
 - **A fragment screen in a swap navigator fills its slot again** (`runtime-vocabulary`). The view
   wrapped around a screen with no node of its own took the flow-fill only from the navigator's
   placement, and a swap navigator passes none, so the wrapper was content-sized and a
