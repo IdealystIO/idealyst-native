@@ -58,7 +58,9 @@
 //! `clock.set` / `clock.advance` / `clock.freeze` / `clock.zone` /
 //! `clock.clear` / `clock.now` fake the wall clock (`robot_clock`);
 //! `net.intercept` / `net.held` / `net.release` / `net.remove` /
-//! `net.clear` hold, delay or fail HTTP requests (`robot_net`). They are
+//! `net.clear` hold, delay or fail HTTP requests (`robot_net`);
+//! `urls.capture` / `urls.opened` / `urls.clear` record `open_url` instead
+//! of leaving the app (`robot_urls`). They are
 //! registered the first time the registry is used, so every robot build
 //! has them.
 
@@ -235,7 +237,7 @@ mod real {
         static BUILTINS: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The robot's own functions (`clock.*`, `net.*`), registered on the registry's
+    /// The robot's own functions (`clock.*`, `net.*`, `urls.*`), registered on the registry's
     /// first use so every robot build has them with no call from the app.
     fn builtins() {
         if BUILTINS.with(|b| b.replace(true)) {
@@ -243,6 +245,7 @@ mod real {
         }
         crate::robot_clock::register_all();
         crate::robot_net::register_all();
+        crate::robot_urls::register_all();
     }
 
     pub(super) fn unregister(name: &str) {

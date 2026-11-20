@@ -72,7 +72,23 @@ impl std::ops::DerefMut for AppGuard {
 /// Acquire the shared app for one test. Called by the `#[idea_test]` expansion;
 /// not part of the public authoring surface.
 #[doc(hidden)]
-pub fn __acquire(_test: &str) -> Acquire {
+pub fn __acquire(test: &str) -> Acquire {
+    ready(acquire(test))
+}
+
+/// Before a test that runs: the app records the external URLs it opens
+/// instead of leaving for them ([`App::opened_urls`]), starting empty.
+fn ready(acquired: Acquire) -> Acquire {
+    match acquired {
+        Acquire::Ready(mut app) => {
+            app.capture_opened_urls();
+            Acquire::Ready(app)
+        }
+        skip => skip,
+    }
+}
+
+fn acquire(_test: &str) -> Acquire {
     match CONN.get_or_init(establish) {
         Conn::Ready(m) => {
             // A panicking test poisons the mutex; recover the inner app so the
@@ -162,12 +178,12 @@ pub const fn __robot_test_is_now_idea_test() {}
 /// `cargo test -- --include-ignored` against whatever app is up.
 #[doc(hidden)]
 pub fn __acquire_on(test: &str, platforms: &[&str]) -> Acquire {
-    match __acquire(test) {
+    match acquire(test) {
         Acquire::Ready(mut app) => match app.try_platform() {
             Ok(Some(p)) if !platforms.contains(&p.as_str()) => {
                 Acquire::Skip(format!("it runs on {} only, and the app is {p}", platforms.join(", ")))
             }
-            Ok(_) => Acquire::Ready(app),
+            Ok(_) => ready(Acquire::Ready(app)),
             // Up but not answering: a failure, never a quiet pass.
             Err(e) => panic!("{test}: the app did not say which platform it is: {e}"),
         },

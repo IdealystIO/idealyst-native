@@ -21,8 +21,8 @@ fn web_only(app: &mut App) {
     app.call_function("web body", json!({}));
 }
 
-/// Against a web app: the web test runs, the mobile one skips without
-/// touching the app — and a body bound to a platform still reaches the
+/// Against a web app: the web test runs (after the harness's URL
+/// capture), the mobile one skips without touching the app — and a body bound to a platform still reaches the
 /// file's items (`json!`, `App`) through the module's `use super::*`.
 #[test]
 fn a_platform_bound_test_runs_only_on_its_platform() {
@@ -31,7 +31,7 @@ fn a_platform_bound_test_runs_only_on_its_platform() {
 
     web_only::robot_only_web();
     mobile_only::robot_only_ios_android();
-    assert_eq!(*calls.lock().unwrap(), ["web body"]);
+    assert_eq!(*calls.lock().unwrap(), ["urls.capture", "urls.clear", "web body"]);
 }
 
 /// Bare `cargo test` reports them ignored, under names that say where

@@ -494,6 +494,31 @@ app.net().fail_status("/_srv/save", 503, "down");
 app.net().clear();
 ```
 
+### External URLs: `urls.*`
+
+Also in every robot build. `open_url` leaves the app: a phone app goes to
+the background, where the OS suspends it, and every call after that times
+out. While capturing, `open_url` records the URL instead and the app stays
+in front, on every backend.
+
+| Function | Does |
+|---|---|
+| `urls.capture {on}` | `true`: record instead of opening. `false`: open again and drop the record. Returns `{capturing}` |
+| `urls.opened` | the URLs recorded, oldest first: `[String]` |
+| `urls.clear` | forget them; capturing stays as it was |
+
+The `#[idea_test]` harness turns capture on and clears it before each
+test, so a suite never leaves the app by accident. In `robot-test`:
+
+```rust
+app.test_id("download-pdf").click();
+let pdf = app.wait_opened_url(".pdf");    // waits up to set_timeout
+assert!(app.opened_urls().iter().any(|u| u.contains("/generated_document/")));
+```
+
+An MCP session does not capture: there `open_url` opens the URL as in the
+app.
+
 ### SDK test controls
 
 | SDK | Register | Functions |
@@ -646,7 +671,9 @@ a navigated-away screen).
 
 A busy app is "not yet". When a query goes unanswered — the relay replies
 `app response timed out: the relay waited N ms for the app to answer …`
-(the app is connected but its UI thread is busy), a direct bridge replies
+(the app is connected but its UI thread is busy; or the app is in the
+background — a native app tells the relay when it leaves the screen, and
+a phone suspends it there), a direct bridge replies
 the same about its UI thread, or no reply reaches the client within
 `App::set_io_timeout` (default 8 s; the client then says it gave up waiting
 on the relay/bridge) — or the relay has no app for a moment (a reload),

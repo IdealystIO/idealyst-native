@@ -611,6 +611,45 @@ impl App {
         crate::Net { app: self }
     }
 
+    /// The external URLs the app opened (`open_url`) during this test,
+    /// oldest first. Under the harness the app records them instead of
+    /// leaving for a browser or another app: a phone app that leaves is
+    /// suspended, and every call after it would time out.
+    ///
+    /// ```ignore
+    /// app.test_id("download-pdf").click();
+    /// assert!(app.opened_urls().iter().any(|u| u.ends_with(".pdf")));
+    /// ```
+    pub fn opened_urls(&mut self) -> Vec<String> {
+        let v = self.call_function("urls.opened", json!({}));
+        serde_json::from_value(v.clone()).unwrap_or_else(|_| panic!("urls.opened: unexpected shape {v}"))
+    }
+
+    /// Wait for the app to open an external URL containing `substring`,
+    /// and return it. See [`opened_urls`](Self::opened_urls).
+    pub fn wait_opened_url(&mut self, substring: &str) -> String {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            let urls = self.opened_urls();
+            if let Some(u) = urls.iter().find(|u| u.contains(substring)) {
+                return u.clone();
+            }
+            if Instant::now() >= deadline {
+                panic!("the app opened no URL containing {substring:?} within {:?}; it opened {urls:?}", self.timeout);
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    /// Have the app record external URLs instead of opening them
+    /// (`urls.capture`), and forget what it recorded. The harness runs it
+    /// before every test. One plain call each: an app built
+    /// before `urls.*` answers "no function named", and is left as it is.
+    pub(crate) fn capture_opened_urls(&mut self) {
+        let _ = self.try_call("call_function", json!({ "name": "urls.capture", "args": { "on": true } }));
+        let _ = self.try_call("call_function", json!({ "name": "urls.clear", "args": {} }));
+    }
+
     /// The app's camera: feed it from a test image
     /// ([`Camera`](crate::Camera)).
     pub fn camera(&mut self) -> crate::Camera<'_> {

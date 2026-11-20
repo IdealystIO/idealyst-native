@@ -703,6 +703,7 @@ pub fn start_relay_client(url: String) {
         // Read HERE: `platform()` is thread-local, seeded on the app's
         // thread by its backend — the dial thread would see the default.
         let hello = relay_hello(&current_identity(), platform_label());
+        track_visibility();
         std::thread::spawn(move || run_relay_client(url, hello, tx));
         // No `~/.idealyst/apps` registration here — the relay writes it on the
         // app's behalf (a browser app can't, and uniformity beats per-platform
@@ -727,6 +728,41 @@ fn relay_hello(identity: &AppIdentity, platform: &str) -> String {
         }
     })
     .to_string()
+}
+
+/// Whether the app is on screen, as `app_state` last reported it on the UI
+/// thread; read by the dial thread, which tells the relay. A phone
+/// suspends an app in the background, so the relay can then say why a
+/// request went unanswered instead of calling the app hung.
+#[cfg(not(target_arch = "wasm32"))]
+static APP_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Mirror `app_state`'s `visible` into [`APP_VISIBLE`]. Once per thread:
+/// `app_state` observers live for the thread.
+#[cfg(not(target_arch = "wasm32"))]
+fn track_visibility() {
+    runtime_tls::thread_local! {
+        static TRACKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if TRACKING.with(|t| t.replace(true)) {
+        return;
+    }
+    let store = |visible: bool| APP_VISIBLE.store(visible, std::sync::atomic::Ordering::SeqCst);
+    store(crate::app_state::current().visible);
+    crate::app_state::observe(move |s| store(s.visible));
+}
+
+/// The `visibility` push to send the relay, when the app's visibility
+/// differs from what this session last told it (`told`, which starts
+/// `true`: the relay assumes a new session is in front).
+#[cfg(not(target_arch = "wasm32"))]
+fn visibility_push(told: &mut bool) -> Option<String> {
+    let visible = APP_VISIBLE.load(std::sync::atomic::Ordering::SeqCst);
+    if visible == *told {
+        return None;
+    }
+    *told = visible;
+    Some(serde_json::json!({ "event": "visibility", "visible": visible }).to_string())
 }
 
 /// Reconnecting dial loop. Runs on a background thread for the process lifetime.
@@ -764,7 +800,15 @@ fn relay_session<S: std::io::Read + std::io::Write>(
     use tungstenite::Message;
     let mut subscribed = false;
     let mut last_rev = super::current_revision();
+    let mut told_visible = true;
     loop {
+        // Sent within a poll slice of going to the background, before a
+        // phone suspends the app (iOS: a second or two).
+        if let Some(push) = visibility_push(&mut told_visible) {
+            if ws.send(Message::Text(push.into())).is_err() || ws.flush().is_err() {
+                return;
+            }
+        }
         match ws.read() {
             Ok(Message::Text(t)) => {
                 if !serve_relay_frame(t.as_str(), ws, tx, &mut subscribed) {
@@ -1707,6 +1751,29 @@ mod tests {
             line.contains("\"event\":\"changed\""),
             "expected a live-update push, got: {line}"
         );
+    }
+
+    /// CrewForge's iOS run: the app opened a PDF in Safari, iOS suspended
+    /// it, and the relay could only call it "busy or hung". The dial
+    /// thread now tells the relay when `app_state` says the app left the
+    /// screen, and again when it is back.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn regression_the_relay_is_told_when_the_app_goes_to_the_background() {
+        use crate::app_state::{report, reset_for_tests, AppStateChange};
+        reset_for_tests();
+        track_visibility();
+        let mut told = true;
+        assert_eq!(visibility_push(&mut told), None, "in front: nothing to say");
+
+        report(AppStateChange::Visible(false));
+        let push = visibility_push(&mut told).expect("backgrounded: a push");
+        assert!(push.contains("\"visible\":false"), "{push}");
+        assert_eq!(visibility_push(&mut told), None, "said once");
+
+        report(AppStateChange::Visible(true));
+        assert!(visibility_push(&mut told).expect("back").contains("\"visible\":true"));
+        reset_for_tests();
     }
 
     #[test]

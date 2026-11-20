@@ -23,6 +23,7 @@
 //! relay → app   {"id":7,"cmd":"find_element","args":{…}}                          (a forwarded request)
 //! app → relay   {"id":7,"ok":{…}}  |  {"id":7,"err":"…"}                          (its response)
 //! app → relay   {"event":"changed","rev":42}                                      (a push, when subscribed)
+//! app → relay   {"event":"visibility","visible":false}                            (a push, when it changes)
 //! ```
 //!
 //! `hello` fields are all optional: `platform` (`web`, `macos`, `ios`, …),
@@ -262,6 +263,10 @@ struct Inner {
     on_apps: Option<OnApps>,
     /// Each web app session's pairing nonce, from its `hello`.
     nonces: Mutex<HashMap<u64, String>>,
+    /// App sessions that said they went to the background (a `visibility`
+    /// push), so a request that times out on one names why: a phone
+    /// suspends a backgrounded app, which then answers nothing.
+    backgrounded: Mutex<std::collections::HashSet<u64>>,
     /// See [`RelayConfig::cdp_profiles_dir`].
     cdp_profiles_dir: Option<PathBuf>,
     /// See [`RelayConfig::relaunch`].
@@ -329,6 +334,7 @@ impl Inner {
         let was_routed = self.app_session.load(Ordering::SeqCst) == session;
         let mut next = None;
         self.nonces.lock().unwrap().remove(&session);
+        self.backgrounded.lock().unwrap().remove(&session);
         self.update_apps(|apps| {
             apps.retain(|(a, _)| a.id != session);
             if was_routed {
@@ -427,6 +433,7 @@ pub fn start(config: RelayConfig) -> anyhow::Result<RelayHandle> {
         apps: Mutex::new(Vec::new()),
         on_apps: config.on_apps.clone(),
         nonces: Mutex::new(HashMap::new()),
+        backgrounded: Mutex::new(std::collections::HashSet::new()),
         cdp_profiles_dir: config.cdp_profiles_dir.clone(),
         relaunch: config.relaunch.clone(),
     });
@@ -578,6 +585,15 @@ fn route_from_app(text: &str, inner: &Arc<Inner>, session: u64) {
     if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
         if let Some((_, sink)) = inner.pending.lock().unwrap().remove(&id) {
             let _ = sink.send(v);
+        }
+        return;
+    }
+    if v.get("event").and_then(|e| e.as_str()) == Some("visibility") {
+        let mut hidden = inner.backgrounded.lock().unwrap();
+        if v.get("visible").and_then(|b| b.as_bool()).unwrap_or(true) {
+            hidden.remove(&session);
+        } else {
+            hidden.insert(session);
         }
         return;
     }
@@ -786,9 +802,14 @@ fn forward(inner: &Arc<Inner>, pinned: Option<u64>, cmd: &str, args: &Value, wai
         Ok(resp) => Ok(resp),
         Err(_) => {
             inner.pending.lock().unwrap().remove(&rid);
+            let why = if inner.backgrounded.lock().unwrap().contains(&session) {
+                "the app is in the background, where a phone suspends it: it opened a URL or \
+                 another app, or was sent home"
+            } else {
+                "the app is connected but busy or hung"
+            };
             Err(format!(
-                "app response timed out: the relay waited {} ms for the app to answer `{cmd}` \
-                 (the app is connected but busy or hung)",
+                "app response timed out: the relay waited {} ms for the app to answer `{cmd}` ({why})",
                 wait.as_millis()
             ))
         }
@@ -1024,6 +1045,7 @@ mod tests {
                 apps: Mutex::new(Vec::new()),
                 on_apps: None,
                 nonces: Mutex::new(HashMap::new()),
+                backgrounded: Mutex::new(std::collections::HashSet::new()),
                 cdp_profiles_dir: None,
                 relaunch: None,
             }),

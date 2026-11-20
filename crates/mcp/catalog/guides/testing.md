@@ -129,6 +129,13 @@ Two fakes are in every robot build, with nothing to register:
   included, to test what the UI does while a request is in flight or
   after it fails. WebSockets and SSE are not matched.
 
+- **External URLs** (`urls.capture`, `urls.opened`, `urls.clear`): the
+  harness turns capture on before each test, so `open_url` records the URL
+  instead of leaving the app. A phone app that leaves is suspended, and
+  every call after that times out with "the app is in the background".
+  Assert on what it opened with `app.opened_urls()` /
+  `app.wait_opened_url(".pdf")`.
+
 robot-test wraps the fakes:
 
 ```rust
@@ -181,7 +188,9 @@ accept it, and an assertion retries until it holds. Both give up after
 saw. Never sleep for a reactive update, a load or a navigation.
 
 A busy app is "not yet" too. When the app is slow to answer a lookup (the
-error reads `app response timed out: …` — the relay is up, the app is busy)
+error reads `app response timed out: …` — the relay is up, the app is busy;
+a timeout that says the app is in the background means it left the screen
+and won't answer)
 or no reply arrives within `App::set_io_timeout` (8 s by default; the error
 says the client gave up waiting on the relay), locating, assertions,
 `count()`, `label()` and `assert_path` ask again until the timeout. An

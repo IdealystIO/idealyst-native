@@ -1418,6 +1418,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **A test keeps the app in front when it opens a URL** (`runtime-shared` minor, `runtime-vocabulary`
+  minor, `robot-test` minor, `robot-relay` minor). New robot functions `urls.capture {on}`,
+  `urls.opened` and `urls.clear`: while capturing, `open_url` records the URL instead of handing it
+  to the system. The `#[idea_test]` harness turns it on and clears it before each test, and
+  `App::opened_urls()` / `App::wait_opened_url(substring)` assert on it. A native app also tells the
+  relay when it goes to the background, and a timeout on such an app says "the app is in the
+  background" where it said "busy or hung". CrewForge's iOS critical run froze halfway: a form test
+  opened a generated PDF, iOS handed it to Safari and suspended the app, and every later call timed
+  out as if the app were hung in its layout pass. An MCP session does not capture.
+
 - **`TableCards(content_sized = true)` for a short list inside a scrolling page** (`idea-ui`
   minor). `TableCards` is a windowed list that takes its height from a bounded parent; inside a
   page that scrolls as a whole there is none, and on iOS the list resolved 0 tall and drew no rows

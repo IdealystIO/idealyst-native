@@ -316,6 +316,10 @@ pub fn install_current_color_scheme(scheme: ColorScheme) {
 runtime_tls::thread_local! {
     static URL_OPENER: std::cell::RefCell<Option<Rc<dyn Fn(&str)>>> =
         const { std::cell::RefCell::new(None) };
+    /// While a test captures external opens ([`capture_url_opens`]): the
+    /// URLs [`open_url`] was asked for, oldest first. `None` when off.
+    static CAPTURED_URLS: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Open `url` in the host platform's external handler — a new browser
@@ -339,8 +343,21 @@ runtime_tls::thread_local! {
 /// success signal, matching the lowest common denominator across
 /// `window.open` / `openURL` / `startActivity`.
 ///
+/// While a test captures external opens ([`capture_url_opens`]) the
+/// URL is recorded instead and the app stays in front.
+///
 /// [`Link`]: crate::primitives::link
 pub fn open_url(url: &str) {
+    let captured = CAPTURED_URLS.with(|c| match c.borrow_mut().as_mut() {
+        Some(urls) => {
+            urls.push(url.to_string());
+            true
+        }
+        None => false,
+    });
+    if captured {
+        return;
+    }
     // Clone the Rc out before invoking so the opener can re-enter
     // framework code (e.g. trigger a re-mount) without tripping a
     // RefCell double-borrow on this thread-local.
@@ -364,6 +381,38 @@ pub fn open_url(url: &str) {
 /// `AppEnvOps::url_opener` off the backend.
 pub fn install_url_opener(opener: Option<Rc<dyn Fn(&str)>>) {
     URL_OPENER.with(|cell| *cell.borrow_mut() = opener);
+}
+
+/// Record [`open_url`]'s URLs instead of opening them (`true`), or open
+/// them again (`false`). The robot's `urls.capture`, which the test
+/// harness turns on: a phone app that opens a URL goes to the background
+/// and the OS suspends it, which would end the run; a browser tab would
+/// keep running. Capturing makes every backend stay in front. Turning it
+/// on keeps what was already captured; turning it off drops it.
+pub fn capture_url_opens(on: bool) {
+    CAPTURED_URLS.with(|c| {
+        let mut c = c.borrow_mut();
+        match (on, c.is_some()) {
+            (true, false) => *c = Some(Vec::new()),
+            (false, _) => *c = None,
+            (true, true) => {}
+        }
+    });
+}
+
+/// The URLs [`open_url`] recorded while capturing, oldest first; empty
+/// when not capturing.
+pub fn captured_url_opens() -> Vec<String> {
+    CAPTURED_URLS.with(|c| c.borrow().clone().unwrap_or_default())
+}
+
+/// Forget the recorded URLs; capturing stays as it was.
+pub fn clear_captured_url_opens() {
+    CAPTURED_URLS.with(|c| {
+        if let Some(urls) = c.borrow_mut().as_mut() {
+            urls.clear();
+        }
+    });
 }
 
 /// Whether the active backend installed a URL opener — i.e. whether
@@ -568,6 +617,33 @@ mod tests {
         assert_eq!(Platform::Custom("").canonical(), "");
         assert_eq!(Platform::Custom("Sim").canonical(), "Sim");
         assert_eq!(Platform::Custom("runtime-server").canonical(), "runtime-server");
+    }
+
+    /// CrewForge's iOS run froze mid-suite: a test opened a PDF link,
+    /// `open_url` handed it to Safari, and iOS suspended the app, so every
+    /// robot call after it timed out. While capturing, the opener is never
+    /// reached and the URL is recorded instead.
+    #[test]
+    fn regression_a_captured_open_url_never_reaches_the_opener() {
+        let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = opened.clone();
+        install_url_opener(Some(Rc::new(move |u: &str| sink.borrow_mut().push(u.to_string()))));
+
+        capture_url_opens(true);
+        open_url("http://h/doc.pdf");
+        assert!(opened.borrow().is_empty(), "a captured URL must not leave the app");
+        assert_eq!(captured_url_opens(), vec!["http://h/doc.pdf".to_string()]);
+
+        capture_url_opens(true);
+        assert_eq!(captured_url_opens().len(), 1, "turning it on again keeps the record");
+        clear_captured_url_opens();
+        assert!(captured_url_opens().is_empty());
+
+        capture_url_opens(false);
+        open_url("https://example.com");
+        assert_eq!(*opened.borrow(), vec!["https://example.com".to_string()], "off: opened again");
+        assert!(captured_url_opens().is_empty());
+        install_url_opener(None);
     }
 
     /// `install_current_platform` must round-trip through the global

@@ -318,6 +318,31 @@ fn dial_with_hello(relay: &robot_relay::RelayHandle, hello: Value) -> tungstenit
     ws
 }
 
+/// CrewForge's iOS run reported its app "busy or hung" when the app had
+/// opened a PDF in Safari and iOS had suspended it. An app that says it
+/// went to the background gets a timeout naming that; back in front, the
+/// old wording returns.
+#[test]
+fn regression_a_timeout_on_a_backgrounded_app_says_it_is_in_the_background() {
+    let relay = start_relay();
+    let mut app = dial_with_hello(&relay, json!({ "platform": "ios" }));
+    let mut bridge = TcpBridge::connect(relay.tcp_addr);
+    let mut timeout_reason = || {
+        let line = json!({ "id": 5, "cmd": "ping", "args": {}, "timeout_ms": 50 }).to_string() + "\n";
+        bridge.writer.write_all(line.as_bytes()).unwrap();
+        bridge.read_frame()["err"].as_str().unwrap_or_default().to_string()
+    };
+    let mut push = |visible: bool| {
+        app.send(Message::Text(json!({ "event": "visibility", "visible": visible }).to_string().into())).unwrap();
+        app.flush().unwrap();
+    };
+
+    push(false);
+    eventually("a backgrounded timeout", || timeout_reason().contains("in the background"));
+    push(true);
+    eventually("the plain timeout again", || timeout_reason().contains("busy or hung"));
+}
+
 /// The dev panel's robot column is built from these: every open
 /// connection is listed with what its `hello` said, the newest is the
 /// active one, and the observer's latest call always equals the present.

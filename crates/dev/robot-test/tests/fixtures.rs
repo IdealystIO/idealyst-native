@@ -80,6 +80,10 @@ fn fixtures_wrap_the_test_body() {
     assert_eq!(
         take(&calls),
         [
+            // Before every test the harness has the app record external
+            // URLs instead of leaving for them.
+            r#"urls.capture {"on":true}"#,
+            r#"urls.clear {}"#,
             r#"test.reset {}"#,
             r#"test.sign_in {"email":"ada@example.com"}"#,
             r#"test.seed {"rows":2}"#,
