@@ -29,7 +29,9 @@ component_styles! {
     pub Table<IdeaThemeRef> {
         slot frame {
             base(t) {
-                background: t.color.surface(),
+                // The framed table's own fill (`color-table-surface`, the
+                // `surface` value by default); `plain` below clears it.
+                background: t.color.table_surface(),
                 border_top_width: 1.0,
                 border_right_width: 1.0,
                 border_bottom_width: 1.0,
@@ -462,22 +464,24 @@ component_styles! {
             }
             // Frozen-column axis — see `head_cell`. A body cell has no
             // background of its own, so the pinned arms pin an OPAQUE
-            // surface background too: without it the cells sliding
-            // underneath would show straight through the frozen column.
+            // background too: without it the cells sliding underneath
+            // would show straight through the frozen column. A framed
+            // table's frozen cells take its fill (`table_surface`); a
+            // plain one's the page's (`surface`, the compounds below).
             variant pinned {
                 #[default]
                 none(_t) {}
                 left(t) {
                     position: Position::Sticky,
                     left: 0,
-                    background: t.color.surface(),
+                    background: t.color.table_surface(),
                     border_right_width: 1.0,
                     border_right_color: t.color.border(),
                 }
                 right(t) {
                     position: Position::Sticky,
                     right: 0,
-                    background: t.color.surface(),
+                    background: t.color.table_surface(),
                     border_left_width: 1.0,
                     border_left_color: t.color.border(),
                 }
@@ -533,9 +537,24 @@ component_styles! {
             // takes the row tint WITH its row instead of sitting inert while
             // its neighbours highlight.
             compound (pinned: left, row_hovered: off)(t) {
-                background: t.color.surface(),
+                background: t.color.table_surface(),
             }
             compound (pinned: right, row_hovered: off)(t) {
+                background: t.color.table_surface(),
+            }
+            // `Table(variant = Plain)` selects this on every cell: a plain
+            // table has no fill of its own, so its frozen cells (and its
+            // rows while one is dragged) paint the page's surface. Declared
+            // before the footer and tone compounds, which win over it.
+            variant variant {
+                #[default]
+                framed(_t) {}
+                plain(_t) {}
+            }
+            compound (variant: plain, pinned: left, row_hovered: off)(t) {
+                background: t.color.surface(),
+            }
+            compound (variant: plain, pinned: right, row_hovered: off)(t) {
                 background: t.color.surface(),
             }
             compound (pinned: left, row_hovered: on)(t) {
@@ -571,6 +590,9 @@ component_styles! {
                 }
             }
             compound (drag: behind, row_hovered: off)(t) {
+                background: t.color.table_surface(),
+            }
+            compound (variant: plain, drag: behind, row_hovered: off)(t) {
                 background: t.color.surface(),
             }
             compound (drag: lifted, pinned: left)(_t) {
@@ -1094,7 +1116,8 @@ component_styles! {
 
         slot card {
             base(t) {
-                background: t.color.surface(),
+                // A framed table's fill: the cards are its narrow form.
+                background: t.color.table_surface(),
                 border_top_width: 1.0,
                 border_right_width: 1.0,
                 border_bottom_width: 1.0,

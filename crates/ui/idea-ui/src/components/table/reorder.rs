@@ -458,7 +458,7 @@ mod tests {
             assert_eq!(behind[0].position, Some(runtime_core::Position::Sticky));
             assert_eq!(
                 behind[1].background.as_ref().and_then(|b| b.name().map(str::to_string)).as_deref(),
-                Some("color-surface"),
+                Some("color-table-surface"),
                 "a row behind the drag is opaque"
             );
         });
@@ -489,7 +489,7 @@ mod tests {
             for behind in [&band_b, &loose] {
                 assert_eq!(
                     cell_rules(behind)[1].background.as_ref().and_then(|b| b.name().map(str::to_string)).as_deref(),
-                    Some("color-surface"),
+                    Some("color-table-surface"),
                     "every other row is opaque behind the drag"
                 );
             }

@@ -216,6 +216,20 @@ pub struct Colors {
     /// with it.
     pub table_header: Tokenized<Color>,
 
+    /// A framed `Table`'s own fill: its frame, its frozen body cells, its
+    /// rows while a row is dragged, and its `TableCards` cards (its narrow
+    /// form). Follows `surface` by default: the stock themes set it to the
+    /// `color-surface` token, which installs as this theme's `surface`
+    /// value, so a theme that recolours `surface` moves its tables with
+    /// it. Set a value of its own to fill framed tables apart.
+    ///
+    /// Component-scoped so an app can fill framed tables apart from the
+    /// page around them (white cards on a grey page) without restyling
+    /// the cells, which would cover the row tones. A `Plain` table has no
+    /// fill of its own: its frozen cells keep `surface`, the page they
+    /// sit on.
+    pub table_surface: Tokenized<Color>,
+
     /// Row tones on a `Table` (`TableRow(tone = …)`): the resting tint
     /// of a highlighted / warning / danger row, and the tint it takes
     /// while hovered or pressed.
@@ -547,6 +561,18 @@ fn canonicalize_color(name: &'static str, t: &Tokenized<Color>) -> Tokenized<Col
     }
 }
 
+/// What `table_surface` installs: its own value, or, while it still
+/// names the `color-surface` token (the stock themes' default, or an app
+/// that copied `colors.surface` into it), the theme's `surface`. So a
+/// theme that recolours `surface` and never mentions `table_surface`
+/// keeps its framed tables on its own surface rather than the stock one.
+fn table_surface_of(c: &Colors) -> &Tokenized<Color> {
+    match &c.table_surface {
+        Tokenized::Token { name: "color-surface", .. } => &c.surface,
+        own => own,
+    }
+}
+
 /// [`canonicalize_color`] over every [`Colors`] field. The name each
 /// field maps to must stay in sync with [`CANONICAL_NEUTRAL_TOKENS`]
 /// and with `ThemeTokens::tokens()`; the
@@ -566,6 +592,7 @@ fn canonicalize_colors(c: &Colors) -> Colors {
         focus_ring: canonicalize_color("color-focus-ring", &c.focus_ring),
         overlay: canonicalize_color("color-overlay", &c.overlay),
         table_header: canonicalize_color("color-table-header", &c.table_header),
+        table_surface: canonicalize_color("color-table-surface", table_surface_of(c)),
         table_row_highlight: canonicalize_color("color-table-row-highlight", &c.table_row_highlight),
         table_row_highlight_hover: canonicalize_color("color-table-row-highlight-hover", &c.table_row_highlight_hover),
         table_row_warning: canonicalize_color("color-table-row-warning", &c.table_row_warning),
@@ -670,7 +697,7 @@ fn canonicalize_palette(p: &Palette) -> Palette {
 /// Canonical token names for the non-intent neutral colors, in the same
 /// field order as [`Colors`]. The Nth entry is the canonical key for the
 /// Nth `Colors` field.
-pub const CANONICAL_NEUTRAL_TOKENS: [&str; 19] = [
+pub const CANONICAL_NEUTRAL_TOKENS: [&str; 20] = [
     "color-background",
     "color-surface",
     "color-surface-alt",
@@ -684,6 +711,7 @@ pub const CANONICAL_NEUTRAL_TOKENS: [&str; 19] = [
     "color-focus-ring",
     "color-overlay",
     "color-table-header",
+    "color-table-surface",
     "color-table-row-highlight",
     "color-table-row-highlight-hover",
     "color-table-row-warning",
@@ -1316,6 +1344,10 @@ pub fn light_theme() -> IdeaThemeDefaults {
             // Defaults to the `surface_alt` value — table headers keep
             // the exact tint they had before the token existed.
             table_header: tok("color-table-header", "#f5f5f4"),
+            // Names `color-surface`: it follows this theme's `surface`
+            // (and an app's recoloured one) until an app sets its own
+            // (`table_surface_of`).
+            table_surface: tok("color-surface", "#fcfcfb"),
 
             // Table row tones — the intent soft tints, which are already
             // opaque in this theme; hover steps one shade deeper.
@@ -1407,6 +1439,8 @@ pub fn dark_theme() -> IdeaThemeDefaults {
 
             // Matches dark `surface_alt` — see `light_theme`.
             table_header: tok("color-table-header", "#252524"),
+            // Follows dark `surface` — see `light_theme`.
+            table_surface: tok("color-surface", "#171716"),
 
             // Table row tones — the dark intent tints (rgba over the
             // surface) precomposited onto `surface` #171716, so they stay
@@ -2091,6 +2125,34 @@ mod tests {
         }
     }
 
+    /// A theme that recolours `surface` and never sets `table_surface`
+    /// keeps framed tables on its own surface; one that sets it gets it.
+    #[test]
+    fn table_surface_follows_surface_until_a_theme_sets_its_own() {
+        use crate::theme_runtime::ThemeTokens;
+        let installed = |t: IdeaThemeDefaults| {
+            IdeaThemeRef::new(t)
+                .tokens()
+                .into_iter()
+                .find(|e| e.name == "color-table-surface")
+                .map(|e| match e.value {
+                    runtime_core::TokenValue::Color(c) => c.0,
+                    other => panic!("not a color: {other:?}"),
+                })
+        };
+        for stock in [light_theme(), dark_theme()] {
+            let surface = stock.colors.surface.value().0.clone();
+            assert_eq!(installed(stock).as_deref(), Some(surface.as_str()), "stock: the surface value");
+        }
+        // A brand that recolours its surface moves its tables with it.
+        let mut brand = light_theme();
+        brand.colors.surface = Tokenized::Literal(Color("#eeeeee".into()));
+        assert_eq!(installed(brand.clone()).as_deref(), Some("#eeeeee"));
+        // A value of its own is its own.
+        brand.colors.table_surface = Tokenized::Literal(Color("#ffffff".into()));
+        assert_eq!(installed(brand).as_deref(), Some("#ffffff"));
+    }
+
     /// Drift guard for the canonicalizing read path: EVERY color field a
     /// theme exposes must come back as a canonical token, and the set of
     /// names the read path produces must be exactly the set of color
@@ -2116,6 +2178,7 @@ mod tests {
             border: lit(), border_hover: lit(), border_strong: lit(),
             focus_ring: lit(), overlay: lit(),
             table_header: lit(),
+            table_surface: lit(),
             table_row_highlight: lit(),
             table_row_highlight_hover: lit(),
             table_row_warning: lit(),
@@ -2153,6 +2216,7 @@ mod tests {
             ("border", &c.border), ("border_hover", &c.border_hover),
             ("border_strong", &c.border_strong), ("focus_ring", &c.focus_ring),
             ("overlay", &c.overlay), ("table_header", &c.table_header),
+            ("table_surface", &c.table_surface),
             ("table_row_highlight", &c.table_row_highlight),
             ("table_row_highlight_hover", &c.table_row_highlight_hover),
             ("table_row_warning", &c.table_row_warning),

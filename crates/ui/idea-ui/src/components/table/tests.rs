@@ -1197,7 +1197,7 @@ fn plain_table_surface_has_no_frame() {
 
         let framed = runtime_core::resolve_style(&TableStyles::frame().into_style_application());
         assert_eq!(framed.border_top_width.as_ref().map(|w| w.resolve()), Some(1.0));
-        assert_eq!(bg_token(&framed).as_deref(), Some("color-surface"));
+        assert_eq!(bg_token(&framed).as_deref(), Some("color-table-surface"), "framed: the table's own fill");
     });
 }
 
@@ -3457,5 +3457,43 @@ fn drag_from_row_drags_a_plain_row_from_its_cells_and_keeps_its_click() {
         assert_eq!(*starts.borrow(), vec![0], "a press that moves picks the row up");
         role(&ev(TouchPhase::Ended, 40.0, 1_032));
         assert_eq!(clicks.get(), 1, "and clicks nothing");
+    });
+}
+
+/// CrewForge: an app with white framed tables on a grey page had no one
+/// place to set a framed table's fill. A restyle of the frozen cells
+/// beat the row tones (restyle compounds land after the sheet's), so a
+/// toned row lost its tint on its frozen cells. A framed table now reads
+/// `color-table-surface` for its frame, frozen cells, the rows behind a
+/// drag, and its cards; a plain table keeps `color-surface` (it has no
+/// fill of its own); and a row's tone, its footer and its hover still
+/// win on a frozen cell.
+#[test]
+fn regression_a_framed_table_fills_from_its_own_token_under_the_row_tones() {
+    with_test_world(|| {
+        let bg = |app: runtime_core::StyleApplication| bg_token(&runtime_core::resolve_style(&app));
+        let cell = || TableStyles::body_cell().into_style_application();
+        let plain = || cell().with("variant", "plain");
+
+        assert_eq!(bg(TableStyles::frame().into_style_application()).as_deref(), Some("color-table-surface"));
+        assert_eq!(bg(TableStyles::card().into_style_application()).as_deref(), Some("color-table-surface"));
+        for pin in ["left", "right"] {
+            let frozen = cell().with("pinned", pin).with("row_hovered", "off");
+            assert_eq!(bg(frozen.clone()).as_deref(), Some("color-table-surface"), "framed {pin}");
+            let plain_frozen = plain().with("pinned", pin).with("row_hovered", "off");
+            assert_eq!(bg(plain_frozen.clone()).as_deref(), Some("color-surface"), "plain {pin}");
+            for frozen in [frozen, plain_frozen] {
+                assert_eq!(
+                    bg(frozen.clone().with("tone", "highlight")).as_deref(),
+                    Some("color-table-row-highlight"),
+                    "a toned row keeps its tint on its frozen cells"
+                );
+                assert_eq!(bg(frozen.clone().with("section", "foot")).as_deref(), Some("color-table-header"));
+                assert_eq!(bg(frozen.with("row_hovered", "on")).as_deref(), Some("color-surface-alt"));
+            }
+        }
+        let behind = |app: runtime_core::StyleApplication| bg(app.with("drag", "behind").with("row_hovered", "off"));
+        assert_eq!(behind(cell()).as_deref(), Some("color-table-surface"));
+        assert_eq!(behind(plain()).as_deref(), Some("color-surface"));
     });
 }

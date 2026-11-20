@@ -293,6 +293,7 @@ mod tests {
             t.color.focus_ring(),
             t.color.overlay(),
             t.color.table_header(),
+            t.color.table_surface(),
             t.color.table_row_highlight(),
             t.color.table_row_highlight_hover(),
             t.color.table_row_warning(),

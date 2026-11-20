@@ -11,6 +11,16 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **`Colors` gains `table_surface`** (`idea-theme` major, `idea-ui`). A new `color-table-surface`
+  token is a framed `Table`'s own fill: its frame, its frozen body cells, its rows behind a drag,
+  and its `TableCards` cards. It follows the theme's `surface` (the stock themes set it to the
+  `color-surface` token), so nothing looks different until an app sets it, a custom `surface`
+  included; a `Plain` table keeps `surface`. Setting it is how an app fills framed tables
+  apart from the page. Before, that took a restyle compound on the frozen cells, which beat the
+  row tones (restyle compounds land after the sheet's), so every tone and the footer had to be
+  restated after it. Code that builds a `Colors { .. }` literal must add the field, and
+  `CANONICAL_NEUTRAL_TOKENS` has 20 entries.
+
 - **The idea theme has a control fill, a near-white primary surface, gray neutrals, and round buttons**
   (`idea-theme` major, `idea-ui` minor). Every app on the stock theme looks different after
   upgrading:

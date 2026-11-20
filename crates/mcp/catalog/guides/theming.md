@@ -46,6 +46,13 @@ NOT an idea-ui-only facility:
   `TableRow(tone = …)`. They are opaque by contract — unlike the dark
   theme's translucent intent `soft_bg` slots — because a frozen column slides
   over the columns behind it; keep any override opaque.
+  `table_surface` (`color-table-surface`) is a framed `Table`'s own fill: its
+  frame, its frozen columns, its rows behind a drag, and its `TableCards`
+  cards. It follows `surface` (a theme that recolours `surface` moves its
+  tables with it) until you set it; set it to fill framed tables apart from
+  the page (white tables on a grey page). A `Plain` table has no
+  fill of its own and keeps `surface`. Row tones, the footer and hover still
+  tint frozen cells over it.
 - `intents` — the seven semantic palettes (`primary`, `secondary`, `neutral`,
   `success`, `danger`, `warning`, `info`), each an `IntentColors` with six slots
   (`solid_bg`, `solid_text`, `soft_bg`, `soft_text`, `fg`, `border`).

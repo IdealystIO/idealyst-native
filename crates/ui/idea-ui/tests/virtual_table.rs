@@ -279,12 +279,13 @@ fn row_tone_tints_every_cell_of_the_row() {
 }
 
 /// A frozen column is opaque: rows scroll beneath it, and a transparent
-/// frozen cell would show them through.
+/// frozen cell would show them through. A framed table's frozen cells
+/// take the table's own fill.
 #[test]
 fn frozen_body_cells_are_opaque() {
     let f = table(10, |r, _| r);
     let pinned = f.mount(1, 3);
-    assert_eq!(f.bg(pinned).as_deref(), Some("color-surface"));
+    assert_eq!(f.bg(pinned).as_deref(), Some("color-table-surface"));
 }
 
 /// A row whose record changed under the same id gets a new cell key, so the

@@ -41,8 +41,9 @@ pub fn colors() -> Element {
     // Component-scoped tokens: not part of the neutral canvas, but
     // still theme-bound. One entry per component that owns a surface
     // the neutrals can't express without collateral damage.
-    let component_tokens: [(&str, &str, &str); 7] = [
+    let component_tokens: [(&str, &str, &str); 8] = [
         ("Table header", "color-table-header", "#f5f5f4"),
+        ("Table surface", "color-table-surface", "#fcfcfb"),
         ("Table row · highlight", "color-table-row-highlight", "#eef2ff"),
         ("Table row · highlight hover", "color-table-row-highlight-hover", "#e0e7ff"),
         ("Table row · warning", "color-table-row-warning", "#fffbeb"),
@@ -70,6 +71,9 @@ pub fn colors() -> Element {
                     would make them un-retintable. Table headers ship with the surface-alt value, \
                     so the default look is identical — but overriding color-table-header repaints \
                     the header band alone, leaving cards, field wells and row hover untouched. \
+                    color-table-surface is a framed table's own fill (its frame, frozen \
+                    columns and phone cards). It follows color-surface until a theme sets it, so framed tables \
+                    can sit apart from the page while a plain table keeps the page's surface. \
                     The table-row tokens tint `TableRow(tone = …)`; unlike the intent soft \
                     tints they are opaque in every theme, because a frozen column slides over \
                     the columns behind it.".to_string())
