@@ -1102,3 +1102,36 @@ fn a_split_view_hands_out_its_side_scroller() {
         assert_eq!(host_mock::take_handle_log().len(), 1, "{mode:?}");
     }
 }
+
+/// CrewForge: `Action::tone`, the documented way to mark a destructive
+/// verb, never reached an action menu's rows: both forms passed only the
+/// label, icon, handler and test id on. A toned entry now draws its label
+/// in the tone's ink in the anchored menu and in the phone's sheet.
+#[test]
+fn an_action_menu_entry_draws_in_its_tone_at_either_form() {
+    for width in [PHONE, DESKTOP] {
+        host_mock::pump::install_scheduler();
+        let h = Harness::new();
+        let inked = Rc::new(Cell::new(0));
+        let seen = inked.clone();
+        h.set_style_line(move |node, rules| {
+            let name = rules.color.as_ref().and_then(|c| c.name().map(str::to_string));
+            if name.as_deref() == Some("intent-danger-fg") {
+                seen.set(seen.get() + 1);
+            }
+            format!("apply_style n{node}")
+        });
+        let tree = h.world.enter(|| {
+            install_idea_theme(light_theme());
+            viewport_size().set(ViewportSize::new(width, 800.0));
+            let actions = vec![Action::new("Rename", noop()), Action::new("Delete", noop()).tone(idea_ui::tone::Danger)];
+            ui! { ActionMenu(actions = actions) }
+        });
+        h.flush();
+        let _realized = h.mount(tree);
+        h.flush();
+        (h.press_handler(0))();
+        h.flush();
+        assert!(inked.get() > 0, "{width}: the toned entry's label takes the danger ink");
+    }
+}

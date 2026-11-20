@@ -3837,6 +3837,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   over the whole screen and took every touch. A screen with no node of its own is now wrapped in
   one view, which takes the flow-fill and lays its roots out as a column, as the web does.
 
+- **Action menus draw an entry in its `Action::tone`** (`idea-ui-layout`). `ActionMenu` and
+  `ActionMenuSurface` passed only the label, icon, handler and test id to each row, so
+  `Action::new(..).tone(tone::Danger)` drew a destructive verb in the default ink. The row's label
+  and icon now take the tone's ink in the anchored menu and in the phone's sheet;
+  `SheetActionRow` gains a `tone` prop for it.
+
 - **A field in a popover opened from a modal takes focus on the web** (`backend-web`). The modal's
   portal traps focus with a document `focusin` listener that sent focus back whenever it landed
   outside the modal's portal, and a `Popover` (or menu) opened from inside the modal is a later

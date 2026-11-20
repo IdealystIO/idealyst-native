@@ -57,7 +57,9 @@ impl Action {
         self
     }
 
-    /// The button's tone: `tone::Danger` for a verb that destroys.
+    /// The verb's tone: `tone::Danger` for a verb that destroys. A button
+    /// takes it, and an action menu's row draws its label and icon in the
+    /// tone's ink, anchored or as a phone's sheet.
     pub fn tone(mut self, tone: impl Into<ToneRef>) -> Self {
         self.tone = Some(tone.into());
         self

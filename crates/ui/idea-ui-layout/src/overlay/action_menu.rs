@@ -5,7 +5,8 @@ use std::rc::Rc;
 
 use icons_lucide::ELLIPSIS_VERTICAL;
 use idea_ui::{
-    variant, Icon, IconButton, IconButtonSize, Menu, MenuItem, MenuLabel, Stack, StackAxis, StackGap, StackJustify,
+    variant, Icon, IconButton, IconButtonSize, IdeaThemeRef, Menu, MenuItem, MenuLabel, MenuSlotStyles, Stack,
+    StackAxis, StackGap, StackJustify, ToneRef,
 };
 use runtime_core::{
     component, rx, signal, ui, AnchorTarget, Element, IconData, IdealystSchema, PressableHandle, Reactive, Ref,
@@ -288,9 +289,15 @@ struct SheetEntryProps {
 #[component]
 fn SheetEntry(props: &SheetEntryProps) -> Element {
     let action = props.action.clone();
-    let leading = action.icon.map(|d| ui! { Icon(data = d, size = SHEET_ICON_PX) });
+    let tone = action.tone.clone();
+    let leading = action.icon.map(|d| ui! { Icon(data = d, size = SHEET_ICON_PX, tone = tone.clone()) });
     ui! {
-        SheetActionRow(label = action.label.clone(), leading = leading, on_press = action.on_press.clone())
+        SheetActionRow(
+            label = action.label.clone(),
+            leading = leading,
+            on_press = action.on_press.clone(),
+            tone = action.tone.clone(),
+        )
     }
 }
 
@@ -310,13 +317,32 @@ struct MenuEntryProps {
 #[component]
 fn MenuEntry(props: &MenuEntryProps) -> Element {
     let action = props.action.clone();
-    let leading = action.icon.map(|d| ui! { Icon(data = d, size = MENU_ICON_PX) });
+    let tone = action.tone.clone();
+    let leading = action.icon.map(|d| ui! { Icon(data = d, size = MENU_ICON_PX, tone = tone.clone()) });
     ui! {
         MenuItem(
             label = action.label.clone(),
             on_select = action.on_press.clone(),
             leading = leading,
             test_id = action.test_id,
+            styles = toned_item(action.tone.as_ref()),
         )
+    }
+}
+
+/// A menu row's label in its action's tone: the tone's ink, as a toned
+/// `Typography` draws it (a token, so it follows a theme swap). No tone,
+/// no override.
+fn toned_item(tone: Option<&ToneRef>) -> MenuSlotStyles {
+    let ink = tone.and_then(|tone| {
+        let theme = idea_ui::active_theme_untracked();
+        theme.downcast_ref::<IdeaThemeRef>().map(|th| tone.stroke_fg(th))
+    });
+    match ink {
+        Some(color) => MenuSlotStyles::default().item_label(runtime_core::StyleRules {
+            color: Some(color),
+            ..Default::default()
+        }),
+        None => MenuSlotStyles::default(),
     }
 }

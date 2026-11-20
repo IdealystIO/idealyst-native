@@ -5,7 +5,9 @@
 use std::rc::Rc;
 
 use icons_lucide::{CHECK, CHEVRON_RIGHT};
-use idea_ui::{menu_checkbox, typography_kind, Icon, MenuLabel, Stack, StackAlign, StackAxis, StackGap, Typography};
+use idea_ui::{
+    menu_checkbox, typography_kind, Icon, MenuLabel, Stack, StackAlign, StackAxis, StackGap, ToneRef, Typography,
+};
 use runtime_core::{
     component, icon, pressable, stylesheet, ui, AlignItems, Element, FlexDirection, IdealystSchema, IntoElement,
     JustifyContent, Length, Reactive, StyleApplication,
@@ -48,11 +50,15 @@ pub struct SheetActionRowProps {
     /// Runs on press. Closing the sheet is this handler's to do.
     #[prop(static)]
     pub on_press: Rc<dyn Fn()>,
+    /// The label in a tone's ink (`tone::Danger` for a verb that
+    /// destroys). A tinted `leading` icon is the caller's to pass.
+    #[prop(static)]
+    pub tone: Option<ToneRef>,
 }
 
 impl Default for SheetActionRowProps {
     fn default() -> Self {
-        Self { label: String::new(), leading: None, on_press: Rc::new(|| {}) }
+        Self { label: String::new(), leading: None, on_press: Rc::new(|| {}), tone: None }
     }
 }
 
@@ -72,12 +78,13 @@ pub fn SheetActionRow(props: SheetActionRowProps) -> Element {
     let label = props.label;
     let leading = props.leading;
     let on_press = props.on_press;
+    let tone = props.tone;
     let body = ui! {
         Stack(axis = StackAxis::Row, align = StackAlign::Center, gap = StackGap::Md) {
             if let Some(leading) = leading {
                 leading
             }
-            Typography(content = label, kind = typography_kind::Body)
+            Typography(content = label, kind = typography_kind::Body, tone = tone)
         }
     };
     // `pressable` takes its children by value: `ui!` owns no pressable
