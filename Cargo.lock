@@ -11071,7 +11071,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "9.6.1"
+version = "9.6.2"
 dependencies = [
  "dev-hot",
  "host-mock",
