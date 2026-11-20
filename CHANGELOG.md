@@ -3827,6 +3827,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   over the whole screen and took every touch. A screen with no node of its own is now wrapped in
   one view, which takes the flow-fill and lays its roots out as a column, as the web does.
 
+- **Every `TableStyles` axis is a typed key at `idea_ui`'s root** (`idea-ui`). Only `TableVariant`
+  and `TableHeadEdge` were re-exported, so an app restyle naming a cell's state (`TablePinned`,
+  `TableRowHovered`, `TableSection`, `TableTone`'s neighbours, …) fell back to `raw_compound`
+  strings. All of the sheet's axes are exported now.
+
+- **A tab's label takes its tab's weight** (`idea-ui`). The `label` slot set `font_weight: Medium`
+  itself, so restyling `tab` / `tab_active` / `tab_dot` to another weight left the text Medium.
+  The label now takes its tab slot's weight (by the cascade on the web, copied on native), and a
+  weight restyled onto `label` still wins. The default look is unchanged.
+
 - **The layout kit's scrollers are in reach of a drag** (`idea-ui-layout`). `PinnedPane` and
   `SplitView` take `scroller: Option<Ref<ScrollViewHandle>>` and `on_scroll` for the region they
   scroll, and `Page` takes `on_scroll` for its own scroller (`PageFrame::scroll_to` already moved

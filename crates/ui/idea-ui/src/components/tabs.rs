@@ -351,16 +351,16 @@ component_styles! {
             }
         }
 
-        /// A tab's label. It carries the type itself: native text takes
+        /// A tab's label. It carries its size itself: native text takes
         /// nothing from the pressable it sits in (the web's cascade is what
         /// let the box's `font_size` reach it), so a label styled only by
-        /// its tab drew at the platform default on iOS and Android. The
-        /// values are the tabs' own, so the web is unchanged. The colour
-        /// still comes per selection state from the computed layer in
-        /// `tab_button`.
+        /// its tab drew at the platform default on iOS and Android. Its
+        /// colour and weight are its tab slot's (`tab` / `tab_active` /
+        /// `tab_dot`), so a restyle of the tab's weight reaches its text:
+        /// the web cascades them, and native copies them in the computed
+        /// layer in `tab_button`. A weight set here wins over the tab's.
         slot label {
             base(t) {
-                font_weight: FontWeight::Medium,
                 font_size: t.typography.body_size(),
             }
         }
@@ -661,7 +661,11 @@ fn tab_button(
                 // panic (sheets carry no rule closures).
                 return base;
             }
-            let color = resolve_style(&app).color.clone();
+            let tab = resolve_style(&app);
+            let color = tab.color.clone();
+            // The label's own weight (an app restyle of `label`) wins;
+            // otherwise the tab's, as the web's cascade gives it.
+            let font_weight = resolve_style(&base).font_weight.or(tab.font_weight);
             let key = if on { "tab_label_on" } else { "tab_label_off" };
             // ENGINE-PATH ONLY: the `attaches_preminted()` early return
             // above guarantees this layer never runs on a premint build,
@@ -669,6 +673,7 @@ fn tab_button(
             // idealyst-lint-disable-next-line premint-computed-layer
             base.with_computed(key, move || StyleRules {
                 color: color.clone(),
+                font_weight,
                 ..Default::default()
             })
         }
@@ -801,6 +806,56 @@ mod tests {
                     "and it resolves the TabButton foreground for the label node"
                 );
             }
+        });
+    }
+
+    /// The weight of the label text, per indicator, for tab "a" (inactive).
+    fn label_weights() -> Vec<Option<FontWeight>> {
+        let on_change: Rc<dyn Fn(String)> = Rc::new(|_| {});
+        [TabIndicator::Underline, TabIndicator::Dot]
+            .into_iter()
+            .map(|indicator| {
+                let tab = tab_button(
+                    Tab::new("a", "A"),
+                    Reactive::Static("b".to_string()),
+                    on_change.clone(),
+                    Reactive::Static(indicator),
+                    &TabsSlotStyles::default(),
+                );
+                let children = match classify(tab) {
+                    P::Pressable { children, .. } => children,
+                    _ => panic!("a tab is a Pressable"),
+                };
+                children
+                    .into_iter()
+                    .find_map(|child| match classify(child) {
+                        P::Text { style, .. } => Some(style.expect("tab label carries a style").resolve().font_weight),
+                        _ => None,
+                    })
+                    .expect("a tab has a text label")
+            })
+            .collect()
+    }
+
+    /// CrewForge: restyling `tab` / `tab_active` to a normal weight left
+    /// the text Medium, because the label slot set its own weight. The
+    /// label now takes its tab's weight, and a weight on the label itself
+    /// still wins.
+    #[test]
+    fn regression_a_tab_weight_restyle_reaches_its_label() {
+        with_test_world(|| {
+            theme();
+            TabsStyles::restyle(|s| {
+                let normal = |_: &_| StyleRules { font_weight: Some(FontWeight::Normal), ..Default::default() };
+                s.tab().base(normal);
+                s.tab_active().base(normal);
+                s.tab_dot().base(normal);
+            });
+            assert_eq!(label_weights(), [Some(FontWeight::Normal); 2]);
+            TabsStyles::restyle(|s| {
+                s.label().base(|_| StyleRules { font_weight: Some(FontWeight::Bold), ..Default::default() });
+            });
+            assert_eq!(label_weights(), [Some(FontWeight::Bold); 2], "the label's own weight wins");
         });
     }
 

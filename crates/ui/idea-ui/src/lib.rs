@@ -287,6 +287,13 @@ pub use components::table::{
     RowDrag, RowRelease, Table, TableCards, TableCardsProps, TableCell, TableCellProps, TableColumn, TableDensity,
     TableEmpty, TableFooter, TableFooterProps, TableGroup, TableGroupProps, TableInset, TablePager, TablePagerProps,
     TableProps, TableRestyle, TableRow, TableRowProps, TableScroller, TableSlotStyles, TableStyles, TableTone, TableHeadEdge, TableVariant,
+    // Every axis `TableStyles` declares, so an app restyle names a cell's
+    // state in types (`s.body_cell().compound((TablePinned::Left,
+    // TableRowHovered::Off), …)`) rather than `raw_compound` strings.
+    TableAlign, TableAnchor, TableCellPadding, TableDivider, TableDrag, TableDragging, TableDropTarget, TableEdge,
+    TableInsetLeft, TableInsetRight, TableInteractive, TablePinEdge, TablePinned, TablePlaced, TableRevealed,
+    TableRowHovered, TableRowKind, TableScroll, TableSection, TableShown, TableSpan, TableStickyHeader,
+    TableTextTone, TableTruncate,
     VirtualRows,
     ACTIONS_COLUMN_WIDTH_PX, CARD_CELL_CAP,
     CARD_ESTIMATE_PX, CARD_GAP_PX, CARD_LOAD_AHEAD_PX, CARD_ROW_MIN_HEIGHT_PX, COLUMN_RESET_DOUBLE_CLICK_NS,
