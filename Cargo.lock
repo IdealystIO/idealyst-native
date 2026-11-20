@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tui"
-version = "22.0.0"
+version = "23.0.0"
 dependencies = [
  "backend-terminal",
  "dev-events",
@@ -6448,7 +6448,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "13.0.0"
+version = "14.0.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6458,7 +6458,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme-editor"
-version = "20.0.0"
+version = "21.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6469,7 +6469,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "23.3.0"
+version = "24.0.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6489,7 +6489,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs"
-version = "24.3.0"
+version = "25.0.0"
 dependencies = [
  "anyhow",
  "backend-android-mobile",
@@ -6518,7 +6518,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-branded"
-version = "15.0.0"
+version = "16.0.0"
 dependencies = [
  "idea-theme",
  "idea-ui",
@@ -6531,7 +6531,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gpu"
-version = "1.5.33"
+version = "1.5.34"
 dependencies = [
  "host-winit",
  "idea-ui-docs",
@@ -6541,7 +6541,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-docs-gtk"
-version = "1.5.33"
+version = "1.5.34"
 dependencies = [
  "backend-linux",
  "host-gtk",
@@ -6552,7 +6552,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-layout"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "host-mock",
  "icons-lucide",
@@ -6576,7 +6576,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-nav"
-version = "20.1.0"
+version = "21.0.0"
 dependencies = [
  "host-mock",
  "idea-theme",
@@ -6603,7 +6603,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7788,7 +7788,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.4.7"
+version = "2.4.8"
 dependencies = [
  "catalog-scan",
  "inventory",
