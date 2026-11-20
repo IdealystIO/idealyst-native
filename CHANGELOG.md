@@ -3827,6 +3827,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   over the whole screen and took every touch. A screen with no node of its own is now wrapped in
   one view, which takes the flow-fill and lays its roots out as a column, as the web does.
 
+- **The layout kit's scrollers are in reach of a drag** (`idea-ui-layout`). `PinnedPane` and
+  `SplitView` take `scroller: Option<Ref<ScrollViewHandle>>` and `on_scroll` for the region they
+  scroll, and `Page` takes `on_scroll` for its own scroller (`PageFrame::scroll_to` already moved
+  it). A list that reorders by drag in a pinned pane can now scroll the pane near its edges and
+  report each scroll, the page's included, to its drag context (`DragContext::scrolled_by`). dnd's
+  "Scrolling during a drag" docs say which scrollers to report.
+
 - **Exiting `presence` content no longer outlives its owner** (`runtime-vocabulary`). A presence
   playing its exit when its own scope dropped (a dialog closing as `Create` navigated, which
   disposed the screen) kept the exiting content alive until the exit timer, though the state that

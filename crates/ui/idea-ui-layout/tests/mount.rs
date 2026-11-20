@@ -7,9 +7,10 @@ use std::rc::Rc;
 use host_mock::Harness;
 use idea_ui::{install_idea_theme, light_theme, Typography};
 use idea_ui_layout::{
-    Action, ActionMenu, Blank, ListPhase, ListStates, Page, PageHeader, PageVariant, SplitMode, SplitView,
+    Action, ActionMenu, Blank, ListPhase, ListStates, Page, PageFrame, PageHeader, PageVariant, PinnedPane, SplitMode,
+    SplitView,
 };
-use runtime_core::{signal, ui, viewport_size, Element, IconData, Signal, ViewportSize};
+use runtime_core::{signal, ui, viewport_size, Element, IconData, Ref, ScrollViewHandle, Signal, ViewportSize};
 
 const PHONE: f32 = 390.0;
 const TABLET: f32 = 820.0;
@@ -1001,5 +1002,103 @@ mod blocks {
                 assert_eq!(log.matches(part).count(), 1, "{width}: {part}\n{log}");
             }
         }
+    }
+}
+
+/// Records each `(x, y)` a scroller reports.
+fn scroll_log() -> (Rc<std::cell::RefCell<Vec<(f32, f32)>>>, Rc<dyn Fn(f32, f32)>) {
+    let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let push = seen.clone();
+    (seen, Rc::new(move |x, y| push.borrow_mut().push((x, y))))
+}
+
+/// CrewForge: a list that reorders by drag in a `PinnedPane` could not
+/// reach the pane's scroller, so a drag could neither scroll it near an
+/// edge nor tell its drag context it scrolled; and the page's scroller,
+/// which moves the pane until it pins, reported to no one. Both
+/// scrollers are now in reach: the page's and the pane's `on_scroll`
+/// each hear their own scroller, and the pane's handle moves the pane's.
+#[test]
+fn a_pinned_pane_and_its_page_hand_out_their_scrollers() {
+    let (page_seen, on_page) = scroll_log();
+    let (pane_seen, on_pane) = scroll_log();
+    let pane: Ref<ScrollViewHandle> = Ref::new();
+    let frame = Cell::new(None);
+    let m = mount_at(DESKTOP, || {
+        let made = PageFrame::new();
+        frame.set(Some(made));
+        let frame = made;
+        ui! {
+            Page(
+                header = ui! { PageHeader(title = "Bid".to_string()) },
+                frame = Some(frame),
+                on_scroll = Some(on_page.clone()),
+                body = ui! {
+                    PinnedPane(frame = frame, scroller = Some(pane), on_scroll = Some(on_pane.clone())) {
+                        Typography(content = "SCOPES".to_string())
+                    }
+                },
+            )
+        }
+    });
+    assert_eq!(m.h.scroll_view_count(), 2, "the page's scroller and the pane's");
+    // Created outside in: the page's first.
+    (m.h.scroll_handler(0).expect("the page's on_scroll reaches its scroller"))(0.0, 120.0);
+    (m.h.scroll_handler(1).expect("the pane's on_scroll reaches its scroller"))(0.0, 40.0);
+    assert_eq!(*page_seen.borrow(), [(0.0, 120.0)]);
+    assert_eq!(*pane_seen.borrow(), [(0.0, 40.0)]);
+
+    host_mock::take_handle_log();
+    pane.with(|h| h.scroll_to(0.0, 64.0)).expect("the pane's handle is bound");
+    frame.get().expect("built").scroll_to(30.0);
+    let moved = host_mock::take_handle_log();
+    let node = |line: &str| line.rsplit(' ').next().map(str::to_string);
+    assert!(moved.len() == 2 && moved[0].starts_with("scroll_to 0 64 "), "{moved:?}");
+    assert_ne!(node(&moved[0]), node(&moved[1]), "the pane's handle moves the pane, not the page: {moved:?}");
+}
+
+/// No `on_scroll`, no handler: a scroller without one stays silent
+/// rather than carrying a no-op.
+#[test]
+fn a_page_or_pane_without_on_scroll_installs_no_handler() {
+    let m = mount_at(DESKTOP, || {
+        let frame = PageFrame::new();
+        ui! {
+            Page(
+                header = ui! { PageHeader(title = "Bid".to_string()) },
+                frame = Some(frame),
+                body = ui! { PinnedPane(frame = frame) { Typography(content = "SCOPES".to_string()) } },
+            )
+        }
+    });
+    assert_eq!(m.h.scroll_view_count(), 2);
+    assert!(m.h.scroll_handler(0).is_none() && m.h.scroll_handler(1).is_none());
+}
+
+/// The same reach for a split's self-scrolling region, in every mode:
+/// Nav's list, Detail's panel, Inspector's pane.
+#[test]
+fn a_split_view_hands_out_its_side_scroller() {
+    for mode in [SplitMode::Nav, SplitMode::Detail, SplitMode::Inspector] {
+        let (seen, on_scroll) = scroll_log();
+        let side: Ref<ScrollViewHandle> = Ref::new();
+        let m = mount_at(DESKTOP, || {
+            ui! {
+                SplitView(
+                    mode = mode,
+                    first = ui! { Typography(content = "FIRST".to_string()) },
+                    second = ui! { Typography(content = "SECOND".to_string()) },
+                    open = true,
+                    scroller = Some(side),
+                    on_scroll = Some(on_scroll.clone()),
+                )
+            }
+        });
+        assert_eq!(m.h.scroll_view_count(), 1, "{mode:?}");
+        (m.h.scroll_handler(0).expect("on_scroll reaches the side scroller"))(0.0, 30.0);
+        assert_eq!(*seen.borrow(), [(0.0, 30.0)], "{mode:?}");
+        host_mock::take_handle_log();
+        side.with(|h| h.scroll_to(0.0, 10.0)).expect("the side handle is bound");
+        assert_eq!(host_mock::take_handle_log().len(), 1, "{mode:?}");
     }
 }

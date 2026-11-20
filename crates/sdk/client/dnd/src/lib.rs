@@ -73,6 +73,16 @@
 //! some other way. [`DragContext::pointer_position`] is where the pointer is
 //! in the drag, for an auto-scroll loop that watches the edges.
 //!
+//! Report every scroller between the list and the window, not only the
+//! nearest: a list in an `idea-ui-layout` `PinnedPane` moves when the pane
+//! scrolls and, until the pane pins under the header, when the page does.
+//! The layout kit's scrollers are all in reach for this: `Page`'s
+//! `on_scroll` (and its `PageFrame::scroll_to`), and `PinnedPane`'s and
+//! `SplitView`'s `scroller` and `on_scroll`. An auto-scroll loop moves the
+//! scroller with `scroll_to`, keeping its own offset from `on_scroll`, and
+//! clamps to the content it is dragging over: the item in hand can count as
+//! content, so the scroller's own limit can run ahead of the list.
+//!
 //! A scroll that unmounts the source (a virtualized item scrolled out of
 //! range) does not strand the drag: a mouse drag carries on to its release,
 //! and a finger drag is cancelled. See [`DragContext`]'s module docs, "A drag

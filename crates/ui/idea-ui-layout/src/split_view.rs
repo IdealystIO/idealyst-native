@@ -7,8 +7,8 @@ use icons_lucide::X;
 use idea_ui::{tokens, tone, variant, IconButton};
 use runtime_core::{
     component, current_breakpoint, stylesheet, ui, AlignItems, Breakpoint, Element, FlexDirection, IdealystSchema,
-    JustifyContent, Length, Overflow, PointerEvents, Position, Reactive, SafeAreaSides, ScrollbarVisibility, Shadow,
-    StyleRules, Tokenized,
+    JustifyContent, Length, Overflow, PointerEvents, Position, Reactive, Ref, SafeAreaSides, ScrollViewHandle,
+    ScrollbarVisibility, Shadow, StyleRules, Tokenized,
 };
 
 use crate::page::{pin_rules, PageFrame};
@@ -123,6 +123,17 @@ pub struct SplitViewProps {
     /// foot of the window.
     #[prop(static)]
     pub grow: bool,
+    /// Filled with the scroller of the region that scrolls itself (Nav:
+    /// the list; Detail: the panel; Inspector: the pane), to move it: a
+    /// drag held near its top or foot scrolling a list in it.
+    #[prop(static)]
+    pub scroller: Option<Ref<ScrollViewHandle>>,
+    /// Each change of that region's scroll offset `(x, y)`, however it
+    /// scrolled: what a drag in it reports to its drag context. In a
+    /// scrolling page the page's scroller moves the region too until it
+    /// pins: report that one from the [`Page`](crate::Page)'s `on_scroll`.
+    #[prop(static)]
+    pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
 }
 
 impl Default for SplitViewProps {
@@ -139,6 +150,8 @@ impl Default for SplitViewProps {
             card: false,
             bare: false,
             grow: false,
+            scroller: None,
+            on_scroll: None,
         }
     }
 }
@@ -168,7 +181,8 @@ impl Default for SplitViewProps {
 /// ```
 #[component]
 pub fn SplitView(props: SplitViewProps) -> Element {
-    let SplitViewProps { mode, first, second, open, full, on_close, width, frame, card, bare, grow } = props;
+    let SplitViewProps { mode, first, second, open, full, on_close, width, frame, card, bare, grow, scroller, on_scroll } =
+        props;
     let pane_width = width.unwrap_or(SPLIT_PANE_WIDTH);
     let state = {
         let open = open.clone();
@@ -221,20 +235,32 @@ pub fn SplitView(props: SplitViewProps) -> Element {
     let side_inset = if frame.is_none() { SafeAreaSides::BOTTOM } else { SafeAreaSides::NONE };
     // Which region is the side one is the mode's, so a static branch:
     // the side region scrolls itself, the main one is its content's.
+    let (side, main) = match mode {
+        SplitMode::Nav => (first, second),
+        SplitMode::Detail | SplitMode::Inspector => (second, first),
+    };
+    let side = ui! {
+        view(style = SplitSideBody().inset(inset), safe_area = side_inset) { side }
+    };
+    let scroller = scroller.unwrap_or_else(Ref::new);
+    let side_scroll = match on_scroll {
+        Some(on_scroll) => ui! {
+            scroll_view(style = SplitSideScroll(), bind = scroller, on_scroll = move |x, y| on_scroll(x, y)) { side }
+        },
+        None => ui! {
+            scroll_view(style = SplitSideScroll(), bind = scroller) { side }
+        },
+    };
     match mode {
         SplitMode::Nav => ui! {
             view(style = frame_style, test_id = "split-view") {
-                view(style = first_style, test_id = "split-first") {
-                    scroll_view(style = SplitSideScroll()) {
-                        view(style = SplitSideBody().inset(inset), safe_area = side_inset) { first }
-                    }
-                }
-                view(style = second_style, test_id = "split-second") { second }
+                view(style = first_style, test_id = "split-first") { side_scroll }
+                view(style = second_style, test_id = "split-second") { main }
             }
         },
         SplitMode::Detail | SplitMode::Inspector => ui! {
             view(style = frame_style, test_id = "split-view") {
-                view(style = first_style, test_id = "split-first") { first }
+                view(style = first_style, test_id = "split-first") { main }
                 view(style = second_style, test_id = "split-second") {
                     if let Some(close) = on_close {
                         view(style = close_style) {
@@ -249,9 +275,7 @@ pub fn SplitView(props: SplitViewProps) -> Element {
                             }
                         }
                     }
-                    scroll_view(style = SplitSideScroll()) {
-                        view(style = SplitSideBody().inset(inset), safe_area = side_inset) { second }
-                    }
+                    side_scroll
                 }
             }
         },

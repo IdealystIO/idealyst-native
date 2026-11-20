@@ -121,6 +121,16 @@ other way.
 flight, so an auto-scroll loop can watch the pointer near an edge instead of
 placing edge drop targets.
 
+Report every scroller between the list and the window, not only the nearest:
+a list in an `idea-ui-layout` `PinnedPane` moves when the pane scrolls and,
+until the pane pins under the header, when the page does. The layout kit's
+scrollers are all in reach for this: `Page`'s `on_scroll` (and its
+`PageFrame::scroll_to`), and `PinnedPane`'s and `SplitView`'s `scroller` and
+`on_scroll`. An auto-scroll loop moves the scroller with `scroll_to`, keeping
+its own offset from `on_scroll`, and clamps to the content it is dragging
+over: the item in hand can count as content, so the scroller's own limit can
+run ahead of the list.
+
 ### When the scroll unmounts the source
 
 A virtualized list scrolled far enough during a drag unmounts the dragged

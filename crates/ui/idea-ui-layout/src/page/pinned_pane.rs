@@ -1,8 +1,10 @@
 //! [`PinnedPane`] — a side pane that stays put while the page scrolls.
 
+use std::rc::Rc;
+
 use runtime_core::{
-    component, stylesheet, ui, Element, FlexDirection, IdealystSchema, Length, Position, ScrollbarVisibility,
-    StyleRules, Tokenized,
+    component, stylesheet, ui, Element, FlexDirection, IdealystSchema, Length, Position, Ref, ScrollViewHandle,
+    ScrollbarVisibility, StyleRules, Tokenized,
 };
 
 use super::PageFrame;
@@ -18,13 +20,21 @@ pub struct PinnedPaneProps {
     /// window is short.
     #[prop(static)]
     pub hide_bar: bool,
+    /// Filled with the pane's scroller, to move it: a drag held near the
+    /// pane's top or foot scrolling the list in it.
+    #[prop(static)]
+    pub scroller: Option<Ref<ScrollViewHandle>>,
+    /// Each change of the pane's scroll offset `(x, y)`, however it
+    /// scrolled: what a drag in the pane reports to its drag context.
+    #[prop(static)]
+    pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     /// The pane's content.
     pub children: Vec<Element>,
 }
 
 impl Default for PinnedPaneProps {
     fn default() -> Self {
-        Self { frame: PageFrame::new(), hide_bar: false, children: Vec::new() }
+        Self { frame: PageFrame::new(), hide_bar: false, scroller: None, on_scroll: None, children: Vec::new() }
     }
 }
 
@@ -39,6 +49,11 @@ impl Default for PinnedPaneProps {
 /// pins its side region through the same rules; this is for a pane the
 /// layouts do not place.
 ///
+/// A list that reorders by drag reaches the pane's scroller through
+/// `scroller` and `on_scroll`. Until the pane pins, the page's scroller
+/// moves it too: report that one as well, from the
+/// [`Page`](super::Page)'s `on_scroll`.
+///
 /// ```ignore
 /// PinnedPane(frame = frame, hide_bar = true) { nav }
 /// ```
@@ -46,15 +61,29 @@ impl Default for PinnedPaneProps {
 pub fn PinnedPane(props: PinnedPaneProps) -> Element {
     let frame = props.frame;
     let bar = if props.hide_bar { PinnedPaneScrollBar::Hidden } else { PinnedPaneScrollBar::Shown };
+    let scroller = props.scroller.unwrap_or_else(Ref::new);
     let children = props.children;
     let style = move || pin_rules(frame, StyleRules::default());
+    let body = ui! {
+        view(style = PinnedPaneBody()) {
+            children
+        }
+    };
+    let scroll = match props.on_scroll {
+        Some(on_scroll) => ui! {
+            scroll_view(style = PinnedPaneScroll().bar(bar), bind = scroller, on_scroll = move |x, y| on_scroll(x, y)) {
+                body
+            }
+        },
+        None => ui! {
+            scroll_view(style = PinnedPaneScroll().bar(bar), bind = scroller) {
+                body
+            }
+        },
+    };
     ui! {
         view(style = style) {
-            scroll_view(style = PinnedPaneScroll().bar(bar)) {
-                view(style = PinnedPaneBody()) {
-                    children
-                }
-            }
+            scroll
         }
     }
 }

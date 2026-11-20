@@ -1,6 +1,8 @@
 //! [`Page`] — the frame every screen stands in: its header pinned at
 //! the top and, under it, the body in the seat its variant names.
 
+use std::rc::Rc;
+
 use runtime_core::Tokens as _;
 use runtime_core::{
     component, stylesheet, ui, ChildList, Element, FlexDirection, IdealystSchema, Length, Position, Ref,
@@ -70,6 +72,13 @@ pub struct PageProps {
     /// [`PinnedPane`](super::PinnedPane).
     #[prop(static)]
     pub frame: Option<PageFrame>,
+    /// `Content` only: each change of the page scroller's offset
+    /// `(x, y)`, however it scrolled. A drag in a pinned region reports
+    /// it to its drag context, since the page moves the region until it
+    /// pins. To move the scroller, use the `frame`'s
+    /// [`scroll_to`](PageFrame::scroll_to).
+    #[prop(static)]
+    pub on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
     /// The screen's dialogs and sheets, mounted beside the frame so
     /// nothing the body rebuilds can tear one down.
     pub children: Vec<Element>,
@@ -84,6 +93,7 @@ impl Default for PageProps {
             body: ui! { view {} },
             bleed: false,
             frame: None,
+            on_scroll: None,
             children: Vec::new(),
         }
     }
@@ -117,7 +127,7 @@ impl Default for PageProps {
 /// ```
 #[component(children)]
 pub fn Page(props: PageProps) -> Element {
-    let PageProps { variant, header, toolbar, body, bleed, frame, children } = props;
+    let PageProps { variant, header, toolbar, body, bleed, frame, on_scroll, children } = props;
     // The `#[component(children)]` slot's flatten, not a staged list.
     let mut overlays = Vec::with_capacity(children.len());
     for c in children {
@@ -126,7 +136,7 @@ pub fn Page(props: PageProps) -> Element {
     let frame = frame.unwrap_or_default();
     let edge = if bleed { PageGutterEdge::Bleed } else { PageGutterEdge::Inset };
     let framed = match variant.scrolls() {
-        true => scrolling_page(header, toolbar, body, edge, frame),
+        true => scrolling_page(header, toolbar, body, edge, frame, on_scroll),
         false => bounded_page(header, toolbar, body, variant, edge, frame),
     };
     if overlays.is_empty() {
@@ -194,12 +204,18 @@ fn scrolling_page(
     body: Element,
     edge: PageGutterEdge,
     frame: PageFrame,
+    on_scroll: Option<Rc<dyn Fn(f32, f32)>>,
 ) -> Element {
     let header_ref: Ref<ViewHandle> = Ref::new();
     let port_ref: Ref<ViewHandle> = Ref::new();
     watch_height(header_ref, frame.header_height);
     watch_height(port_ref, frame.port_height);
     let head = header_block(header, toolbar, header_ref);
+    let content = ui! {
+        view(style = PageScrollBody(), safe_area = SafeAreaSides::BOTTOM | SafeAreaSides::HORIZONTAL) {
+            view(style = PageGutter().kind(PageGutterKind::Content).edge(edge)) { body }
+        }
+    };
     // The header sits ABOVE the scroller, as its sibling: its rule runs
     // the page's full width, and the scroll bar belongs to the area
     // under it.
@@ -214,19 +230,33 @@ fn scrolling_page(
     //
     // `always_bounce = false` drops the spring for content that fits and
     // keeps it for content that overflows.
-    ui! {
-        view(style = PageColumn(), bind = port_ref) {
-            head
+    let scroller = match on_scroll {
+        Some(on_scroll) => ui! {
+            scroll_view(
+                style = PageScroll(),
+                bind = frame.scroller,
+                safe_area = SafeAreaSides::NONE,
+                always_bounce = false,
+                on_scroll = move |x, y| on_scroll(x, y),
+            ) {
+                content
+            }
+        },
+        None => ui! {
             scroll_view(
                 style = PageScroll(),
                 bind = frame.scroller,
                 safe_area = SafeAreaSides::NONE,
                 always_bounce = false,
             ) {
-                view(style = PageScrollBody(), safe_area = SafeAreaSides::BOTTOM | SafeAreaSides::HORIZONTAL) {
-                    view(style = PageGutter().kind(PageGutterKind::Content).edge(edge)) { body }
-                }
+                content
             }
+        },
+    };
+    ui! {
+        view(style = PageColumn(), bind = port_ref) {
+            head
+            scroller
         }
     }
 }
