@@ -699,6 +699,12 @@ const FOCUSABLE_SELECTOR: &str = concat!(
 /// back to the portal's first focusable child whenever it escapes
 /// the portal subtree.
 ///
+/// Focus landing in a portal opened AFTER this one (a higher
+/// `data-portal-id`) is left alone: that portal is a layer above the
+/// trap, typically a `Popover` or menu opened from inside the modal,
+/// and pulling focus out of it made its fields unfocusable. Only focus
+/// that escapes to the page or to a layer below is sent back.
+///
 /// ## Why this is an `Fn` closure, not `FnMut`
 ///
 /// The handler's own `.focus()` call (below) synchronously
@@ -720,6 +726,7 @@ pub(crate) fn install_focus_trap(
 ) -> Option<web_glue::dom::Listener> {
     let in_progress: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let portal_root_for_listener = portal_root.clone();
+    let own_layer = portal_layer(&portal_root);
     // `tabindex="-1"` lets the portal root itself receive focus
     // programmatically (so the fallback `portal_root.focus()` works)
     // without inserting it into the natural Tab order.
@@ -744,6 +751,15 @@ pub(crate) fn install_focus_trap(
             if portal_node.contains(Some(&target_node)) {
                 return;
             }
+            // A layer opened after this one owns its own focus.
+            let above = web_glue::JsCast::dyn_ref::<web_glue::dom::Element>(&target_node)
+                .and_then(|el| el.closest("[data-portal-id]").ok().flatten())
+                .and_then(|layer| portal_layer(&layer));
+            if let (Some(above), Some(own)) = (above, own_layer) {
+                if above > own {
+                    return;
+                }
+            }
             // Focus escaped. Find the first focusable descendant
             // and route focus back to it. If nothing is focusable,
             // focus the portal root itself (its `tabindex` is set
@@ -762,6 +778,11 @@ pub(crate) fn install_focus_trap(
             }
             *in_progress.borrow_mut() = false;
     }))
+}
+
+/// A portal root's `data-portal-id`: its place in mount order.
+fn portal_layer(root: &web_glue::dom::Element) -> Option<u32> {
+    root.get_attribute("data-portal-id")?.parse().ok()
 }
 
 // ---------------------------------------------------------------------------

@@ -2108,6 +2108,51 @@ fn portal_focus_trap_bounce_does_not_throw_on_reentrant_focusin() {
     drop(on_error);
 }
 
+/// CrewForge: a Popover opened from inside a Modal is a later portal,
+/// and the Modal's focus trap pulled focus out of the popover's field the
+/// moment it took it, so the field could never be typed into. Focus in a
+/// portal opened after the trap's own is now left alone; focus that
+/// escapes to the page or to a portal below the trap is still sent back.
+#[wasm_bindgen_test]
+fn regression_a_modal_trap_leaves_focus_in_a_popover_opened_above_it() {
+    install_mount();
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let body = doc.body().expect("body");
+    let layer = |id: &str, child: &str| {
+        let root = doc.create_element("div").expect("portal root");
+        let _ = root.set_attribute("data-portal-id", id);
+        let el = doc.create_element(child).expect("child");
+        root.append_child(&el).unwrap();
+        body.append_child(&root).unwrap();
+        (root, el)
+    };
+    let (below, below_button) = layer("40", "button");
+    let (modal, modal_button) = layer("41", "button");
+    let (popover, popover_field) = layer("42", "input");
+    let page = doc.create_element("button").expect("page button");
+    body.append_child(&page).unwrap();
+
+    let _trap = crate::primitives::portal::install_focus_trap(&doc, modal.clone()).expect("trap");
+    let focus = |el: &web_glue::dom::Element| {
+        let h: web_glue::dom::HtmlElement = el.clone().unchecked_into();
+        h.focus().expect("focus");
+    };
+    let active_is = |el: &web_glue::dom::Element| {
+        doc.active_element().map(|a| a.is_same_node(Some(el.as_ref()))).unwrap_or(false)
+    };
+
+    focus(&popover_field);
+    assert!(active_is(&popover_field), "the popover's field keeps focus");
+    focus(&page);
+    assert!(active_is(&modal_button), "focus on the page goes back to the modal");
+    focus(&below_button);
+    assert!(active_is(&modal_button), "focus in a layer below goes back to the modal");
+
+    for el in [below, modal, popover, page] {
+        el.remove();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Touch responder model — regression for the web backend ignoring
 // `TouchResponse::CONSUMED` when deciding event propagation.

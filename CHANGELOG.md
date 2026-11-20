@@ -3837,6 +3837,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   over the whole screen and took every touch. A screen with no node of its own is now wrapped in
   one view, which takes the flow-fill and lays its roots out as a column, as the web does.
 
+- **A field in a popover opened from a modal takes focus on the web** (`backend-web`). The modal's
+  portal traps focus with a document `focusin` listener that sent focus back whenever it landed
+  outside the modal's portal, and a `Popover` (or menu) opened from inside the modal is a later
+  portal, so its field lost focus the moment it took it. Focus that lands in a portal opened after
+  the trapping one is now left alone; focus that escapes to the page or a layer below is still
+  sent back.
+
 - **Every `TableStyles` axis is a typed key at `idea_ui`'s root** (`idea-ui`). Only `TableVariant`
   and `TableHeadEdge` were re-exported, so an app restyle naming a cell's state (`TablePinned`,
   `TableRowHovered`, `TableSection`, `TableTone`'s neighbours, …) fell back to `raw_compound`
