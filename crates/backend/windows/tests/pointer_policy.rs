@@ -105,3 +105,13 @@ fn situation_mappings() {
     assert_eq!(pointer_kind(false, 0x01), PointerKind::None, "digitizer not ready");
     assert_eq!(pointer_kind(false, 0), PointerKind::None);
 }
+
+/// CrewForge: Auto never followed the OS. Windows reported no scheme at
+/// all (`Auto`); it now reads the app-mode setting.
+#[test]
+fn regression_the_app_mode_setting_names_the_color_scheme() {
+    use runtime_shared::ColorScheme;
+    assert_eq!(color_scheme(Some(0)), ColorScheme::Dark);
+    assert_eq!(color_scheme(Some(1)), ColorScheme::Light);
+    assert_eq!(color_scheme(None), ColorScheme::Auto, "no such value: older Windows");
+}

@@ -151,6 +151,10 @@ pub struct MacosBackend {
     /// `imp/app_state.rs`), installed once per boot. Held for the backend's
     /// lifetime; replacing them drops (and so unregisters) the old set.
     app_state_observers: Vec<Retained<NSObject>>,
+    /// `NSApp.effectiveAppearance`'s key-value observation, which follows
+    /// the system's light / dark switch (`imp/app_state.rs`). Dropping it
+    /// removes the observer.
+    appearance_observer: Option<callbacks::KeyValueObservation>,
     /// The app-wide user-activity monitor (`imp/user_activity.rs`),
     /// installed once per boot. Dropping it (with the backend, or on a
     /// re-install) removes the `NSEvent` monitor.
@@ -666,6 +670,7 @@ impl MacosBackend {
             app_keyboard: None,
             app_pointer: None,
             app_state_observers: Vec::new(),
+            appearance_observer: None,
             user_activity: None,
             animated_states: HashMap::new(),
             sticky_registry: HashMap::new(),
@@ -3085,7 +3090,8 @@ impl MacosBackend {
     /// live report. Called once per boot by `newcore::start_with`. See
     /// `imp/app_state.rs`.
     pub fn install_app_state_observers(&mut self, after_report: Rc<dyn Fn()>) {
-        self.app_state_observers = app_state::install(self.mtm, after_report);
+        self.app_state_observers = app_state::install(self.mtm, after_report.clone());
+        self.appearance_observer = app_state::observe_appearance(self.mtm, after_report);
     }
 
     /// Install the app-wide user-activity source: one passive `NSEvent`
@@ -3202,38 +3208,7 @@ impl MacosBackend {
     }
 
     pub(crate) fn color_scheme_impl(&self) -> runtime_shared::ColorScheme {
-        // Read the *application's* effective appearance, NOT
-        // `NSAppearance.currentAppearance`: the latter is a per-draw thread-local
-        // that is `nil` outside a drawing pass (e.g. at mount, when the app reads
-        // `color_scheme()` to pick its initial theme), so it would always report
-        // `Auto`. `NSApp.effectiveAppearance` reflects the system Dark Mode at any
-        // time. Map its name to light/dark.
-        let appearance: *const NSObject = unsafe {
-            let app_cls = objc2::class!(NSApplication);
-            let app: *const NSObject = msg_send![app_cls, sharedApplication];
-            if app.is_null() {
-                // No app yet — fall back to the drawing-context appearance.
-                let cls = objc2::class!(NSAppearance);
-                msg_send![cls, currentAppearance]
-            } else {
-                msg_send![app, effectiveAppearance]
-            }
-        };
-        if appearance.is_null() {
-            return runtime_shared::ColorScheme::Auto;
-        }
-        let name_ptr: *const NSString = unsafe { msg_send![appearance, name] };
-        if name_ptr.is_null() {
-            return runtime_shared::ColorScheme::Auto;
-        }
-        let s = unsafe { (*name_ptr).to_string() };
-        if s.contains("Dark") {
-            runtime_shared::ColorScheme::Dark
-        } else if s.contains("Aqua") {
-            runtime_shared::ColorScheme::Light
-        } else {
-            runtime_shared::ColorScheme::Auto
-        }
+        app_state::read_color_scheme()
     }
 
     /// A reactive anchor (`Host::create_anchor`): the node the scene

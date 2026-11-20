@@ -17,7 +17,10 @@ use runtime_scene::Host;
 /// `runtime_shared::key_input` through the host wired in
 /// `install_env_services`.
 pub trait AppEnvOps: Host {
-    /// The platform's current color scheme (default theme selection).
+    /// The platform's current color scheme (default theme selection), read
+    /// at mount. A backend that can observe the OS follows it live too, by
+    /// calling `runtime_shared::backend::report_color_scheme` from its
+    /// platform callback and then flushing.
     fn color_scheme(&self) -> ColorScheme {
         ColorScheme::Auto
     }

@@ -2815,11 +2815,7 @@ impl AndroidBackend {
                 env.get_field(&cfg, "uiMode", "I").and_then(|v| v.i())
             });
             match ui_mode {
-                Ok(mode) => match mode & 0x30 {
-                    0x10 => runtime_shared::ColorScheme::Light,
-                    0x20 => runtime_shared::ColorScheme::Dark,
-                    _ => runtime_shared::ColorScheme::Auto,
-                },
+                Ok(mode) => crate::app_pointer_policy::color_scheme_from_ui_mode(mode),
                 Err(_) => runtime_shared::ColorScheme::Auto,
             }
         })

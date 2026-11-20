@@ -422,10 +422,15 @@ AppTheme::follow_system(light(), dark());       // active = platform preference;
 AppTheme::install_reactive(move || if dark_mode.get() { dark() } else { light() });
 ```
 
-`follow_system` reads `color_scheme()` once (it is not a live OS
-subscription) and calls `install_theme_palettes` with `"light"` /
-`"dark"` palettes, so a static render paints the right one for each
-reader (see below). `install_reactive` installs on its first run and
+`follow_system` installs the member matching the platform's preference
+and keeps following it: when the OS switches (the macOS sunset schedule,
+iOS Control Centre, Android's dark theme, a browser following the OS)
+the other member is `set`. An explicit `install`, `set` or
+`install_reactive` of the same theme takes over and ends the following.
+It also calls `install_theme_palettes` with `"light"` / `"dark"`
+palettes, so a static render paints the right one for each reader (see
+below). To follow the OS with app-local colours of your own, read
+`system_color_scheme()` (a signal) in an effect. `install_reactive` installs on its first run and
 `set`s on every later one; calling it again replaces the previous
 selector. Outside a sheet, `AppTheme::tokens()` gives the same
 accessors — `AppTheme::tokens().accent.solid_bg().resolve()` for a

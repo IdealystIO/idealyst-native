@@ -289,6 +289,15 @@ pub(crate) fn report_app_state(change: runtime_shared::app_state::AppStateChange
     schedule_flush();
 }
 
+/// The system's light / dark theme changed (or was re-read after a
+/// configuration change that left it alone, which reports nothing):
+/// report it and queue the flush that commits what its observers staged.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn report_color_scheme(scheme: runtime_shared::ColorScheme) {
+    runtime_shared::backend::report_color_scheme(scheme);
+    schedule_flush();
+}
+
 /// The person touched, typed, scrolled or wheeled: tick
 /// `runtime_shared::user_activity` and, when the tick wasn't throttled,
 /// queue the flush that commits what its listeners staged. Called from the

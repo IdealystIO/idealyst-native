@@ -384,6 +384,7 @@ pub trait Tokens: TokenField + Clone {
     where
         Self: TokenTheme,
     {
+        stop_following::<Self>();
         claim::<Self>();
         let entries = theme.token_entries();
         crate::glue::install_tokens(&entries);
@@ -398,6 +399,7 @@ pub trait Tokens: TokenField + Clone {
     where
         Self: TokenTheme,
     {
+        stop_following::<Self>();
         claim::<Self>();
         let entries = theme.token_entries();
         crate::glue::update_tokens(&entries);
@@ -445,22 +447,30 @@ pub trait Tokens: TokenField + Clone {
     }
 
     /// Install whichever of `light` / `dark` matches the platform's
-    /// reported color scheme, and declare BOTH as palettes (`"light"`,
-    /// `"dark"`) so a static render paints the right one for each reader
-    /// with no script. The choice is a one-shot read of the preference at
-    /// mount (`color_scheme()` is not a live subscription); for a manual
-    /// toggle, call [`set`](Self::set) or use
-    /// [`install_reactive`](Self::install_reactive).
+    /// color scheme, and keep following it: when the OS switches
+    /// ([`system_color_scheme`](crate::glue::system_color_scheme)), the
+    /// other one is [`set`](Self::set). Both are declared as palettes
+    /// (`"light"`, `"dark"`) so a static render paints the right one for
+    /// each reader with no script.
+    ///
+    /// A manual toggle takes over: an [`install`](Self::install),
+    /// [`set`](Self::set) or [`install_reactive`](Self::install_reactive)
+    /// of this theme stops the following. Call `follow_system` again to
+    /// hand the choice back to the OS.
     fn follow_system(light: Self, dark: Self)
     where
         Self: TokenTheme,
     {
-        let prefers_dark = matches!(runtime_shared::color_scheme(), ColorScheme::Dark);
-        Self::install(if prefers_dark { dark.clone() } else { light.clone() });
-        crate::glue::install_theme_palettes(&[
-            light.palette("light", Some(ColorScheme::Light)),
-            dark.palette("dark", Some(ColorScheme::Dark)),
-        ]);
+        let palettes = [light.palette("light", Some(ColorScheme::Light)), dark.palette("dark", Some(ColorScheme::Dark))];
+        install_reactive_impl::<Self, _>(move || {
+            match crate::glue::system_color_scheme().get() {
+                ColorScheme::Dark => dark.clone(),
+                _ => light.clone(),
+            }
+        });
+        FOLLOWING.with(|f| f.borrow_mut().insert(TypeId::of::<Self>()));
+        // After the active set: palettes are serialized relative to it.
+        crate::glue::install_theme_palettes(&palettes);
     }
 
     /// Install a theme chosen by `select`, re-run whenever a signal it
@@ -520,6 +530,27 @@ runtime_tls::thread_local! {
     /// drops the previous `Subscription`, disposing its effect.
     static REACTIVE_KEEPALIVE: RefCell<HashMap<TypeId, crate::glue::Subscription>> =
         RefCell::new(HashMap::new());
+    /// Theme types whose `REACTIVE_KEEPALIVE` entry is `follow_system`'s.
+    static FOLLOWING: RefCell<std::collections::HashSet<TypeId>> =
+        RefCell::new(std::collections::HashSet::new());
+    /// Set while an `install_reactive` effect installs or sets its own
+    /// theme, so that call does not count as the app taking over.
+    static IN_REACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// An app's own `install` / `set` of `R` ends `follow_system`'s following
+/// of it. Not the reactive effect's own calls.
+fn stop_following<R: TokenTheme>() {
+    if IN_REACTIVE.with(|r| r.get()) {
+        return;
+    }
+    let id = TypeId::of::<R>();
+    if !FOLLOWING.with(|f| f.borrow_mut().remove(&id)) {
+        return;
+    }
+    let sub = REACTIVE_KEEPALIVE.with(|k| k.borrow_mut().remove(&id));
+    // Dropped outside the borrow: disposing the effect may re-enter.
+    drop(sub);
 }
 
 fn default_values<R: TokenTheme>() -> Rc<[TokenValue]> {
@@ -683,14 +714,18 @@ where
         // install path touches theme state (the version signal, context)
         // that must not become a dependency of the selector.
         runtime_world::untrack(|| {
+            let outer = IN_REACTIVE.with(|r| r.replace(true));
             if primed {
                 R::set(theme);
             } else {
                 primed = true;
                 R::install(theme);
             }
+            IN_REACTIVE.with(|r| r.set(outer));
         });
     });
+    // A new subscription for `R` replaces `follow_system`'s, if any.
+    FOLLOWING.with(|f| f.borrow_mut().remove(&TypeId::of::<R>()));
     let previous = REACTIVE_KEEPALIVE.with(|k| k.borrow_mut().insert(TypeId::of::<R>(), sub));
     // Dropped outside the borrow: disposing the old effect may re-enter.
     drop(previous);

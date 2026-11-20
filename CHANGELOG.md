@@ -11,6 +11,30 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **A theme in Auto follows the OS while the app runs** (`runtime-shared` minor,
+  `runtime-vocabulary` minor, `idea-theme` minor, `backend-web`, `backend-macos`,
+  `backend-ios-mobile`, `backend-android-mobile`, `backend-windows`, `backend-linux` patch).
+  `color_scheme()` was read once at mount, so an app in `ColorScheme::Auto` kept its launch
+  theme when the OS switched (the macOS sunset schedule, iOS Control Centre, Android's dark
+  theme, a browser following the OS) until it reloaded. Now:
+  - `install_idea_theme_schemes(light, dark)` and `set_idea_color_scheme(ColorScheme::Auto)`
+    swap to the matching member when the OS switches. `Light` / `Dark` stay put, and installing
+    a theme of the app's own (`install_idea_theme`, `set_idea_theme`,
+    `install_idea_theme_reactive`) ends the following.
+  - `Tokens::follow_system(light, dark)` follows the same way; an explicit `install`, `set` or
+    `install_reactive` of that theme ends it.
+  - New `system_color_scheme() -> ReadSignal<ColorScheme>` for app-local colours (tokens pushed
+    with `update_tokens`): read it in an effect.
+  - Backends report changes with the new `runtime_shared::backend::report_color_scheme`
+    (observers: `runtime_shared::host::observe_color_scheme`): web on the media query's
+    `change`, macOS by observing `NSApp.effectiveAppearance`, iOS from a host view's trait
+    changes (ignored in the background, where iOS renders its snapshots in both styles), Android
+    from `onConfigurationChanged`, Windows on `WM_SETTINGCHANGE`, Linux from the desktop portal.
+  - Windows and Linux report a scheme at all for the first time (both said `Auto`): Windows reads
+    `AppsUseLightTheme`, Linux the portal's `org.freedesktop.appearance` `color-scheme`. An app
+    there with `follow_system` or `Auto` now launches dark on a dark desktop.
+  - `install_current_color_scheme` is now a report: observers hear it when the value differs.
+
 - **`Colors` gains `table_surface`** (`idea-theme` major, `idea-ui`). A new `color-table-surface`
   token is a framed `Table`'s own fill: its frame, its frozen body cells, its rows behind a drag,
   and its `TableCards` cards. It follows the theme's `surface` (the stock themes set it to the

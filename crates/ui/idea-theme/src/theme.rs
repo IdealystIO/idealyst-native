@@ -39,6 +39,50 @@ runtime_tls::thread_local! {
     /// The light/dark pair [`install_idea_theme_schemes`] installed, for
     /// [`set_idea_color_scheme`] to switch between.
     static SCHEMES: RefCell<Option<(Rc<dyn IdeaTheme>, Rc<dyn IdeaTheme>)>> = const { RefCell::new(None) };
+
+    /// The scheme the app chose through [`set_idea_color_scheme`] /
+    /// [`install_idea_theme_schemes`] (which chooses `Auto`). `None` once
+    /// it installs a theme of its own: then an OS switch changes nothing.
+    static SCHEME_CHOICE: std::cell::Cell<Option<runtime_core::ColorScheme>> = const { std::cell::Cell::new(None) };
+
+    /// Whether this thread's OS-scheme observer is registered.
+    static FOLLOWING_SYSTEM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The pair's member for `dark`: the installed pair's, else idea's own.
+fn scheme_theme(dark: bool) -> IdeaThemeRef {
+    let installed = SCHEMES.with(|s| s.borrow().as_ref().map(|(l, d)| if dark { d.clone() } else { l.clone() }));
+    match installed {
+        Some(theme) => IdeaThemeRef::from_rc(theme),
+        None => IdeaThemeRef::new(if dark { dark_theme() } else { light_theme() }),
+    }
+}
+
+/// Whether `choice` lands on the dark member, with the OS at `system`.
+fn wants_dark(choice: runtime_core::ColorScheme, system: runtime_core::ColorScheme) -> bool {
+    match choice {
+        runtime_core::ColorScheme::Dark => true,
+        runtime_core::ColorScheme::Light => false,
+        runtime_core::ColorScheme::Auto => matches!(system, runtime_core::ColorScheme::Dark),
+    }
+}
+
+/// Re-pick the pair's member when the OS switches while the app is in
+/// `Auto`. An observer of the host's reports, not an effect: the choice
+/// can be made from an event handler or remote code (`set_idea_color_scheme`
+/// is a `#[host_fn]`), outside any world to own an effect.
+fn follow_system_scheme() {
+    if FOLLOWING_SYSTEM.with(|f| f.replace(true)) {
+        return;
+    }
+    runtime_core::host::observe_color_scheme(|system| {
+        if SCHEME_CHOICE.with(|c| c.get()) != Some(runtime_core::ColorScheme::Auto) {
+            return;
+        }
+        let theme = scheme_theme(wants_dark(runtime_core::ColorScheme::Auto, system));
+        sync_default_text_font(&theme);
+        crate::theme_runtime::set_idea(theme);
+    });
 }
 
 /// The default body font for every idea-ui text surface.
@@ -1625,13 +1669,23 @@ fn sync_default_text_font(theme: &IdeaThemeRef) {
     runtime_core::set_default_text_font(Some(theme.font_family()));
 }
 
+/// Install `theme` as the app's theme. An app that had chosen a scheme
+/// ([`set_idea_color_scheme`], [`install_idea_theme_schemes`]) no longer
+/// follows the OS: this theme is its choice now.
 pub fn install_idea_theme<T: IdeaTheme>(theme: T) {
-    let theme = IdeaThemeRef::new(theme);
+    SCHEME_CHOICE.with(|c| c.set(None));
+    install_idea_theme_ref(IdeaThemeRef::new(theme));
+}
+
+fn install_idea_theme_ref(theme: IdeaThemeRef) {
     sync_default_text_font(&theme);
     crate::theme_runtime::install_idea(theme);
 }
 
+/// Swap the app's theme. Like [`install_idea_theme`], it ends following
+/// the OS.
 pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
+    SCHEME_CHOICE.with(|c| c.set(None));
     let theme = IdeaThemeRef::new(theme);
     sync_default_text_font(&theme);
     crate::theme_runtime::set_idea(theme);
@@ -1640,23 +1694,19 @@ pub fn set_idea_theme<T: IdeaTheme>(theme: T) {
 /// Switch the app between its light and dark themes — the pair
 /// [`install_idea_theme_schemes`] installed, or idea's built-in
 /// [`light_theme`] / [`dark_theme`] if the app installed none. `Auto`
-/// follows the platform's preference.
+/// follows the platform's preference, live: when the OS switches, so does
+/// the theme. `Light` / `Dark` stay put whatever the OS does. Apps that
+/// layer their own tokens on the theme follow the same changes through
+/// [`system_color_scheme`](runtime_core::system_color_scheme).
 ///
 /// A `#[host_fn]`: remote code calling it switches the APP's theme (a theme
 /// is the app's state; the bundle has none of its own), which every screen
 /// follows, remote ones through their token stylesheets.
 #[runtime_core::host_fn]
 pub fn set_idea_color_scheme(scheme: runtime_core::ColorScheme) {
-    let dark = match scheme {
-        runtime_core::ColorScheme::Dark => true,
-        runtime_core::ColorScheme::Light => false,
-        runtime_core::ColorScheme::Auto => matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark),
-    };
-    let installed = SCHEMES.with(|s| s.borrow().as_ref().map(|(l, d)| if dark { d.clone() } else { l.clone() }));
-    let theme = match installed {
-        Some(theme) => IdeaThemeRef::from_rc(theme),
-        None => IdeaThemeRef::new(if dark { dark_theme() } else { light_theme() }),
-    };
+    SCHEME_CHOICE.with(|c| c.set(Some(scheme)));
+    follow_system_scheme();
+    let theme = scheme_theme(wants_dark(scheme, runtime_core::color_scheme()));
     sync_default_text_font(&theme);
     crate::theme_runtime::set_idea(theme);
 }
@@ -1706,11 +1756,12 @@ pub fn idea_theme_palette<T: IdeaTheme>(
 ///
 /// The one-call form of the common case. It gives a statically rendered
 /// site a correct first paint for light and dark readers alike with no
-/// script at all. Its active choice is a one-shot read of the platform
-/// preference rather than a subscription; for a manual toggle between the
-/// pair, call [`set_idea_color_scheme`] (remote code can too: it is a
-/// `#[host_fn]`). An app whose toggle drives more than the theme can
-/// instead run `install_idea_theme_reactive` on its own signal and call
+/// script at all. The app starts in `Auto`: when the OS switches, the
+/// pair's other member takes over. For a manual toggle between the pair,
+/// call [`set_idea_color_scheme`] (remote code can too: it is a
+/// `#[host_fn]`); `Auto` hands the choice back to the OS. An app whose
+/// toggle drives more than the theme can instead run
+/// `install_idea_theme_reactive` on its own signal and call
 /// [`install_theme_palettes`](runtime_core::install_theme_palettes)
 /// directly.
 ///
@@ -1720,9 +1771,9 @@ pub fn idea_theme_palette<T: IdeaTheme>(
 /// that attribute in sync with later toggles is the app's job.
 pub fn install_idea_theme_schemes<T: IdeaTheme + Clone>(light: T, dark: T) {
     SCHEMES.with(|s| *s.borrow_mut() = Some((Rc::new(light.clone()), Rc::new(dark.clone()))));
-    let prefers_dark = matches!(runtime_core::color_scheme(), runtime_core::ColorScheme::Dark);
-    let active = if prefers_dark { dark.clone() } else { light.clone() };
-    install_idea_theme(active);
+    SCHEME_CHOICE.with(|c| c.set(Some(runtime_core::ColorScheme::Auto)));
+    follow_system_scheme();
+    install_idea_theme_ref(scheme_theme(wants_dark(runtime_core::ColorScheme::Auto, runtime_core::color_scheme())));
     runtime_core::install_theme_palettes(&[
         idea_theme_palette("light", Some(runtime_core::ColorScheme::Light), light),
         idea_theme_palette("dark", Some(runtime_core::ColorScheme::Dark), dark),
@@ -1750,6 +1801,9 @@ where
     T: IdeaTheme + 'static,
     F: FnMut() -> T + 'static,
 {
+    // `select` is the app's choice now, not the OS: for one that follows
+    // the OS, read `system_color_scheme()` inside it.
+    SCHEME_CHOICE.with(|c| c.set(None));
     let mut select = select;
     let mut primed = false;
     let sub = watch(move || {
@@ -1914,6 +1968,42 @@ mod tests {
             set_idea_color_scheme(runtime_core::ColorScheme::Light);
             assert_eq!(active_background().0, dark_bg.0, "the installed pair's light slot");
             SCHEMES.with(|s| *s.borrow_mut() = None);
+        });
+    }
+
+    /// CrewForge: in `Auto` the app showed the right theme at launch and
+    /// kept it when the OS switched. The pair now follows a reported
+    /// change; an explicit `Light` / `Dark`, or a theme of the app's own,
+    /// stays put. Installed SWAPPED, so passing proves the pair is used.
+    #[test]
+    fn regression_auto_follows_the_os_and_an_explicit_choice_does_not() {
+        crate::testing::with_test_world(|| {
+            runtime_core::host::reset_color_scheme_for_tests();
+            FOLLOWING_SYSTEM.with(|f| f.set(false));
+            let light_bg = theme_background(light_theme());
+            let dark_bg = theme_background(dark_theme());
+            runtime_core::host::install_current_color_scheme(runtime_core::ColorScheme::Light);
+            install_idea_theme_schemes(dark_theme(), light_theme());
+            assert_eq!(active_background().0, dark_bg.0, "Auto under a light OS: the pair's light slot");
+
+            runtime_core::host::report_color_scheme(runtime_core::ColorScheme::Dark);
+            assert_eq!(active_background().0, light_bg.0, "the OS went dark: the pair's dark slot");
+
+            set_idea_color_scheme(runtime_core::ColorScheme::Light);
+            runtime_core::host::report_color_scheme(runtime_core::ColorScheme::Light);
+            runtime_core::host::report_color_scheme(runtime_core::ColorScheme::Dark);
+            assert_eq!(active_background().0, dark_bg.0, "explicit Light ignores the OS");
+
+            set_idea_color_scheme(runtime_core::ColorScheme::Auto);
+            assert_eq!(active_background().0, light_bg.0, "back to Auto: the OS's dark, at once");
+
+            install_idea_theme(light_theme());
+            runtime_core::host::report_color_scheme(runtime_core::ColorScheme::Light);
+            runtime_core::host::report_color_scheme(runtime_core::ColorScheme::Dark);
+            assert_eq!(active_background().0, light_bg.0, "a theme of the app's own ignores the OS");
+
+            SCHEMES.with(|s| *s.borrow_mut() = None);
+            runtime_core::host::reset_color_scheme_for_tests();
         });
     }
 

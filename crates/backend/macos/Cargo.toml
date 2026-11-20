@@ -206,6 +206,12 @@ harness = false
 name = "app_user_activity"
 harness = false
 
+# Real-AppKit test of the color scheme following `NSApp.effectiveAppearance`
+# (`src/imp/app_state.rs`). Main thread, so no libtest harness.
+[[test]]
+name = "app_color_scheme"
+harness = false
+
 # Real-AppKit + NSURLSession test of `image()` `src` loading
 # (`docs/image-src.md`): conformance vectors through `NSImage`, remote
 # fetches from a local HTTP server (non-2xx, superseded slow response),

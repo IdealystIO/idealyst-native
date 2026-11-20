@@ -12,6 +12,12 @@
 //! | `PrimaryPointer` | `(pointer: fine)` / `(pointer: coarse)` | their `change` |
 //! | `UserActivated` | `navigator.userActivation.hasBeenActive` (absent → `false`) | first capture-phase `pointerdown` / `mousedown` / `keydown` / `touchend` |
 //!
+//! The same install follows the color scheme, which is reported through
+//! `runtime_shared::host::report_color_scheme` rather than `app_state`:
+//! read at boot by `AppEnvOps::color_scheme` ([`read_color_scheme`]), then
+//! each `change` of `(prefers-color-scheme: dark)` / `… light)` (the OS
+//! switching, or the browser's own appearance setting).
+//!
 //! The activation events are the ones the HTML spec's "activation
 //! triggering input events" list (plus `mousedown` for engines that
 //! predate pointer events); after the first one the listeners are removed
@@ -39,6 +45,8 @@ use web_glue::dom::{Document, Listener, ListenerOptions, MediaQueryList, Window}
 use crate::app_pointer_policy as policy;
 
 const REDUCE_MOTION_QUERY: &str = "(prefers-reduced-motion: reduce)";
+const DARK_SCHEME_QUERY: &str = "(prefers-color-scheme: dark)";
+const LIGHT_SCHEME_QUERY: &str = "(prefers-color-scheme: light)";
 const POINTER_FINE_QUERY: &str = "(pointer: fine)";
 const POINTER_COARSE_QUERY: &str = "(pointer: coarse)";
 const ACTIVATION_EVENTS: [&str; 4] = ["pointerdown", "mousedown", "keydown", "touchend"];
@@ -56,6 +64,19 @@ thread_local! {
 fn report(change: AppStateChange) {
     app_state::report(change);
     crate::newcore::schedule_flush();
+}
+
+/// The page's color-scheme preference: `Auto` when neither query matches
+/// (`no-preference`, a browser without the feature).
+pub(crate) fn read_color_scheme(win: &Window) -> runtime_shared::ColorScheme {
+    let m = |q| win.match_media(q).ok().flatten().is_some_and(|l: MediaQueryList| l.matches());
+    if m(DARK_SCHEME_QUERY) {
+        runtime_shared::ColorScheme::Dark
+    } else if m(LIGHT_SCHEME_QUERY) {
+        runtime_shared::ColorScheme::Light
+    } else {
+        runtime_shared::ColorScheme::Auto
+    }
 }
 
 fn primary_pointer(win: &Window) -> runtime_shared::app_state::PointerKind {
@@ -96,6 +117,17 @@ pub(crate) fn install() {
         ls.push(crate::glue_dom::listen_fn(&mql, "change", opts, move |_| {
             report(AppStateChange::ReduceMotion(m.matches()));
         }));
+    }
+    // Both queries: going dark → light flips each, and a browser may fire
+    // only one of them.
+    for q in [DARK_SCHEME_QUERY, LIGHT_SCHEME_QUERY] {
+        if let Some(mql) = win.match_media(q).ok().flatten() {
+            let w = win.clone();
+            ls.push(crate::glue_dom::listen_fn(&mql, "change", opts, move |_| {
+                runtime_shared::backend::report_color_scheme(read_color_scheme(&w));
+                crate::newcore::schedule_flush();
+            }));
+        }
     }
     for q in [POINTER_FINE_QUERY, POINTER_COARSE_QUERY] {
         if let Some(mql) = win.match_media(q).ok().flatten() {

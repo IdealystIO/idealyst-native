@@ -180,6 +180,17 @@ pub fn reduce_motion(client_area_animation: bool) -> bool {
     !client_area_animation
 }
 
+/// The `AppsUseLightTheme` DWORD (Settings → Personalization → Colors →
+/// "Choose your app mode") → the color scheme: 0 dark, anything else
+/// light, no value (Windows before 10 1809) unknown.
+pub fn color_scheme(apps_use_light_theme: Option<u32>) -> runtime_shared::ColorScheme {
+    match apps_use_light_theme {
+        Some(0) => runtime_shared::ColorScheme::Dark,
+        Some(_) => runtime_shared::ColorScheme::Light,
+        None => runtime_shared::ColorScheme::Auto,
+    }
+}
+
 /// The primary pointer from `GetSystemMetrics`: `SM_MOUSEPRESENT` → Fine;
 /// otherwise a ready touch digitizer (`SM_DIGITIZER` has `NID_READY` and
 /// `NID_INTEGRATED_TOUCH` / `NID_EXTERNAL_TOUCH`) → Coarse; else None.

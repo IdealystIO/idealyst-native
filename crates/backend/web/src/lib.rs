@@ -2279,28 +2279,9 @@ impl WebBackend {
     }
 
     pub(crate) fn color_scheme_impl(&self) -> runtime_shared::ColorScheme {
-        let window = match self.doc.default_view() {
-            Some(w) => w,
-            None => return runtime_shared::ColorScheme::Auto,
-        };
-        let prefers_dark = window
-            .match_media("(prefers-color-scheme: dark)")
-            .ok()
-            .flatten()
-            .map(|mql| mql.matches())
-            .unwrap_or(false);
-        let prefers_light = window
-            .match_media("(prefers-color-scheme: light)")
-            .ok()
-            .flatten()
-            .map(|mql| mql.matches())
-            .unwrap_or(false);
-        if prefers_dark {
-            runtime_shared::ColorScheme::Dark
-        } else if prefers_light {
-            runtime_shared::ColorScheme::Light
-        } else {
-            runtime_shared::ColorScheme::Auto
+        match self.doc.default_view() {
+            Some(w) => crate::app_state_source::read_color_scheme(&w),
+            None => runtime_shared::ColorScheme::Auto,
         }
     }
 

@@ -340,6 +340,7 @@ fn app_background_follows_install_and_swap() {
 // ===========================================================================
 
 fn follow_system_under(scheme: ColorScheme) -> (Harness, String) {
+    runtime_shared::host::reset_color_scheme_for_tests();
     runtime_shared::install_current_color_scheme(scheme);
     let h = Harness::new();
     h.record_all();
@@ -350,8 +351,35 @@ fn follow_system_under(scheme: ColorScheme) -> (Harness, String) {
     });
     std::mem::forget(realized);
     let log = h.take_log().join("\n");
-    runtime_shared::install_current_color_scheme(ColorScheme::Auto);
     (h, log)
+}
+
+/// CrewForge: Auto kept the launch theme when the OS switched. The theme
+/// now follows a reported change, both ways.
+#[test]
+fn regression_follow_system_follows_the_os_after_mount() {
+    let (h, _) = follow_system_under(ColorScheme::Light);
+    assert_eq!(installed(&h.world, "surface"), Some(color("#ffffff")));
+    runtime_shared::report_color_scheme(ColorScheme::Dark);
+    h.world.flush();
+    assert_eq!(installed(&h.world, "surface"), Some(color("#111827")), "the OS went dark");
+    runtime_shared::report_color_scheme(ColorScheme::Light);
+    h.world.flush();
+    assert_eq!(installed(&h.world, "surface"), Some(color("#ffffff")), "and back");
+}
+
+/// A manual choice takes over: after the app `set`s the theme, an OS
+/// switch leaves it alone.
+#[test]
+fn an_explicit_set_stops_follow_system() {
+    let (h, _) = follow_system_under(ColorScheme::Light);
+    h.world.enter(|| TodoTheme::set(dark()));
+    h.world.flush();
+    runtime_shared::report_color_scheme(ColorScheme::Light);
+    runtime_shared::report_color_scheme(ColorScheme::Dark);
+    runtime_shared::report_color_scheme(ColorScheme::Light);
+    h.world.flush();
+    assert_eq!(installed(&h.world, "surface"), Some(color("#111827")), "the app's choice stands");
 }
 
 #[test]

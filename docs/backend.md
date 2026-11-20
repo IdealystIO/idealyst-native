@@ -350,6 +350,18 @@ path. One call does all five:
 runtime_vocabulary::backend::install_env_services(&backend);
 ```
 
+`color_scheme()` is the one of these that changes while the app runs. A
+backend that can observe the platform's appearance follows it live:
+from the platform callback, call
+`runtime_shared::backend::report_color_scheme(scheme)` and then schedule
+the flush, the same as an `app_state` report. `system_color_scheme()`,
+`Tokens::follow_system` and idea-theme's `ColorScheme::Auto` all follow
+from there. Every in-house backend does (web: `prefers-color-scheme`
+`change`; macOS: KVO on `NSApp.effectiveAppearance`; iOS: a host view's
+`traitCollectionDidChange:`; Android: `onConfigurationChanged`'s `uiMode`;
+Windows: `WM_SETTINGCHANGE` re-reading `AppsUseLightTheme`; Linux: the
+desktop portal's `SettingChanged`).
+
 **It must precede the root build**, since a component body may read
 `platform()` or `color_scheme()` while constructing — theme selection at
 the app root is the common case. A backend that leaves a capability at

@@ -223,6 +223,19 @@ pub(crate) fn app_visible(is_hidden: bool, occlusion_state: usize) -> bool {
     !is_hidden && occlusion_state & OCCLUSION_VISIBLE != 0
 }
 
+/// The color scheme an `NSAppearance` name stands for: the dark ones
+/// (`NSAppearanceNameDarkAqua`, the vibrant and high-contrast dark
+/// variants) say "Dark", the rest of the `Aqua` family "Light".
+pub(crate) fn color_scheme_from_appearance(name: &str) -> runtime_shared::ColorScheme {
+    if name.contains("Dark") {
+        runtime_shared::ColorScheme::Dark
+    } else if name.contains("Aqua") || name.contains("Light") {
+        runtime_shared::ColorScheme::Light
+    } else {
+        runtime_shared::ColorScheme::Auto
+    }
+}
+
 /// Cocoa global coordinates (bottom-left origin of the primary screen) →
 /// Quartz global display coordinates (top-left origin), which
 /// `CGWarpMouseCursorPosition` takes.

@@ -75,6 +75,12 @@ pub use crate::host::{
     install_fullscreen_setter, install_url_opener,
 };
 
+/// The live half of `color_scheme()`: call from the platform's appearance
+/// callback with the new preference, then schedule the backend's flush.
+/// The boot value still comes from `AppEnvOps::color_scheme` through
+/// `install_env_services`.
+pub use crate::host::report_color_scheme;
+
 // The values those installers carry, and the author-side readers they
 // feed — re-exported so a backend can name them without a second import.
 pub use crate::accessibility::LiveRegionPriority;

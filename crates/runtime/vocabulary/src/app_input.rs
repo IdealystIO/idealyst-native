@@ -2,10 +2,11 @@
 //!
 //! - **Host facts as signals** — [`app_focused`], [`app_visible`],
 //!   [`reduce_motion`], [`primary_pointer`], [`user_activated`],
-//!   [`pointer_locked`]. Each is a `ReadSignal`, so effects and `ui!`
-//!   re-run when the platform reports a change (auto-pause on blur, skip
-//!   animations under reduce-motion, show "needs a mouse" on touch-only
-//!   devices, start audio after the first gesture).
+//!   [`pointer_locked`], [`system_color_scheme`]. Each is a `ReadSignal`,
+//!   so effects and `ui!` re-run when the platform reports a change
+//!   (auto-pause on blur, skip animations under reduce-motion, show "needs
+//!   a mouse" on touch-only devices, start audio after the first gesture,
+//!   follow the OS into dark mode).
 //! - **Mouse** — [`on_pointer`] (events, scoped like `on_key`),
 //!   [`pointer_state`] (poll held buttons and take accumulated movement /
 //!   wheel from a frame loop), [`request_pointer_lock`] /
@@ -27,6 +28,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use runtime_shared::app_state::{self as host_state, AppState, PointerKind};
+use runtime_shared::ColorScheme;
 use runtime_shared::held_press::HeldPressEvent;
 use runtime_shared::pointer_input::{
     self as substrate, AppPointerEvent, MouseButton, PointerListener, PointerOutcome, PointerPhase,
@@ -88,6 +90,54 @@ fn ctx() -> AppStateCtx {
     host_state::observe(move |s| observer.apply(s));
     LAST_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     ctx
+}
+
+runtime_tls::thread_local! {
+    /// [`system_color_scheme`]'s handler fallback, as [`LAST_CTX`].
+    static LAST_SCHEME: RefCell<Option<Signal<ColorScheme>>> = const { RefCell::new(None) };
+}
+
+/// The per-world mirror of `runtime_shared::host::color_scheme`. Its own
+/// context, not a field of [`AppStateCtx`]: the preference is reported
+/// through `report_color_scheme`, not `app_state`.
+#[derive(Clone)]
+struct SchemeCtx(Signal<ColorScheme>);
+
+fn scheme_signal() -> Signal<ColorScheme> {
+    if !runtime_world::is_entered() {
+        if let Some(s) = LAST_SCHEME.with(|c| *c.borrow()) {
+            return s;
+        }
+    }
+    if let Some(SchemeCtx(s)) = inject::<SchemeCtx>() {
+        LAST_SCHEME.with(|c| *c.borrow_mut() = Some(s));
+        return s;
+    }
+    let s = unscoped(|| signal(runtime_shared::host::color_scheme()));
+    unscoped(|| provide(SchemeCtx(s)));
+    runtime_shared::host::observe_color_scheme(move |scheme| s.set(scheme));
+    LAST_SCHEME.with(|c| *c.borrow_mut() = Some(s));
+    s
+}
+
+/// The platform's light / dark preference, followed live: the macOS
+/// sunset schedule, iOS Control Centre, Android's dark theme, a browser
+/// following the OS. [`ColorScheme::Auto`] when the backend cannot tell.
+///
+/// Read it to keep app-local colours in step with the system:
+///
+/// ```ignore
+/// effect!({
+///     let dark = system_color_scheme().get() == ColorScheme::Dark;
+///     update_tokens(&brand_tokens(dark));
+/// });
+/// ```
+///
+/// A theme that follows the system needs none of this:
+/// `Tokens::follow_system` and idea-theme's `ColorScheme::Auto` already
+/// re-apply on a change. `color_scheme()` is the same value as a plain read.
+pub fn system_color_scheme() -> ReadSignal<ColorScheme> {
+    scheme_signal().read_only()
 }
 
 /// Whether the app's window has input focus (the active window / tab).

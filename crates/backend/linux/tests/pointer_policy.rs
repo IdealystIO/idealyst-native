@@ -88,3 +88,14 @@ fn settings_map_to_app_state() {
     assert_eq!(pointer_kind(false, true), PointerKind::Coarse);
     assert_eq!(pointer_kind(false, false), PointerKind::None);
 }
+
+/// CrewForge: Auto never followed the OS. GTK reported no scheme at all
+/// (`Auto`); it now reads the desktop portal's appearance setting.
+#[test]
+fn regression_the_portal_color_scheme_names_the_scheme() {
+    use runtime_shared::ColorScheme;
+    assert_eq!(color_scheme_from_portal(Some(1)), ColorScheme::Dark);
+    assert_eq!(color_scheme_from_portal(Some(2)), ColorScheme::Light);
+    assert_eq!(color_scheme_from_portal(Some(0)), ColorScheme::Auto, "no preference");
+    assert_eq!(color_scheme_from_portal(None), ColorScheme::Auto, "no portal");
+}

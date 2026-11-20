@@ -567,13 +567,9 @@ impl Host for WindowsBackend {
 
 impl caps::AppEnvOps for WindowsBackend {
     fn color_scheme(&self) -> ColorScheme {
-        // Win32 doesn't expose a single "dark mode" toggle until very
-        // recent builds (UISettings::Background via WinRT). Return Auto
-        // and let the framework's theme APIs own the decision. Reading
-        // `AppsUseLightTheme` from the registry under
-        // `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`
-        // would answer it.
-        ColorScheme::Auto
+        // The app-mode setting; followed on `WM_SETTINGCHANGE`
+        // (`app_situation`).
+        crate::app_situation::read_color_scheme()
     }
 
     fn platform(&self) -> Platform {

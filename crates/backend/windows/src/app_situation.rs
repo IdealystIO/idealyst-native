@@ -8,6 +8,12 @@
 //! | `ReduceMotion` | `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)` off → true; re-read on `WM_SETTINGCHANGE` |
 //! | `PrimaryPointer` | `GetSystemMetrics(SM_MOUSEPRESENT)` → Fine, else a ready touch digitizer (`SM_DIGITIZER`) → Coarse, else None; re-read on `WM_SETTINGCHANGE` / `WM_DEVICECHANGE` |
 //!
+//! The color scheme is reported through `runtime_shared::host::report_color_scheme`
+//! rather than `app_state`: `HKCU\…\Themes\Personalize\AppsUseLightTheme`
+//! ([`read_color_scheme`]), read at boot by `AppEnvOps::color_scheme` and
+//! re-read on `WM_SETTINGCHANGE` (Windows broadcasts it with
+//! `"ImmersiveColorSet"` when the app mode flips).
+//!
 //! `UserActivated` is never reported: a native window has no autoplay
 //! gate (the default `true` is the truth). Occlusion by other windows is
 //! not observable through plain Win32 messages (DWM cloaking aside), so a
@@ -19,7 +25,9 @@
 //! so the per-world signals commit.
 
 use runtime_shared::app_state::{self, AppStateChange};
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::core::w;
+use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM, WPARAM};
+use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetSystemMetrics, IsIconic, SystemParametersInfoW, SM_DIGITIZER,
     SM_MOUSEPRESENT, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WA_INACTIVE,
@@ -44,6 +52,24 @@ fn read_reduce_motion() -> bool {
     };
     // Unreadable (very old Windows): assume animations are on.
     policy::reduce_motion(ok.is_err() || on.as_bool())
+}
+
+/// The app-mode setting (light / dark apps).
+pub fn read_color_scheme() -> runtime_shared::ColorScheme {
+    let mut value: u32 = 0;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            w!("AppsUseLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut value as *mut u32 as *mut std::ffi::c_void),
+            Some(&mut size),
+        )
+    };
+    policy::color_scheme((status == ERROR_SUCCESS).then_some(value))
 }
 
 fn read_pointer_kind() -> runtime_shared::app_state::PointerKind {
@@ -88,6 +114,9 @@ pub fn window_message(msg: u32, wparam: WPARAM, lparam: LPARAM) {
     }
     for c in changes {
         app_state::report(c);
+    }
+    if msg == WM_SETTINGCHANGE {
+        runtime_shared::backend::report_color_scheme(read_color_scheme());
     }
     crate::newcore::schedule_flush();
 }

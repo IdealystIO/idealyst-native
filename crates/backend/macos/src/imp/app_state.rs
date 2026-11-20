@@ -17,6 +17,12 @@
 //!   re-read on `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`
 //!   — posted on the WORKSPACE's notification center, not the default one.
 //! - **PrimaryPointer**: `Fine` (every Mac has a mouse or trackpad).
+//! - **Color scheme** (`runtime_shared::host::report_color_scheme`, not
+//!   `app_state`): `NSApp.effectiveAppearance`'s name ([`read_color_scheme`]),
+//!   followed by key-value observing that property ([`observe_appearance`]).
+//!   KVO rather than the `AppleInterfaceThemeChangedNotification`
+//!   distributed notification: the property is what the read returns, and
+//!   AppKit may update it after that notification is delivered.
 //! - **UserActivated**: not reported (native apps may play audio at once).
 
 use std::rc::Rc;
@@ -40,6 +46,51 @@ fn read_visible() -> bool {
     let hidden: bool = unsafe { msg_send![app, isHidden] };
     let occlusion: usize = unsafe { msg_send![app, occlusionState] };
     crate::pointer_policy::app_visible(hidden, occlusion)
+}
+
+/// The app's light / dark appearance.
+///
+/// The *application's* effective appearance, NOT
+/// `NSAppearance.currentAppearance`: the latter is a per-draw thread-local
+/// that is `nil` outside a drawing pass (e.g. at mount, when the app reads
+/// `color_scheme()` to pick its initial theme), so it would always report
+/// `Auto`. `NSApp.effectiveAppearance` reflects the system Dark Mode at any
+/// time.
+pub(crate) fn read_color_scheme() -> runtime_shared::ColorScheme {
+    let app = shared_app();
+    let appearance: *const NSObject = unsafe {
+        if app.is_null() {
+            // No app yet — fall back to the drawing-context appearance.
+            msg_send![class!(NSAppearance), currentAppearance]
+        } else {
+            msg_send![app, effectiveAppearance]
+        }
+    };
+    if appearance.is_null() {
+        return runtime_shared::ColorScheme::Auto;
+    }
+    let name: *const objc2_foundation::NSString = unsafe { msg_send![appearance, name] };
+    if name.is_null() {
+        return runtime_shared::ColorScheme::Auto;
+    }
+    crate::pointer_policy::color_scheme_from_appearance(&unsafe { &*name }.to_string())
+}
+
+/// Follow `NSApp.effectiveAppearance`: report each change of the color
+/// scheme, then `after_report` (the flush). `None` before `NSApp` exists.
+pub(crate) fn observe_appearance(
+    mtm: MainThreadMarker,
+    after_report: Rc<dyn Fn()>,
+) -> Option<super::callbacks::KeyValueObservation> {
+    super::callbacks::observe_key_path(
+        mtm,
+        shared_app(),
+        "effectiveAppearance",
+        Rc::new(move || {
+            runtime_shared::backend::report_color_scheme(read_color_scheme());
+            after_report();
+        }),
+    )
 }
 
 fn workspace() -> *mut AnyObject {

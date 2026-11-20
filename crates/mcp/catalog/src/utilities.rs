@@ -175,10 +175,24 @@ inventory::submit! {
     UtilityEntry {
         name: "color_scheme",
         module_path: "runtime_core",
-        docs: "Returns the platform's light/dark color-scheme default (`Auto`, `Light`, `Dark`), stashed at mount like `platform()`. Install a matching theme to avoid a flash. The framework-level accessor; theme objects themselves live in the `idea-theme` SDK, not here.",
+        docs: "Returns the platform's light/dark preference (`Auto`, `Light`, `Dark`): read at mount, then updated when the OS switches. A plain read — use `system_color_scheme()` (a signal) to re-run on a change. Install a matching theme at startup to avoid a flash; `Tokens::follow_system` and idea-theme's `ColorScheme::Auto` follow the OS on their own. The framework-level accessor; theme objects themselves live in the `idea-theme` SDK, not here.",
         params: &[],
         return_type: "ColorScheme",
         return_type_short: "ColorScheme",
+        category: UtilityCategory::Platform,
+        snippet: "",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "system_color_scheme",
+        module_path: "runtime_core",
+        docs: "The platform's light/dark preference as a `ReadSignal<ColorScheme>`, followed live (macOS sunset schedule, iOS Control Centre, Android dark theme, a browser following the OS). Read it in an effect to keep app-local colours in step with the OS; a theme installed with `Tokens::follow_system` or idea-theme's `ColorScheme::Auto` already follows it.",
+        params: &[],
+        return_type: "ReadSignal<ColorScheme>",
+        return_type_short: "ReadSignal<ColorScheme>",
         category: UtilityCategory::Platform,
         snippet: "",
         _seal: (),

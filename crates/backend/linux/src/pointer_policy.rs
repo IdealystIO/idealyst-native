@@ -95,6 +95,17 @@ pub fn reduce_motion(enable_animations: bool) -> bool {
     !enable_animations
 }
 
+/// The freedesktop appearance portal's `color-scheme` value
+/// (`org.freedesktop.appearance`): 1 prefer dark, 2 prefer light, 0 no
+/// preference. `None` when no portal answered.
+pub fn color_scheme_from_portal(value: Option<u32>) -> runtime_shared::ColorScheme {
+    match value {
+        Some(1) => runtime_shared::ColorScheme::Dark,
+        Some(2) => runtime_shared::ColorScheme::Light,
+        _ => runtime_shared::ColorScheme::Auto,
+    }
+}
+
 /// The primary pointer from the seat's capabilities
 /// (`GDK_SEAT_CAPABILITY_POINTER` / `_TOUCH`): any pointing device (mouse,
 /// trackpad, pen) makes it `Fine` — a touch-screen laptop with a trackpad

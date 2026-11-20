@@ -153,6 +153,10 @@ pub struct IosBackend {
     /// App-situation observer (focus / visibility / reduce motion / primary
     /// pointer, `imp/app_state.rs`), installed once per boot.
     app_state_observer: Option<Retained<NSObject>>,
+    /// The zero-size view in the host that hears trait changes, which is
+    /// how the color scheme is followed (`imp/app_state.rs`). Removed from
+    /// the host on a re-install.
+    appearance_observer: Option<Retained<UIView>>,
     /// Set of view pointers that are UIScrollViews. Used in the
     /// post-layout pass to sync `contentSize` from Taffy children.
     scroll_views: std::collections::HashSet<usize>,
@@ -790,6 +794,7 @@ impl IosBackend {
             app_pointer: None,
             cursor_hider: None,
             app_state_observer: None,
+            appearance_observer: None,
             scroll_views: std::collections::HashSet::new(),
             external_content_measures: HashMap::new(),
             icon_image_cache: HashMap::new(),
@@ -1593,7 +1598,14 @@ impl IosBackend {
         if let Some(old) = self.app_state_observer.take() {
             app_state::uninstall(&old);
         }
-        self.app_state_observer = Some(app_state::install(self.mtm, after_report));
+        if let Some(old) = self.appearance_observer.take() {
+            unsafe { old.removeFromSuperview() };
+        }
+        self.app_state_observer = Some(app_state::install(self.mtm, after_report.clone()));
+        self.appearance_observer = self
+            .host_root
+            .as_ref()
+            .map(|host| app_state::observe_appearance(self.mtm, host, after_report));
     }
 
     pub(crate) fn platform_impl(&self) -> runtime_shared::Platform {
@@ -1710,14 +1722,7 @@ impl IosBackend {
     pub(crate) fn color_scheme_impl(&self) -> runtime_shared::ColorScheme {
         // UITraitCollection.currentTraitCollection.userInterfaceStyle
         // 0 = Unspecified, 1 = Light, 2 = Dark (UIUserInterfaceStyle).
-        let tc: Retained<NSObject> =
-            unsafe { msg_send_id![objc2::class!(UITraitCollection), currentTraitCollection] };
-        let style: isize = unsafe { msg_send![&tc, userInterfaceStyle] };
-        match style {
-            1 => runtime_shared::ColorScheme::Light,
-            2 => runtime_shared::ColorScheme::Dark,
-            _ => runtime_shared::ColorScheme::Auto,
-        }
+        app_state::read_color_scheme()
     }
 
     /// A reactive anchor (`Host::create_anchor`): the node the scene

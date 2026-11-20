@@ -2461,7 +2461,9 @@ impl LinuxBackend {
 impl LinuxBackend {
 
     fn color_scheme(&self) -> ColorScheme {
-        ColorScheme::Auto
+        // The desktop portal's setting; followed through its
+        // `SettingChanged` signal (`app_situation`).
+        crate::app_situation::read_color_scheme()
     }
 
     fn platform(&self) -> Platform {

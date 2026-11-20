@@ -15,6 +15,16 @@
 //!   connected (an iPad with a mouse / trackpad), following
 //!   `GCMouseDidConnect` / `DidDisconnect`.
 //! - **UserActivated**: not reported (native apps may play audio at once).
+//! - **Color scheme** (`runtime_shared::host::report_color_scheme`, not
+//!   `app_state`): the trait collection's `userInterfaceStyle`
+//!   ([`read_color_scheme`]), re-read on `traitCollectionDidChange:` of a
+//!   zero-size view in the host ([`observe_appearance`]) and on
+//!   `DidBecomeActive`. Trait changes in the background are ignored
+//!   ([`policy::trait_change_counts`]): iOS renders the app's switcher
+//!   snapshots in both styles there. A view, not the generated view
+//!   controller, so no app template has to change; `traitCollectionDidChange:`
+//!   still reaches every view on iOS 17+, where it is deprecated in favour
+//!   of trait registration.
 //!
 //! Every live report runs on the next main-queue turn (UIKit posts these
 //! synchronously inside its own work) and is followed by the backend's
@@ -39,6 +49,24 @@ extern "C" {
 extern "C" {
     static UIAccessibilityReduceMotionStatusDidChangeNotification: &'static NSString;
     fn UIAccessibilityIsReduceMotionEnabled() -> objc2::runtime::Bool;
+}
+
+fn application_state() -> isize {
+    unsafe {
+        let app: *mut AnyObject = msg_send![objc2::class!(UIApplication), sharedApplication];
+        if app.is_null() {
+            0
+        } else {
+            msg_send![app, applicationState]
+        }
+    }
+}
+
+/// The current trait collection's light / dark style.
+pub(crate) fn read_color_scheme() -> runtime_shared::ColorScheme {
+    let tc: Retained<NSObject> = unsafe { msg_send_id![objc2::class!(UITraitCollection), currentTraitCollection] };
+    let style: isize = unsafe { msg_send![&tc, userInterfaceStyle] };
+    policy::color_scheme(style)
 }
 
 fn read_reduce_motion() -> bool {
@@ -93,6 +121,9 @@ declare_class!(
         #[method(didBecomeActive:)]
         fn did_become_active(&self, _n: *mut AnyObject) {
             crate::imp::ffi_guard::guard_ffi("IdealystAppStateObserver::didBecomeActive", || {
+                // The appearance may have changed while trait changes were
+                // ignored in the background.
+                runtime_shared::backend::report_color_scheme(read_color_scheme());
                 self.ivars().later(|| vec![AppStateChange::Focused(true), AppStateChange::Visible(true)]);
             });
         }
@@ -136,21 +167,64 @@ declare_class!(
     }
 );
 
+declare_class!(
+    /// Hears the host's trait changes for [`observe_appearance`].
+    pub(crate) struct IdealystAppearanceObserverView;
+
+    unsafe impl ClassType for IdealystAppearanceObserverView {
+        type Super = objc2_ui_kit::UIView;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystAppearanceObserverView";
+    }
+
+    impl DeclaredClass for IdealystAppearanceObserverView {
+        type Ivars = AppStateObserverIvars;
+    }
+
+    unsafe impl IdealystAppearanceObserverView {
+        #[method(traitCollectionDidChange:)]
+        fn trait_collection_did_change(&self, previous: *mut AnyObject) {
+            let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
+            crate::imp::ffi_guard::guard_ffi("IdealystAppearanceObserverView::traitCollectionDidChange", || {
+                if !policy::trait_change_counts(application_state()) {
+                    return;
+                }
+                let tc: Retained<NSObject> = unsafe { msg_send_id![self, traitCollection] };
+                let style: isize = unsafe { msg_send![&tc, userInterfaceStyle] };
+                let after = self.ivars().after_report.clone();
+                runtime_shared::schedule_microtask(move || {
+                    runtime_shared::backend::report_color_scheme(policy::color_scheme(style));
+                    after();
+                });
+            });
+        }
+    }
+);
+
+/// Follow the light / dark appearance: a zero-size, hit-test-transparent
+/// view added to `host`, whose trait changes report the color scheme, then
+/// `after_report`. The caller keeps the view and removes it to stop.
+pub(crate) fn observe_appearance(
+    mtm: MainThreadMarker,
+    host: &objc2_ui_kit::UIView,
+    after_report: Rc<dyn Fn()>,
+) -> Retained<objc2_ui_kit::UIView> {
+    let this = mtm.alloc::<IdealystAppearanceObserverView>();
+    let this = this.set_ivars(AppStateObserverIvars { after_report });
+    let view: Retained<IdealystAppearanceObserverView> = unsafe { msg_send_id![super(this), init] };
+    let _: () = unsafe { msg_send![&view, setUserInteractionEnabled: false] };
+    let view: Retained<objc2_ui_kit::UIView> = Retained::into_super(view);
+    unsafe { host.addSubview(&view) };
+    view
+}
+
 /// Report the boot reading and install the observer. `after_report` runs
 /// after every live report. The returned observer must outlive the app;
 /// dropping it unregisters it (`NSNotificationCenter` drops deallocated
 /// selector-based observers on iOS 9+), and [`uninstall`] does so
 /// explicitly.
 pub(crate) fn install(mtm: MainThreadMarker, after_report: Rc<dyn Fn()>) -> Retained<NSObject> {
-    let state: isize = unsafe {
-        let app: *mut AnyObject = msg_send![objc2::class!(UIApplication), sharedApplication];
-        if app.is_null() {
-            0
-        } else {
-            msg_send![app, applicationState]
-        }
-    };
-    let (focused, visible) = policy::focus_and_visibility(state);
+    let (focused, visible) = policy::focus_and_visibility(application_state());
     report(AppStateChange::Focused(focused));
     report(AppStateChange::Visible(visible));
     report(AppStateChange::ReduceMotion(read_reduce_motion()));

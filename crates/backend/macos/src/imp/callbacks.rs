@@ -430,6 +430,86 @@ declare_class!(
     }
 );
 
+pub(crate) struct KeyValueTargetIvars {
+    callback: Rc<dyn Fn()>,
+}
+
+declare_class!(
+    /// Key-value observer for [`observe_key_path`]: runs its callback on
+    /// every change of the observed key, whatever the change dictionary
+    /// says (the callback re-reads the value).
+    pub(crate) struct KeyValueTarget;
+
+    unsafe impl ClassType for KeyValueTarget {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystKeyValueTarget";
+    }
+
+    impl DeclaredClass for KeyValueTarget {
+        type Ivars = KeyValueTargetIvars;
+    }
+
+    unsafe impl NSObjectProtocol for KeyValueTarget {}
+
+    unsafe impl KeyValueTarget {
+        #[method(observeValueForKeyPath:ofObject:change:context:)]
+        fn observe_value(
+            &self,
+            _key_path: *mut NSObjectRuntime,
+            _object: *mut NSObjectRuntime,
+            _change: *mut NSObjectRuntime,
+            _context: *mut std::ffi::c_void,
+        ) {
+            (self.ivars().callback)();
+        }
+    }
+);
+
+/// A key-value observation [`observe_key_path`] registered. Dropping it
+/// removes the observer: KVO keeps an unretained pointer to it, so a freed
+/// observer still registered would be messaged on the next change.
+pub(crate) struct KeyValueObservation {
+    target: Retained<KeyValueTarget>,
+    object: Retained<objc2::runtime::AnyObject>,
+    key_path: Retained<objc2_foundation::NSString>,
+}
+
+impl Drop for KeyValueObservation {
+    fn drop(&mut self) {
+        let _: () = unsafe {
+            msg_send![&*self.object, removeObserver: &*self.target, forKeyPath: &*self.key_path]
+        };
+    }
+}
+
+/// Call `callback` (on the next main-queue turn, like
+/// [`observe_notification`]) whenever `object`'s `key_path` changes, for
+/// as long as the returned observation lives. `None` for a null `object`.
+pub(crate) fn observe_key_path(
+    mtm: MainThreadMarker,
+    object: *mut objc2::runtime::AnyObject,
+    key_path: &str,
+    callback: Rc<dyn Fn()>,
+) -> Option<KeyValueObservation> {
+    let object = unsafe { Retained::retain(object) }?;
+    let deferred: Rc<dyn Fn()> = Rc::new(move || {
+        let cb = callback.clone();
+        runtime_shared::schedule_microtask(move || cb());
+    });
+    let this = mtm.alloc::<KeyValueTarget>();
+    let this = this.set_ivars(KeyValueTargetIvars { callback: deferred });
+    let target: Retained<KeyValueTarget> = unsafe { msg_send_id![super(this), init] };
+    let key_path = objc2_foundation::NSString::from_str(key_path);
+    let nil: *mut std::ffi::c_void = std::ptr::null_mut();
+    // Options 0: no old / new values in the change dictionary; the
+    // callback reads the current value itself.
+    let _: () = unsafe {
+        msg_send![&*object, addObserver: &*target, forKeyPath: &*key_path, options: 0usize, context: nil]
+    };
+    Some(KeyValueObservation { target, object, key_path })
+}
+
 /// Call `callback` (on the next main-queue turn) whenever the default
 /// center posts `name` — from `object`, or from anyone when it is null.
 /// Returns the observer for the caller to retain and, when done, pass to

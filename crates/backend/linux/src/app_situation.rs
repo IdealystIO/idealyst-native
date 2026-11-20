@@ -12,6 +12,16 @@
 //! `UserActivated` is never reported: a native window has no autoplay
 //! gate (the default `true` is the truth).
 //!
+//! The color scheme is reported through `runtime_shared::host::report_color_scheme`
+//! rather than `app_state`: the desktop portal's
+//! `org.freedesktop.appearance` / `color-scheme` setting
+//! ([`read_color_scheme`], `org.freedesktop.portal.Settings.ReadOne`),
+//! followed through its `SettingChanged` signal. GNOME, KDE and the other
+//! portal-backed desktops all publish it; GTK's own
+//! `gtk-application-prefer-dark-theme` is the APP's request, not the
+//! user's preference. Without a portal (a bare X server, a container) the
+//! scheme stays `Auto`.
+//!
 //! Before the window is mapped, `is-active` and the toplevel state say
 //! nothing meaningful (an unmapped window is never active), so focus and
 //! visibility are first reported at `map` rather than at boot — reporting
@@ -36,6 +46,68 @@ pub struct AppSituation {
     /// exists only while the window is realized; shared with the
     /// realize/unrealize handlers that (re)connect it.
     surface_handler: std::rc::Rc<std::cell::RefCell<Option<(glib::Object, glib::SignalHandlerId)>>>,
+}
+
+const PORTAL_BUS_NAME: &str = "org.freedesktop.portal.Desktop";
+const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+const PORTAL_SETTINGS: &str = "org.freedesktop.portal.Settings";
+const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
+const COLOR_SCHEME_KEY: &str = "color-scheme";
+/// How long the boot read waits for the portal. A running portal answers
+/// in a few milliseconds and a missing one fails at once (the bus says
+/// `ServiceUnknown`); this bounds only a portal that hangs, which would
+/// otherwise stall the first frame.
+const PORTAL_TIMEOUT_MS: i32 = 250;
+
+/// The session bus's settings portal, without autostarting it (a desktop
+/// that has one runs it already); `None` without a session bus.
+fn settings_portal() -> Option<gtk4::gio::DBusProxy> {
+    gtk4::gio::DBusProxy::for_bus_sync(
+        gtk4::gio::BusType::Session,
+        gtk4::gio::DBusProxyFlags::DO_NOT_AUTO_START | gtk4::gio::DBusProxyFlags::DO_NOT_LOAD_PROPERTIES,
+        None,
+        PORTAL_BUS_NAME,
+        PORTAL_PATH,
+        PORTAL_SETTINGS,
+        gtk4::gio::Cancellable::NONE,
+    )
+    .ok()
+}
+
+/// The `u32` inside a portal reply: `ReadOne` answers `(v)`, the older
+/// `Read` `(v)` holding another `v`, so unwrap tuples and variants down
+/// to the number.
+fn portal_u32(value: &glib::Variant) -> Option<u32> {
+    if let Some(n) = value.get::<u32>() {
+        return Some(n);
+    }
+    if let Some(inner) = value.as_variant() {
+        return portal_u32(&inner);
+    }
+    if value.is_container() && value.n_children() == 1 {
+        return portal_u32(&value.child_value(0));
+    }
+    None
+}
+
+/// The desktop's light / dark preference, read from the settings portal.
+pub fn read_color_scheme() -> runtime_shared::ColorScheme {
+    let Some(portal) = settings_portal() else {
+        return runtime_shared::ColorScheme::Auto;
+    };
+    let args = (APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY).to_variant();
+    let reply = ["ReadOne", "Read"].into_iter().find_map(|method| {
+        portal
+            .call_sync(
+                method,
+                Some(&args),
+                gtk4::gio::DBusCallFlags::NONE,
+                PORTAL_TIMEOUT_MS,
+                gtk4::gio::Cancellable::NONE,
+            )
+            .ok()
+    });
+    pointer_policy::color_scheme_from_portal(reply.as_ref().and_then(portal_u32))
 }
 
 fn report(change: AppStateChange) {
@@ -135,6 +207,26 @@ impl AppSituation {
                 )));
             });
             handlers.push((settings.upcast(), h));
+        }
+
+        // Color scheme, followed through the portal's `SettingChanged`
+        // (namespace, key, value). The proxy lives in `handlers`, which
+        // keeps the subscription for as long as the situation is installed.
+        if let Some(portal) = settings_portal() {
+            let h = portal.connect_g_signal(|_, _sender, signal, params| {
+                if signal != "SettingChanged" || params.n_children() != 3 {
+                    return;
+                }
+                let namespace = params.child_value(0);
+                let key = params.child_value(1);
+                if namespace.str() != Some(APPEARANCE_NAMESPACE) || key.str() != Some(COLOR_SCHEME_KEY) {
+                    return;
+                }
+                let scheme = pointer_policy::color_scheme_from_portal(portal_u32(&params.child_value(2)));
+                runtime_shared::backend::report_color_scheme(scheme);
+                crate::newcore::schedule_flush();
+            });
+            handlers.push((portal.upcast(), h));
         }
 
         // Primary pointer, re-read when devices come and go.

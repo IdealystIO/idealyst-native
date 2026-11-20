@@ -179,6 +179,31 @@ that forfeits the automatic re-flow and scatters the theme across call sites.
 See [[color_scheme]] for the platform's light/dark default, useful for picking the
 initial theme without a flash.
 
+### Following the system: `Auto`
+
+`install_idea_theme_schemes(light, dark)` installs a pair and starts the app in
+`ColorScheme::Auto`: the member matching the OS is active, and when the OS
+switches (the macOS sunset schedule, iOS Control Centre, Android's dark theme, a
+browser following the OS) the other member takes over, with no reload. An
+Appearance setting maps onto `set_idea_color_scheme`:
+
+```rust
+set_idea_color_scheme(ColorScheme::Auto);  // follow the OS, live
+set_idea_color_scheme(ColorScheme::Dark);  // stay dark whatever the OS does
+```
+
+Installing a theme of your own (`install_idea_theme`, `set_idea_theme`,
+`install_idea_theme_reactive`) ends the following. App-local colours layered on
+the theme (tokens pushed with `update_tokens`) follow the same switch through
+the `system_color_scheme()` signal:
+
+```rust
+effect!({
+    let dark = system_color_scheme().get() == ColorScheme::Dark;
+    update_tokens(&brand_tokens(dark));
+});
+```
+
 Apps not using idea-ui components get the same swap semantics from the generic
 layer directly: `idea_theme::set_theme(...)` for an event-driven swap, or
 `idea_theme::install_themes(active, &[("light", LIGHT), ("dark", DARK)])` with a

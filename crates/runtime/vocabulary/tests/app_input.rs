@@ -50,6 +50,29 @@ fn app_state_signals_follow_backend_reports() {
     });
 }
 
+/// CrewForge: an app in Auto kept its launch theme when the OS switched,
+/// because `color_scheme()` was read once at mount. A backend's report
+/// now reaches the per-world signal (and an effect reading it) on the
+/// world's next flush.
+#[test]
+fn regression_system_color_scheme_follows_a_reported_change() {
+    let h = harness();
+    runtime_shared::host::report_color_scheme(glue::ColorScheme::Light);
+    let seen: Rc<RefCell<Vec<glue::ColorScheme>>> = Rc::default();
+    let (scheme, _watch) = h.world.enter(|| {
+        let scheme = glue::system_color_scheme();
+        let sink = seen.clone();
+        (scheme, glue::watch(move || sink.borrow_mut().push(scheme.get())))
+    });
+    assert_eq!(h.world.enter(|| scheme.get()), glue::ColorScheme::Light);
+
+    runtime_shared::host::report_color_scheme(glue::ColorScheme::Dark);
+    h.world.flush();
+    assert_eq!(h.world.enter(|| scheme.get()), glue::ColorScheme::Dark);
+    assert_eq!(glue::color_scheme(), glue::ColorScheme::Dark, "the plain read agrees");
+    assert_eq!(*seen.borrow(), vec![glue::ColorScheme::Light, glue::ColorScheme::Dark], "the effect re-ran");
+}
+
 /// The full lock round trip: request reaches the backend synchronously,
 /// the backend grants it, `pointer_locked()` flips, the platform drops it
 /// (Esc) and the signal flips back.

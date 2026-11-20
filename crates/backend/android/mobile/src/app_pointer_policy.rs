@@ -394,6 +394,17 @@ pub(crate) fn reduce_motion_from_animator_scale(scale: f32) -> bool {
     scale == 0.0
 }
 
+/// `Configuration.uiMode`'s night bits (`UI_MODE_NIGHT_MASK` = 0x30) →
+/// the color scheme: `UI_MODE_NIGHT_NO` (0x10) light, `_YES` (0x20) dark,
+/// `_UNDEFINED` (0) unknown.
+pub(crate) fn color_scheme_from_ui_mode(ui_mode: i32) -> runtime_shared::ColorScheme {
+    match ui_mode & 0x30 {
+        0x10 => runtime_shared::ColorScheme::Light,
+        0x20 => runtime_shared::ColorScheme::Dark,
+        _ => runtime_shared::ColorScheme::Auto,
+    }
+}
+
 /// The device's primary pointer: a connected (non-virtual) mouse/touchpad
 /// makes it `Fine` (CSS `pointer: fine` on a phone with a mouse); otherwise a
 /// touch screen makes it `Coarse`; a device with neither (Android TV driven
@@ -411,6 +422,16 @@ pub(crate) fn primary_pointer(has_mouse: bool, has_touchscreen: bool) -> Pointer
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The night bits only: `uiMode` also carries the device type (a
+    /// phone is `UI_MODE_TYPE_NORMAL` = 1, a TV 4).
+    #[test]
+    fn ui_mode_night_bits_name_the_color_scheme() {
+        assert_eq!(color_scheme_from_ui_mode(0x11), runtime_shared::ColorScheme::Light);
+        assert_eq!(color_scheme_from_ui_mode(0x21), runtime_shared::ColorScheme::Dark);
+        assert_eq!(color_scheme_from_ui_mode(0x24), runtime_shared::ColorScheme::Dark);
+        assert_eq!(color_scheme_from_ui_mode(0x01), runtime_shared::ColorScheme::Auto);
+    }
 
     fn mouse(action: i32) -> RawMotion {
         RawMotion { touch_stream: matches!(action, ACTION_DOWN | ACTION_UP | ACTION_MOVE | ACTION_CANCEL), ..RawMotion::new(action, SOURCE_MOUSE, TOOL_TYPE_MOUSE) }

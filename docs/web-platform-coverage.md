@@ -64,7 +64,7 @@ answers there, not unfinished stubs.
 
 | Capability | Needed by | Framework API | Web | Native | Status |
 | --- | --- | --- | --- | --- | --- |
-| The OS light/dark preference (`prefers-color-scheme`) | none: CrewForge only stores an explicit user choice (see Storage below) | `runtime_core::color_scheme()`. Theme palettes follow the preference automatically | `matchMedia` at boot, plus emitted `prefers-color-scheme` rules | the platform's appearance setting | covered |
+| The OS light/dark preference (`prefers-color-scheme`), followed live | CrewForge's Appearance setting (`Auto`) | `runtime_core::color_scheme()` (a read), `system_color_scheme()` (a signal). `Tokens::follow_system` and idea-theme's `ColorScheme::Auto` follow it | `matchMedia` at boot and its `change` events, plus emitted `prefers-color-scheme` rules | the platform's appearance setting and its change notification | covered |
 
 ## Storage
 

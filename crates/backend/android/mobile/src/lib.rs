@@ -335,16 +335,26 @@ pub fn run_layout_now() {}
 pub fn schedule_layout_pass() {}
 
 /// Notify the backend that the host configuration changed (rotation,
-/// multi-window resize, density change, etc.). Schedules a layout
-/// pass against the host root's current dimensions; the existing
-/// retry loop covers the brief window where `getWidth/getHeight`
-/// still report the pre-change values. Call from the JNI bridge's
-/// `notifyConfigChanged` symbol (the generated wrapper crate routes
-/// MainActivity.onConfigurationChanged → here).
+/// multi-window resize, density change, the system dark theme, etc.).
+/// Schedules a layout pass against the host root's current dimensions;
+/// the existing retry loop covers the brief window where
+/// `getWidth/getHeight` still report the pre-change values. Re-reads the
+/// color scheme (`Configuration.uiMode`'s night bits) and reports it: the
+/// manifest lists `uiMode` under `configChanges`, so a dark-theme switch
+/// arrives here instead of recreating the Activity. Call from the JNI
+/// bridge's `notifyConfigChanged` symbol (the generated wrapper crate
+/// routes MainActivity.onConfigurationChanged → here).
 #[cfg(target_os = "android")]
 pub fn notify_config_changed() {
     log::info!("[layout] notify_config_changed → scheduling layout pass");
     imp::scheduler::schedule_layout_pass_retry(0);
+    let backend = imp::ANDROID_BACKEND_SELF.with(|s| s.borrow().clone()).and_then(|w| w.upgrade());
+    // The read's borrow ends before the report: a theme that follows the
+    // system re-tints from inside it, which reaches the backend again.
+    let scheme = backend.and_then(|b| b.try_borrow().ok().map(|b| b.color_scheme_impl()));
+    if let Some(scheme) = scheme {
+        newcore::report_color_scheme(scheme);
+    }
 }
 
 #[cfg(not(target_os = "android"))]

@@ -98,6 +98,24 @@ pub(crate) fn focus_and_visibility(application_state: isize) -> (bool, bool) {
     (application_state == 0, application_state != 2)
 }
 
+/// `UIUserInterfaceStyle` → the color scheme: unspecified = 0, light = 1,
+/// dark = 2.
+pub(crate) fn color_scheme(user_interface_style: isize) -> runtime_shared::ColorScheme {
+    match user_interface_style {
+        1 => runtime_shared::ColorScheme::Light,
+        2 => runtime_shared::ColorScheme::Dark,
+        _ => runtime_shared::ColorScheme::Auto,
+    }
+}
+
+/// Whether a trait change seen in `application_state` is the user's
+/// appearance. Not in the background: there iOS lays the app out in BOTH
+/// styles for its app-switcher snapshots, and the flip it reports is not
+/// a setting. Entering the foreground re-reads the real one.
+pub(crate) fn trait_change_counts(application_state: isize) -> bool {
+    application_state != 2
+}
+
 /// What [`LockState::request`] tells the caller to do.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LockRequest {
@@ -173,6 +191,24 @@ impl LockState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interface_styles_map_to_color_schemes() {
+        assert_eq!(color_scheme(0), runtime_shared::ColorScheme::Auto);
+        assert_eq!(color_scheme(1), runtime_shared::ColorScheme::Light);
+        assert_eq!(color_scheme(2), runtime_shared::ColorScheme::Dark);
+    }
+
+    /// iOS lays a backgrounded app out in light AND dark for its switcher
+    /// snapshots; following that would flip the theme twice behind the
+    /// user's back. Active and inactive (Control Centre, where the user
+    /// toggles dark mode) count.
+    #[test]
+    fn a_trait_change_in_the_background_is_not_the_users_appearance() {
+        assert!(trait_change_counts(0), "active");
+        assert!(trait_change_counts(1), "inactive: Control Centre is over the app");
+        assert!(!trait_change_counts(2), "background: a snapshot");
+    }
 
     #[test]
     fn gc_buttons_map_like_web_buttons() {

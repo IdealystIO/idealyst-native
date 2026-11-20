@@ -271,32 +271,66 @@ pub fn install_current_platform(platform: Platform) {
 runtime_tls::thread_local! {
     static CURRENT_COLOR_SCHEME: std::cell::Cell<ColorScheme> =
         const { std::cell::Cell::new(ColorScheme::Auto) };
+    static COLOR_SCHEME_OBSERVERS: std::cell::RefCell<Vec<Rc<dyn Fn(ColorScheme)>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The host platform's appearance preference (light / dark / auto) as
-/// reported by the backend at mount. Read it at startup to pick a
-/// matching default theme so the app doesn't flash the wrong one — e.g.
+/// The host platform's appearance preference (light / dark / auto): what
+/// the backend read at mount, then each change it reported since (the OS
+/// switching at sunset, the user flipping Control Centre or the browser
+/// following the OS). Read it at startup to pick a matching default theme
+/// so the app doesn't flash the wrong one — e.g.
 /// `let dark = matches!(color_scheme(), ColorScheme::Dark);`.
 ///
-/// This is the platform's *initial* preference, captured once during
-/// `mount(...)` (the same one-shot model as [`platform`]); it is not a
-/// reactive subscription to live OS theme changes. Apps that let the
-/// user toggle themes own that state themselves and treat this only as
-/// the default. Returns [`ColorScheme::Auto`] before any mount has
-/// happened on this thread.
+/// A plain read, not a subscription. To follow changes, read
+/// `runtime_core::system_color_scheme()` (a signal) or install a theme
+/// that follows the system (`Tokens::follow_system`, idea-theme's
+/// `ColorScheme::Auto`). Returns [`ColorScheme::Auto`] before any mount
+/// has happened on this thread, and on a backend that cannot tell.
 pub fn color_scheme() -> ColorScheme {
     CURRENT_COLOR_SCHEME.with(|c| c.get())
 }
 
 /// Seed the thread-local [`color_scheme`] accessor with the booting
-/// backend's reported appearance preference.
+/// backend's reported appearance preference. The same as
+/// [`report_color_scheme`]: observers hear it when it differs.
 ///
 /// Part of the **backend-author surface** — see [`crate::backend`].
 /// Normally reached through
 /// `runtime_vocabulary::backend::install_env_services`, which reads
 /// `AppEnvOps::color_scheme` off the backend.
 pub fn install_current_color_scheme(scheme: ColorScheme) {
-    CURRENT_COLOR_SCHEME.with(|c| c.set(scheme));
+    report_color_scheme(scheme);
+}
+
+/// The platform's appearance preference changed: store it and tell every
+/// [`observe_color_scheme`] observer, when it differs from the last one.
+/// A backend calls it from its platform callback, then schedules its
+/// usual post-event flush so world signals commit.
+///
+/// Part of the **backend-author surface** — see [`crate::backend`].
+pub fn report_color_scheme(scheme: ColorScheme) {
+    if CURRENT_COLOR_SCHEME.with(|c| c.replace(scheme)) == scheme {
+        return;
+    }
+    // Snapshot outside the borrow: an observer may register another.
+    let observers: Vec<Rc<dyn Fn(ColorScheme)>> = COLOR_SCHEME_OBSERVERS.with(|o| o.borrow().clone());
+    for observer in observers {
+        observer(scheme);
+    }
+}
+
+/// Run `f` with each change [`report_color_scheme`] makes. Observers live
+/// for the thread (a world's signal, a theme that follows the system).
+pub fn observe_color_scheme(f: impl Fn(ColorScheme) + 'static) {
+    COLOR_SCHEME_OBSERVERS.with(|o| o.borrow_mut().push(Rc::new(f)));
+}
+
+/// Reset to `Auto` and drop the observers. Test isolation only.
+#[doc(hidden)]
+pub fn reset_color_scheme_for_tests() {
+    CURRENT_COLOR_SCHEME.with(|c| c.set(ColorScheme::Auto));
+    COLOR_SCHEME_OBSERVERS.with(|o| o.borrow_mut().clear());
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +678,24 @@ mod tests {
         assert_eq!(*opened.borrow(), vec!["https://example.com".to_string()], "off: opened again");
         assert!(captured_url_opens().is_empty());
         install_url_opener(None);
+    }
+
+    /// CrewForge: an app in `ColorScheme::Auto` kept its launch theme when
+    /// the OS switched, because the preference was read once at mount and
+    /// nothing could hear a change.
+    #[test]
+    fn regression_a_reported_color_scheme_change_reaches_observers() {
+        reset_color_scheme_for_tests();
+        let heard: Rc<RefCell<Vec<ColorScheme>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = heard.clone();
+        observe_color_scheme(move |s| sink.borrow_mut().push(s));
+
+        install_current_color_scheme(ColorScheme::Light);
+        report_color_scheme(ColorScheme::Dark);
+        report_color_scheme(ColorScheme::Dark);
+        assert_eq!(color_scheme(), ColorScheme::Dark);
+        assert_eq!(*heard.borrow(), vec![ColorScheme::Light, ColorScheme::Dark], "only changes");
+        reset_color_scheme_for_tests();
     }
 
     /// `install_current_platform` must round-trip through the global
