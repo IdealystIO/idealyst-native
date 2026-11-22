@@ -289,9 +289,9 @@ impl Default for SidebarToggleProps {
     fn default() -> Self {
         Self {
             sidebar: SidebarState::default(),
-            label: "Menu".to_string(),
-            collapse_label: "Collapse sidebar".to_string(),
-            expand_label: "Expand sidebar".to_string(),
+            label: crate::layout_labels().menu.clone(),
+            collapse_label: crate::layout_labels().collapse_sidebar.clone(),
+            expand_label: crate::layout_labels().expand_sidebar.clone(),
         }
     }
 }

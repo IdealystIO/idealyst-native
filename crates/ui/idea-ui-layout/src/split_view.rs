@@ -270,7 +270,7 @@ pub fn SplitView(props: SplitViewProps) -> Element {
                                     on_click = close,
                                     tone = tone::Neutral,
                                     variant = variant::Ghost,
-                                    label = Some("Close".to_string()),
+                                    label = Some(crate::layout_labels().close.clone()),
                                 )
                             }
                         }

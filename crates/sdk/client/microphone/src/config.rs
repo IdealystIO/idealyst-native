@@ -68,7 +68,9 @@ pub struct MicDevice {
     /// there a stored id can go stale (opening it is then `NoInputDevice`).
     pub id: String,
     /// A human-readable name to show in a picker ("MacBook Pro Microphone",
-    /// "Built-in microphone", "USB headset"). Never empty.
+    /// "Built-in microphone", "USB headset"). Never empty. An input the
+    /// platform names none is named from the installed
+    /// [`MicLabels`](crate::MicLabels).
     pub label: String,
 }
 

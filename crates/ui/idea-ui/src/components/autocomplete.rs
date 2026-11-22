@@ -177,11 +177,13 @@ use crate::components::select::{
 // by `field::adornment_icon_px_for` (14 / 16 / 18) — pixel constants, which
 // is why these are too (stylesheets also can't add two tokens).
 
-/// The trailing ✕'s accessible name.
-pub const AUTOCOMPLETE_CLEAR_LABEL: &str = "Clear";
-/// The disclosure chevron's accessible name (it opens and closes the
-/// options menu).
-pub const AUTOCOMPLETE_TOGGLE_LABEL: &str = "Show options";
+/// The trailing ✕'s accessible name in English, the default of
+/// [`UiLabels::clear`](crate::UiLabels::clear).
+pub const AUTOCOMPLETE_CLEAR_LABEL: &str = crate::labels::EN_CLEAR;
+/// The disclosure chevron's accessible name in English (it opens and
+/// closes the options menu), the default of
+/// [`UiLabels::show_options`](crate::UiLabels::show_options).
+pub const AUTOCOMPLETE_TOGGLE_LABEL: &str = crate::labels::EN_SHOW_OPTIONS;
 
 /// Chevron-only right reserve at `sm`: 8 + 14 + 4.
 pub const AUTOCOMPLETE_PAD_SM_PX: f32 = 26.0;
@@ -380,12 +382,6 @@ impl AutocompleteSlot {
     }
 }
 
-/// Default text shown in the menu when nothing matches the query.
-const DEFAULT_EMPTY_TEXT: &str = "No results";
-
-/// Default text of the row shown while `loading` is set.
-const DEFAULT_LOADING_TEXT: &str = "Loading…";
-
 // Reactive-by-default: `#[props]` rewrites each scalar-DATA field `T` →
 // `Reactive<T>`. AUTO-SKIPPED: `value` (a `Signal` reactive source) and
 // `on_change` (an `Rc` handler). `options` is a `Vec`, which the macro skips
@@ -439,7 +435,8 @@ pub struct AutocompleteProps {
     /// place of the empty text when there are none. Default `false`.
     #[schema(constraint = "reactive: static bool or Signal/rx!")]
     pub loading: bool,
-    /// Text of the loading row. Defaults to "Loading…".
+    /// Text of the loading row. `None` reads the installed
+    /// [`UiLabels::loading`](crate::UiLabels::loading).
     pub loading_text: Option<String>,
     /// Let the value be text no row offers: `Enter` and blur commit the typed
     /// text through `on_change` (the id of the row whose label it equals, else
@@ -453,8 +450,8 @@ pub struct AutocompleteProps {
     /// Placeholder shown when the input is empty. `Reactive<Option<String>>`.
     #[prop(example = Some(String::from("Search fruit…")))]
     pub placeholder: Option<String>,
-    /// Text shown in the menu when no option matches the query. Defaults to
-    /// "No results".
+    /// Text shown in the menu when no option matches the query. `None`
+    /// reads the installed [`UiLabels::no_results`](crate::UiLabels::no_results).
     pub empty_text: Option<String>,
     /// Optional slot pinned ABOVE the scrolling row area (a caption, a
     /// hint, …). Built per menu-open with an [`AutocompleteSlotCx`].
@@ -700,7 +697,7 @@ fn clear_button(clear: Rc<dyn Fn()>, size: SelectSize, styles: &AutocompleteSlot
     let glyph = ui! { Icon(data = CLEAR_GLYPH, size = px, color = Some(muted)) };
     pressable(vec![glyph], move || (clear)())
         .preserves_focus(true)
-        .a11y_label(AUTOCOMPLETE_CLEAR_LABEL)
+        .a11y_label(crate::labels::ui_labels().clear.clone())
         .with_style(AutocompleteStyles::clear().overridden(styles.clear.as_ref()))
         .into_element()
 }
@@ -723,7 +720,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let empty_text = props
         .empty_text
         .get()
-        .unwrap_or_else(|| DEFAULT_EMPTY_TEXT.to_string());
+        .unwrap_or_else(|| crate::labels::ui_labels().no_results.clone());
     // The live list, as a signal of one shared snapshot (see
     // `select::live_options`). Rows identify their option by ID, never by
     // position: a keyed row survives a list change, and an index it captured
@@ -1087,7 +1084,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     })
     .preserves_focus(true)
     // Glyph-only, so named like the ✕ beside it.
-    .a11y_label(AUTOCOMPLETE_TOGGLE_LABEL)
+    .a11y_label(crate::labels::ui_labels().show_options.clone())
     .with_style(AutocompleteStyles::chevron().overridden(styles.chevron.as_ref()))
     .into_element();
 
@@ -1179,7 +1176,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 })
                 .collect();
             if is_loading {
-                rows.push(note("__loading", loading_text.get().unwrap_or_else(|| DEFAULT_LOADING_TEXT.to_string())));
+                rows.push(note("__loading", loading_text.get().unwrap_or_else(|| crate::labels::ui_labels().loading.clone())));
             }
             rows
         });

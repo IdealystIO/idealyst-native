@@ -98,6 +98,8 @@ pub mod date;
 /// delimiters + segment auto-advance, derived from the format tokens.
 pub(crate) mod date_mask;
 pub mod intent;
+/// The words components draw themselves, installable by the app.
+pub mod labels;
 pub mod modifiers;
 // Compile-checked usage examples for idea-ui components. `recipe!`
 // self-gates on the `catalog` feature, so this module is empty (zero
@@ -192,6 +194,7 @@ pub use components::date_picker::{
 pub use components::time_input::{TimeInput, TimeInputProps};
 // The date components' value vocabulary — apps hold these in their state.
 pub use date::{CivilDate, CivilDateTime, CivilTime, DateLabels, Weekday};
+pub use labels::{install_ui_labels, ui_labels, PagerCount, UiLabels};
 pub use components::center::{Center, CenterProps};
 pub use components::checkbox::{
     Checkbox, CheckboxChecked, CheckboxDimmed, CheckboxProps, CheckboxRestyle, CheckboxSize, CheckboxSlotStyles,

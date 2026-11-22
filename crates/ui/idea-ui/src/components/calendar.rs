@@ -665,8 +665,8 @@ pub struct CalendarProps {
     pub is_date_disabled: Option<Rc<dyn Fn(CivilDate) -> bool>>,
     /// First column of the grid. Default Monday (ISO).
     pub first_weekday: Weekday,
-    /// Month/weekday display names. Default English — pass your own
-    /// [`DateLabels`] to localize.
+    /// Month/weekday display names for this calendar. `None` reads the
+    /// installed [`UiLabels::date`](crate::UiLabels::date).
     #[prop(static)]
     pub labels: Option<Rc<DateLabels>>,
     /// Draw the panel border. Turn off when embedding in a popup that
@@ -713,7 +713,7 @@ pub fn Calendar(props: CalendarProps) -> Element {
         max: props.max.clone(),
         is_date_disabled: props.is_date_disabled.clone(),
         first_weekday: props.first_weekday.get(),
-        labels: props.labels.clone().unwrap_or_else(DateLabels::english),
+        labels: props.labels.clone().unwrap_or_else(|| crate::labels::ui_labels().date.clone()),
         sel_of: Rc::new(move |d| {
             if value.get() == Some(d) {
                 DaySel::On
@@ -750,7 +750,8 @@ pub struct RangeCalendarProps {
     pub is_date_disabled: Option<Rc<dyn Fn(CivilDate) -> bool>>,
     /// First column of the grid. Default Monday (ISO).
     pub first_weekday: Weekday,
-    /// Month/weekday display names. Default English.
+    /// Month/weekday display names. `None` reads the installed
+    /// [`UiLabels::date`](crate::UiLabels::date).
     #[prop(static)]
     pub labels: Option<Rc<DateLabels>>,
     /// Panel border — see [`CalendarProps::framed`].
@@ -798,7 +799,7 @@ pub fn RangeCalendar(props: RangeCalendarProps) -> Element {
         max: props.max.clone(),
         is_date_disabled: props.is_date_disabled.clone(),
         first_weekday: props.first_weekday.get(),
-        labels: props.labels.clone().unwrap_or_else(DateLabels::english),
+        labels: props.labels.clone().unwrap_or_else(|| crate::labels::ui_labels().date.clone()),
         sel_of: Rc::new(move |d| {
             // A pending anchor takes over the display — the old committed
             // range would otherwise show two competing selections.

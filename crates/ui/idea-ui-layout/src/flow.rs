@@ -76,9 +76,16 @@ pub struct FlowLabels {
     pub steps: String,
 }
 
+impl FlowLabels {
+    pub fn english() -> Self {
+        Self { step_of: Rc::new(|step, count| format!("Step {step} of {count}")), steps: "Steps".to_string() }
+    }
+}
+
+/// The installed [`LayoutLabels::flow`](crate::LayoutLabels::flow).
 impl Default for FlowLabels {
     fn default() -> Self {
-        Self { step_of: Rc::new(|step, count| format!("Step {step} of {count}")), steps: "Steps".to_string() }
+        crate::layout_labels().flow.clone()
     }
 }
 

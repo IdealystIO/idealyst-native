@@ -272,17 +272,18 @@ fn GroupToggle(props: &GroupToggleProps) -> Element {
 
 /// The toggle for one state — see [`GroupToggle`].
 pub(super) fn toggle_button(collapsed: Signal<bool>, is_collapsed: bool, title: &str) -> Element {
-    let (mark, verb, traits) = if is_collapsed {
-        (COLLAPSED_MARK, "Expand", AccessibilityTraits::COLLAPSED)
+    let labels = crate::labels::ui_labels();
+    let (mark, name, traits) = if is_collapsed {
+        (COLLAPSED_MARK, (labels.expand_group)(title), AccessibilityTraits::COLLAPSED)
     } else {
-        (EXPANDED_MARK, "Collapse", AccessibilityTraits::EXPANDED)
+        (EXPANDED_MARK, (labels.collapse_group)(title), AccessibilityTraits::EXPANDED)
     };
     let icon = ui! { Icon(data = mark, size = TOGGLE_ICON_PX, tone = Some(crate::tone::Neutral.into())) };
     runtime_core::pressable(vec![icon], move || collapsed.update(|c| !*c))
         .with_style(TableStyles::group_toggle().into_style_application())
         .a11y_role(Role::Button)
         .a11y_traits(traits)
-        .a11y_label(format!("{verb} {title}"))
+        .a11y_label(name)
         .into_element()
 }
 

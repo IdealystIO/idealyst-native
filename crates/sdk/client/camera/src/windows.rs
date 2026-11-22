@@ -85,7 +85,7 @@ unsafe fn list_devices() -> Result<Vec<CameraDevice>, CameraError> {
         let label = string_attr(&activate, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME).unwrap_or_default();
         out.push(CameraDevice {
             id,
-            label: if label.is_empty() { "Camera".into() } else { label },
+            label: if label.is_empty() { crate::camera_labels().camera.clone() } else { label },
             facing: DeviceFacing::Unreported,
         });
     }

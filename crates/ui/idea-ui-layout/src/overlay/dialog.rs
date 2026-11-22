@@ -112,7 +112,7 @@ pub fn Dialog(props: &DialogProps) -> Element {
                                 // its tallest child, so a larger arrow
                                 // would move the title when it appears.
                                 size = IconButtonSize::Sm,
-                                label = Some("Back".to_string()),
+                                label = Some(crate::layout_labels().back.clone()),
                                 on_click = back.clone(),
                             )
                         }
@@ -126,7 +126,7 @@ pub fn Dialog(props: &DialogProps) -> Element {
                     icon = Some(X),
                     variant = variant::Ghost,
                     size = IconButtonSize::Sm,
-                    label = Some("Close".to_string()),
+                    label = Some(crate::layout_labels().close.clone()),
                     on_click = on_close.clone(),
                 )
             }

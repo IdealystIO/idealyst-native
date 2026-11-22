@@ -94,6 +94,7 @@ mod config;
 mod robot_controls;
 mod devices;
 mod error;
+mod labels;
 // Requested vs. observed facing: the check web and desktop Linux run on the
 // camera they opened (iOS/macOS/Android resolve facing from lens metadata).
 // Compiled for tests on every host so the rule is covered everywhere.
@@ -124,6 +125,7 @@ mod android_preview;
 
 pub use config::{CameraConfig, CameraDevice, CameraFacing, DeviceFacing};
 pub use error::CameraError;
+pub use labels::{camera_labels, install_camera_labels, CameraLabels};
 
 // The live-source surface is the shared `media-stream` vocabulary. Re-export
 // it so a camera user has everything from `camera::`.

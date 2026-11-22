@@ -59,7 +59,7 @@ pub(crate) fn picked_from_dropped(f: &runtime_shared::DroppedFile) -> Option<Pic
 
 pub(crate) async fn pick(request: &PickRequest) -> Result<Option<Vec<PickedFile>>, PickError> {
     let mut req = SelectedFiles::open_file()
-        .title("Open File")
+        .title(crate::picker_labels().title.as_str())
         .multiple(request.allow_multiple);
 
     if let Some(filter) = build_filter(request) {
@@ -108,12 +108,12 @@ fn build_filter(request: &PickRequest) -> Option<FileFilter> {
         PickKind::Media(k) => crate::mime::media_mimes(*k).to_vec(),
     };
 
-    let mut filter = FileFilter::new("Files");
+    let mut filter = FileFilter::new(crate::picker_labels().files.as_str());
     let mut any = false;
     for mime in mimes {
-        match crate::mime::win_filter(mime) {
+        match crate::mime::win_patterns(mime) {
             // Reuse the Windows glob table for wildcard/known types.
-            Some((_label, patterns)) => {
+            Some(patterns) => {
                 for glob in patterns.split(';') {
                     filter = filter.glob(glob);
                     any = true;

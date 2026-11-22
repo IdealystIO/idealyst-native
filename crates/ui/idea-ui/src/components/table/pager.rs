@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use runtime_core::{component, rx, signal, ui, Element, IdealystSchema, Length, Reactive, StyleRules};
 
-use crate::components::pagination::{Pagination, NEXT_PAGE_LABEL, PREVIOUS_PAGE_LABEL};
+use crate::components::pagination::Pagination;
 use crate::components::select::{Select, SelectOption, SelectSize, SelectSlotStyles};
 use crate::components::typography::Typography;
 
@@ -24,6 +24,7 @@ use crate::components::typography::Typography;
 /// because a `min_width` beats its container's width, and the trigger then
 /// spills over the page numbers beside it.
 const ROWS_PICKER_MIN_WIDTH: f32 = 84.0;
+use crate::labels::PagerCount;
 use crate::typography_kind;
 
 /// "26–50": the window's first and last row, 1-based; "0" for an empty
@@ -42,13 +43,15 @@ pub fn page_window_text(offset: usize, page_size: usize, total: usize) -> String
 /// projects", "")` — a range that covers everything says nothing the total
 /// doesn't. None: `("No projects", "")`, never "0 of 0".
 pub fn pager_count_text(offset: usize, page_size: usize, total: usize, noun: &str) -> (String, String) {
+    let labels = crate::labels::ui_labels();
     if total == 0 {
-        return (format!("No {noun}"), String::new());
+        return (labels.pager_count)(PagerCount::None { noun });
     }
     if total <= page_size.max(1) {
-        return (format!("{total} {noun}"), String::new());
+        return (labels.pager_count)(PagerCount::All { total, noun });
     }
-    (page_window_text(offset, page_size, total), format!("of {total} {noun}"))
+    let window = page_window_text(offset, page_size, total);
+    (labels.pager_count)(PagerCount::Window { window: &window, total, noun })
 }
 
 /// Whether the "Rows" picker can change anything: some offered page size
@@ -101,8 +104,8 @@ impl Default for TablePagerProps {
             on_offset: Rc::new(|_| {}),
             page_sizes: Vec::new(),
             on_page_size: None,
-            previous_label: PREVIOUS_PAGE_LABEL.to_string(),
-            next_label: NEXT_PAGE_LABEL.to_string(),
+            previous_label: crate::labels::ui_labels().previous_page.clone(),
+            next_label: crate::labels::ui_labels().next_page.clone(),
             styles: Default::default(),
         }
     }
@@ -178,7 +181,7 @@ pub fn TablePager(props: &TablePagerProps) -> Element {
             view(style = group()) {
                 if picker_matters() {
                     view(style = group()) {
-                        Typography(content = "Rows".to_string(), kind = typography_kind::BodySm, muted = true)
+                        Typography(content = crate::labels::ui_labels().rows_per_page.clone(), kind = typography_kind::BodySm, muted = true)
                         Select(
                             value = size_text,
                             on_change = on_size_text.clone(),

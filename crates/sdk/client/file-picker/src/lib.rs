@@ -91,6 +91,9 @@ pub use error::PickError;
 
 mod mime;
 
+mod labels;
+pub use labels::{install_picker_labels, picker_labels, PickerLabels};
+
 // Shared 1-MiB-chunk path reader for the backends that read from a real file
 // path (macOS/iOS/Windows/Linux). Android (fd) and web (Blob) bring their own.
 #[cfg(all(

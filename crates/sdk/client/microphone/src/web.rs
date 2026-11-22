@@ -165,7 +165,7 @@ pub(crate) async fn devices() -> Result<Vec<MicDevice>, MicError> {
         .filter(|d| !d.id.is_empty())
         .map(|mut d| {
             if d.label.is_empty() {
-                d.label = "Microphone".into();
+                d.label = crate::mic_labels().microphone.clone();
             }
             d
         })

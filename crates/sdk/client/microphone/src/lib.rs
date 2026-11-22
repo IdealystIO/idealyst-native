@@ -80,10 +80,12 @@ mod buffer;
 mod config;
 mod devices;
 mod error;
+mod labels;
 
 pub use buffer::AudioBuffer;
 pub use config::{AudioStreamConfig, MicDevice};
 pub use error::MicError;
+pub use labels::{install_mic_labels, mic_labels, MicLabels};
 
 // The live-source surface, re-exported so a microphone user has everything
 // from `microphone::`. `microphone` is to `AudioStream` what `camera` is to

@@ -33,8 +33,9 @@
 //! always was. Parsing matches a month name
 //! case-insensitively. It accepts a weekday name but ignores it, because
 //! the date fields decide the day. [`format_date`] and its siblings use
-//! [`DateLabels::english`]; the `*_with` variants take the labels to use,
-//! and the date components pass their `labels` prop through.
+//! the installed [`UiLabels::date`](crate::UiLabels::date); the `*_with`
+//! variants take the labels to use, and the date components pass their
+//! `labels` prop through.
 
 use std::rc::Rc;
 
@@ -281,10 +282,10 @@ impl CivilDateTime {
 
 /// The date components' display strings: month/weekday names, and the
 /// accessible names of their icon-only buttons (the calendar's step
-/// chevrons, a date input's clear ✕ and calendar button). English by
-/// default ([`DateLabels::english`]); construct your own (or map the
-/// fields through your i18n layer) and pass it to the components'
-/// `labels` prop to localize. Weekday arrays are Monday-first
+/// chevrons, a date input's clear ✕ and calendar button). Construct your
+/// own (or map [`DateLabels::english`]'s fields through your i18n layer)
+/// and install it app-wide as [`UiLabels::date`](crate::UiLabels::date),
+/// or pass it to one component's `labels` prop. Weekday arrays are Monday-first
 /// ([`Weekday::as_index`] order) regardless of the calendar's
 /// `first_weekday` — the components rotate for display.
 #[derive(Clone, Debug, PartialEq, runtime_core::Remote)]
@@ -723,7 +724,7 @@ impl Fields {
 /// `"D/M/YYYY"`, `"ddd D MMM YYYY"`). Time tokens produce nothing. Names
 /// are English; see [`format_date_with`].
 pub fn format_date(date: CivilDate, fmt: &str) -> String {
-    format_date_with(date, fmt, &DateLabels::english())
+    format_date_with(date, fmt, &crate::labels::ui_labels().date)
 }
 
 /// [`format_date`] with the month and weekday names from `labels`.
@@ -734,14 +735,14 @@ pub fn format_date_with(date: CivilDate, fmt: &str, labels: &DateLabels) -> Stri
 /// Format `time` with a time-token format string (e.g. `"HH:mm"`,
 /// `"h:mm A"`). Date tokens produce nothing.
 pub fn format_time(time: CivilTime, fmt: &str) -> String {
-    format_with(&lex(fmt), None, Some(time), &DateLabels::english())
+    format_with(&lex(fmt), None, Some(time), &crate::labels::ui_labels().date)
 }
 
 /// Format a datetime with a combined format string
 /// (e.g. `"YYYY-MM-DD HH:mm"`). Names are English; see
 /// [`format_datetime_with`].
 pub fn format_datetime(dt: CivilDateTime, fmt: &str) -> String {
-    format_datetime_with(dt, fmt, &DateLabels::english())
+    format_datetime_with(dt, fmt, &crate::labels::ui_labels().date)
 }
 
 /// [`format_datetime`] with the month and weekday names from `labels`.
@@ -753,7 +754,7 @@ pub fn format_datetime_with(dt: CivilDateTime, fmt: &str, labels: &DateLabels) -
 /// and the whole input is consumed. Lenient about zero-padding. Names
 /// are English; see [`parse_date_with`].
 pub fn parse_date(input: &str, fmt: &str) -> Option<CivilDate> {
-    parse_date_with(input, fmt, &DateLabels::english())
+    parse_date_with(input, fmt, &crate::labels::ui_labels().date)
 }
 
 /// [`parse_date`] against the month and weekday names in `labels`.
@@ -763,13 +764,13 @@ pub fn parse_date_with(input: &str, fmt: &str, labels: &DateLabels) -> Option<Ci
 
 /// Parse a time of day (see [`parse_date`] for the leniency rules).
 pub fn parse_time(input: &str, fmt: &str) -> Option<CivilTime> {
-    parse_with(&lex(fmt), input, &DateLabels::english())?.to_time()
+    parse_with(&lex(fmt), input, &crate::labels::ui_labels().date)?.to_time()
 }
 
 /// Parse a combined datetime. Names are English; see
 /// [`parse_datetime_with`].
 pub fn parse_datetime(input: &str, fmt: &str) -> Option<CivilDateTime> {
-    parse_datetime_with(input, fmt, &DateLabels::english())
+    parse_datetime_with(input, fmt, &crate::labels::ui_labels().date)
 }
 
 /// [`parse_datetime`] against the month and weekday names in `labels`.

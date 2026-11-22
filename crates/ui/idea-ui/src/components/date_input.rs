@@ -114,7 +114,8 @@ pub struct DateInputProps {
     pub error: Option<String>,
     /// Placeholder; defaults to the format string itself.
     pub placeholder: Option<String>,
-    /// Error message shown while the text doesn't parse.
+    /// Error message shown while the text doesn't parse. Defaults to the
+    /// installed [`UiLabels`](crate::UiLabels).
     pub invalid_message: String,
     /// Input density. Default Md.
     pub size: FieldSize,
@@ -133,7 +134,8 @@ pub struct DateInputProps {
     pub is_date_disabled: Option<Rc<dyn Fn(CivilDate) -> bool>>,
     /// First popup calendar column. Default Monday (ISO).
     pub first_weekday: Weekday,
-    /// Month/weekday display names. Default English.
+    /// Month/weekday display names. `None` reads the installed
+    /// [`UiLabels::date`](crate::UiLabels::date).
     #[prop(static)]
     pub labels: Option<Rc<DateLabels>>,
     /// Pin an exact input width in pixels (see [`Field`]).
@@ -153,7 +155,7 @@ impl Default for DateInputProps {
             help: Reactive::Static(None),
             error: Reactive::Static(None),
             placeholder: Reactive::Static(None),
-            invalid_message: Reactive::Static("Invalid date".to_string()),
+            invalid_message: Reactive::Static(crate::labels::ui_labels().invalid_date.clone()),
             size: Reactive::Static(FieldSize::default()),
             picker: Reactive::Static(true),
             clearable: Reactive::Static(false),
@@ -178,7 +180,7 @@ pub fn DateInput(props: DateInputProps) -> Element {
     let format = props.format.get();
     // Month/weekday name tokens (`MMM`, `ddd`) read the same labels the
     // popup calendar shows.
-    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
+    let names = props.labels.clone().unwrap_or_else(|| crate::labels::ui_labels().date.clone());
 
     let wiring = typed_field_wiring(TypedFieldSpec {
         value,
@@ -305,7 +307,8 @@ pub struct DateTimeInputProps {
     pub error: Option<String>,
     /// Placeholder; defaults to the format string itself.
     pub placeholder: Option<String>,
-    /// Error message shown while the text doesn't parse.
+    /// Error message shown while the text doesn't parse. Defaults to the
+    /// installed [`UiLabels`](crate::UiLabels).
     pub invalid_message: String,
     /// Input density. Default Md.
     pub size: FieldSize,
@@ -323,7 +326,8 @@ pub struct DateTimeInputProps {
     pub is_date_disabled: Option<Rc<dyn Fn(CivilDate) -> bool>>,
     /// First popup calendar column. Default Monday (ISO).
     pub first_weekday: Weekday,
-    /// Month/weekday display names. Default English.
+    /// Month/weekday display names. `None` reads the installed
+    /// [`UiLabels::date`](crate::UiLabels::date).
     #[prop(static)]
     pub labels: Option<Rc<DateLabels>>,
     /// Pin an exact input width in pixels.
@@ -345,7 +349,7 @@ impl Default for DateTimeInputProps {
             help: Reactive::Static(None),
             error: Reactive::Static(None),
             placeholder: Reactive::Static(None),
-            invalid_message: Reactive::Static("Invalid date/time".to_string()),
+            invalid_message: Reactive::Static(crate::labels::ui_labels().invalid_date_time.clone()),
             size: Reactive::Static(FieldSize::default()),
             picker: Reactive::Static(true),
             clearable: Reactive::Static(false),
@@ -370,7 +374,7 @@ pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
     let on_change = super::anchor_to_component(props.on_change.clone());
     let format = props.format.get();
     // See `DateInput`.
-    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
+    let names = props.labels.clone().unwrap_or_else(|| crate::labels::ui_labels().date.clone());
 
     let wiring = typed_field_wiring(TypedFieldSpec {
         value,

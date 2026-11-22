@@ -207,6 +207,10 @@ Note that `button.rs` is **not** an example of this rule: its `on_click` is a re
 
 A signal-typed prop should declare the narrowest half it needs: `ReadSignal<T>` when the component only observes (`Signal::read_only()` / `.split()` at the call site coerce; `memo` outputs already are one), `WriteSignal<T>` when a child only reports values upward, and the unified `Signal<T>` ONLY for genuinely two-way props (`TextInput.value`, `Toggle.value`, `Slider.value`). The signature then proves what the component can do to the caller's state. Apply on components you're already touching (per 9.7), not as a repo-wide sweep.
 
+### 9.6b No baked-in words
+
+A component or SDK never draws a word the app cannot replace: a glyph button's accessible name, an empty or loading line, a placeholder, a fallback device name, a native dialog's title. Read it from the crate's installed labels set (`idea_ui::ui_labels()`, `idea_ui_layout::layout_labels()`), English until the app installs its own, and let a per-instance prop override it where a screen needs its own words. A word with a number or a name in it is a function (`Fn(usize) -> String`), so another language can order it its own way. A new word means a new field on the set and its English default, not a literal at the call site.
+
 ### 9.7 Bring code you touch up to standard
 
 When you're editing a component (or the file it lives in) for any other reason and you notice it violates 9.1–9.6, fix it in the same change. Don't ship "half-converted" files where a refactored component sits next to a legacy one. Don't manufacture a follow-up PR for the cleanup.

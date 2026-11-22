@@ -51,7 +51,7 @@ impl Default for ActionMenuProps {
             heading: Reactive::Static(None),
             actions: Vec::new(),
             icon: None,
-            label: "More actions".to_string(),
+            label: crate::layout_labels().more_actions.clone(),
             size: IconButtonSize::Sm,
             test_id: None,
         }

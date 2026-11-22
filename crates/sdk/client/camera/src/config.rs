@@ -142,7 +142,8 @@ pub struct CameraDevice {
     pub id: String,
     /// A human-readable name to show in a picker ("FaceTime HD Camera",
     /// "Back camera"). Never empty. Platforms that name no cameras (Android)
-    /// get one built from the facing.
+    /// get one built from the facing, in the installed
+    /// [`CameraLabels`](crate::CameraLabels).
     pub label: String,
     /// Which way the camera points.
     pub facing: DeviceFacing,

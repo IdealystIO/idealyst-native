@@ -1,16 +1,16 @@
 //! Platform-agnostic shaping of the camera list every backend returns.
 
-use crate::{CameraDevice, DeviceFacing};
+use crate::{CameraDevice, CameraLabels, DeviceFacing};
 
 /// The label for a camera the platform gives no name: Android names none,
 /// and a browser may leave one blank. Repeats are numbered afterwards by
 /// [`number_repeated_labels`].
 #[cfg_attr(not(any(test, target_arch = "wasm32", target_os = "android")), allow(dead_code))]
-pub(crate) fn unnamed_label(facing: DeviceFacing) -> &'static str {
+pub(crate) fn unnamed_label(labels: &CameraLabels, facing: DeviceFacing) -> String {
     match facing {
-        DeviceFacing::Front => "Front camera",
-        DeviceFacing::Back => "Back camera",
-        DeviceFacing::Unreported => "Camera",
+        DeviceFacing::Front => labels.front.clone(),
+        DeviceFacing::Back => labels.back.clone(),
+        DeviceFacing::Unreported => labels.camera.clone(),
     }
 }
 
@@ -25,7 +25,7 @@ const LENS_FACING_BACK: i32 = 1;
 /// `lensFacing` a decimal `LENS_FACING`, `-1` when unreported) into devices.
 /// Camera2 names no cameras, so each label comes from its facing.
 #[cfg(any(test, target_os = "android"))]
-pub(crate) fn from_camera2_list(flat: &[String]) -> Vec<CameraDevice> {
+pub(crate) fn from_camera2_list(labels: &CameraLabels, flat: &[String]) -> Vec<CameraDevice> {
     flat.chunks_exact(2)
         .map(|pair| {
             let facing = match pair[1].parse::<i32>() {
@@ -33,7 +33,7 @@ pub(crate) fn from_camera2_list(flat: &[String]) -> Vec<CameraDevice> {
                 Ok(LENS_FACING_BACK) => DeviceFacing::Back,
                 _ => DeviceFacing::Unreported,
             };
-            CameraDevice { id: pair[0].clone(), label: unnamed_label(facing).into(), facing }
+            CameraDevice { id: pair[0].clone(), label: unnamed_label(labels, facing), facing }
         })
         .collect()
 }
@@ -71,7 +71,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let out = number_repeated_labels(from_camera2_list(&flat));
+        let out = number_repeated_labels(from_camera2_list(&CameraLabels::english(), &flat));
         let got: Vec<_> = out.iter().map(|d| (d.id.as_str(), d.label.as_str(), d.facing)).collect();
         assert_eq!(
             got,
@@ -97,5 +97,16 @@ mod tests {
         assert_eq!(labels, ["USB Camera", "FaceTime HD Camera", "USB Camera 2", "USB Camera 3"]);
         let ids: Vec<_> = out.iter().map(|d| d.id.as_str()).collect();
         assert_eq!(ids, ["a", "b", "c", "d"], "ids and order are untouched");
+    }
+
+    /// A user of the framework could not translate the names the SDK
+    /// gives unnamed cameras. They come from the installed labels.
+    #[test]
+    fn regression_unnamed_cameras_take_the_installed_names() {
+        let fr = CameraLabels { front: "Caméra avant".into(), back: "Caméra arrière".into(), camera: "Caméra".into() };
+        let flat: Vec<String> = ["0", "1", "1", "0", "5", "1"].iter().map(|s| s.to_string()).collect();
+        let labels: Vec<_> = number_repeated_labels(from_camera2_list(&fr, &flat)).into_iter().map(|d| d.label).collect();
+        assert_eq!(labels, ["Caméra arrière", "Caméra avant", "Caméra arrière 2"]);
+        assert_eq!(unnamed_label(&fr, DeviceFacing::Unreported), "Caméra");
     }
 }

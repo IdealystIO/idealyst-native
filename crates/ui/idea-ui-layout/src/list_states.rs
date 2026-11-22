@@ -68,7 +68,7 @@ impl Blank {
 
 impl Default for Blank {
     fn default() -> Self {
-        Self::new("Nothing here yet")
+        Self::new(crate::layout_labels().nothing_here_yet.clone())
     }
 }
 
@@ -136,8 +136,8 @@ impl Default for ListStatesProps {
             is_empty: Reactive::Static(true),
             narrowed: Reactive::Static(false),
             blank: Blank::default(),
-            no_match: "No rows match.".to_string(),
-            failed_title: "Couldn't load this list".to_string(),
+            no_match: crate::layout_labels().no_rows_match.clone(),
+            failed_title: crate::layout_labels().failed_to_load.clone(),
             on_retry: None,
             loading: OptionalSlot::default(),
             rows: Slot::default(),

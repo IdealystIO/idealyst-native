@@ -173,7 +173,8 @@ pub struct DatePickerProps {
     pub value: Signal<Option<CivilDate>>,
     /// Fires with `Some(day)` on pick, `None` on an explicit clear.
     pub on_change: Rc<dyn Fn(Option<CivilDate>)>,
-    /// Trigger text when no value is set.
+    /// Trigger text when no value is set. `None` reads the installed
+    /// [`UiLabels`](crate::UiLabels).
     #[prop(example = Some(String::from("Pick a date")))]
     pub placeholder: Option<String>,
     /// Token format for the trigger's value text. Default `YYYY-MM-DD`.
@@ -188,7 +189,8 @@ pub struct DatePickerProps {
     pub is_date_disabled: Option<Rc<dyn Fn(CivilDate) -> bool>>,
     /// First calendar column. Default Monday (ISO).
     pub first_weekday: Weekday,
-    /// Month/weekday display names. Default English.
+    /// Month/weekday display names. `None` reads the installed
+    /// [`UiLabels::date`](crate::UiLabels::date).
     #[prop(static)]
     pub labels: Option<Rc<DateLabels>>,
     /// Trigger height — shared scale with `Select`. Default Md.
@@ -233,13 +235,13 @@ pub fn DatePicker(props: DatePickerProps) -> Element {
     let fmt = props.display_format.clone();
     let placeholder = props.placeholder.clone();
     // Name tokens (`MMM`, `ddd`) read the same labels the calendar shows.
-    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
+    let names = props.labels.clone().unwrap_or_else(|| crate::labels::ui_labels().date.clone());
     let label_source = move || {
         value
             .get()
             .map(|d| format_date_with(d, &fmt.get(), &names))
             .or_else(|| placeholder.get())
-            .unwrap_or_else(|| "Select date".to_string())
+            .unwrap_or_else(|| crate::labels::ui_labels().select_date.clone())
     };
     let trigger = picker_trigger(label_source, open, props.size.clone(), trigger_ref, props.test_id);
 
@@ -275,7 +277,7 @@ pub fn DatePicker(props: DatePickerProps) -> Element {
         if clearable.get() {
             let clear_close = close.clone();
             let clear_commit = on_change.clone();
-            content.push(footer_action("Clear".to_string(), move || {
+            content.push(footer_action(crate::labels::ui_labels().clear.clone(), move || {
                 (clear_commit)(None);
                 (clear_close)();
             }));
@@ -306,7 +308,8 @@ pub struct DateTimePickerProps {
     /// Fires with the combined value on every pick/edit; `None` on
     /// clear.
     pub on_change: Rc<dyn Fn(Option<CivilDateTime>)>,
-    /// Trigger text when no value is set.
+    /// Trigger text when no value is set. `None` reads the installed
+    /// [`UiLabels`](crate::UiLabels).
     #[prop(example = Some(String::from("Pick a date and time")))]
     pub placeholder: Option<String>,
     /// Token format for the trigger. Default `YYYY-MM-DD HH:mm`.
@@ -324,7 +327,8 @@ pub struct DateTimePickerProps {
     pub is_date_disabled: Option<Rc<dyn Fn(CivilDate) -> bool>>,
     /// First calendar column. Default Monday (ISO).
     pub first_weekday: Weekday,
-    /// Month/weekday display names. Default English.
+    /// Month/weekday display names. `None` reads the installed
+    /// [`UiLabels::date`](crate::UiLabels::date).
     #[prop(static)]
     pub labels: Option<Rc<DateLabels>>,
     /// Trigger height. Default Md.
@@ -389,13 +393,13 @@ pub fn DateTimePicker(props: DateTimePickerProps) -> Element {
 
     let fmt = props.display_format.clone();
     let placeholder = props.placeholder.clone();
-    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
+    let names = props.labels.clone().unwrap_or_else(|| crate::labels::ui_labels().date.clone());
     let label_source = move || {
         value
             .get()
             .map(|dt| format_datetime_with(dt, &fmt.get(), &names))
             .or_else(|| placeholder.get())
-            .unwrap_or_else(|| "Select date & time".to_string())
+            .unwrap_or_else(|| crate::labels::ui_labels().select_date_time.clone())
     };
     let trigger = picker_trigger(label_source, open, props.size.clone(), trigger_ref, props.test_id);
 
@@ -457,7 +461,7 @@ pub fn DateTimePicker(props: DateTimePickerProps) -> Element {
         if clearable.get() {
             let clear_close = close.clone();
             let clear_commit = on_change.clone();
-            content.push(footer_action("Clear".to_string(), move || {
+            content.push(footer_action(crate::labels::ui_labels().clear.clone(), move || {
                 (clear_commit)(None);
                 (clear_close)();
             }));
@@ -488,7 +492,8 @@ pub struct DateRangePickerProps {
     /// Fires with `Some((start, end))` when the pair completes; `None`
     /// on clear.
     pub on_change: Rc<dyn Fn(Option<(CivilDate, CivilDate)>)>,
-    /// Trigger text when no range is set.
+    /// Trigger text when no range is set. `None` reads the installed
+    /// [`UiLabels::select_range`](crate::UiLabels::select_range).
     #[prop(example = Some(String::from("Pick a range")))]
     pub placeholder: Option<String>,
     /// Token format for EACH endpoint in the trigger text. Default
@@ -502,7 +507,8 @@ pub struct DateRangePickerProps {
     pub is_date_disabled: Option<Rc<dyn Fn(CivilDate) -> bool>>,
     /// First calendar column. Default Monday (ISO).
     pub first_weekday: Weekday,
-    /// Month/weekday display names. Default English.
+    /// Month/weekday display names. `None` reads the installed
+    /// [`UiLabels::date`](crate::UiLabels::date).
     #[prop(static)]
     pub labels: Option<Rc<DateLabels>>,
     /// Trigger height. Default Md.
@@ -547,7 +553,7 @@ pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
 
     let fmt = props.display_format.clone();
     let placeholder = props.placeholder.clone();
-    let names = props.labels.clone().unwrap_or_else(DateLabels::english);
+    let names = props.labels.clone().unwrap_or_else(|| crate::labels::ui_labels().date.clone());
     let label_source = move || {
         value
             .get()
@@ -556,7 +562,7 @@ pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
                 format!("{} – {}", format_date_with(a, &f, &names), format_date_with(b, &f, &names))
             })
             .or_else(|| placeholder.get())
-            .unwrap_or_else(|| "Select range".to_string())
+            .unwrap_or_else(|| crate::labels::ui_labels().select_range.clone())
     };
     let trigger = picker_trigger(label_source, open, props.size.clone(), trigger_ref, props.test_id);
 
@@ -592,7 +598,7 @@ pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
         if clearable.get() {
             let clear_close = close.clone();
             let clear_commit = on_change.clone();
-            content.push(footer_action("Clear".to_string(), move || {
+            content.push(footer_action(crate::labels::ui_labels().clear.clone(), move || {
                 (clear_commit)(None);
                 (clear_close)();
             }));

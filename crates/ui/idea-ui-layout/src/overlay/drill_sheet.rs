@@ -113,7 +113,7 @@ pub fn DrillSheet(props: &DrillSheetProps) -> Element {
                                         icon = Some(CHEVRON_LEFT),
                                         variant = variant::Ghost,
                                         tone = tone::Neutral,
-                                        label = Some("Back".to_string()),
+                                        label = Some(crate::layout_labels().back.clone()),
                                         on_click = back.clone(),
                                     )
                                     Typography(content = title, kind = typography_kind::H3)

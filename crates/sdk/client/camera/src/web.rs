@@ -168,7 +168,7 @@ pub(crate) async fn devices() -> Result<Vec<CameraDevice>, CameraError> {
         .filter(|d| !d.id.is_empty())
         .map(|mut d| {
             if d.label.is_empty() {
-                d.label = crate::devices::unnamed_label(d.facing).into();
+                d.label = crate::devices::unnamed_label(&crate::camera_labels(), d.facing);
             }
             d
         })

@@ -219,7 +219,7 @@ pub(crate) async fn devices() -> Result<Vec<CameraDevice>, CameraError> {
         let item = JString::from(env.get_object_array_element(&flat, i).map_err(jni_err)?);
         strings.push(String::from(env.get_string(&item).map_err(jni_err)?));
     }
-    Ok(crate::devices::from_camera2_list(&strings))
+    Ok(crate::devices::from_camera2_list(&crate::camera_labels(), &strings))
 }
 
 pub(crate) async fn open(

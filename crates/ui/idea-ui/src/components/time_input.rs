@@ -71,7 +71,8 @@ pub struct TimeInputProps {
     pub error: Option<String>,
     /// Placeholder; defaults to the format string itself (`HH:mm`).
     pub placeholder: Option<String>,
-    /// Error message shown while the text doesn't parse.
+    /// Error message shown while the text doesn't parse. Defaults to the
+    /// installed [`UiLabels::invalid_time`](crate::UiLabels::invalid_time).
     pub invalid_message: String,
     /// Input density. Default Md.
     pub size: FieldSize,
@@ -94,7 +95,7 @@ impl Default for TimeInputProps {
             help: Reactive::Static(None),
             error: Reactive::Static(None),
             placeholder: Reactive::Static(None),
-            invalid_message: Reactive::Static("Invalid time".to_string()),
+            invalid_message: Reactive::Static(crate::labels::ui_labels().invalid_time.clone()),
             size: Reactive::Static(FieldSize::default()),
             icon: Reactive::Static(true),
             width: Reactive::Static(None),

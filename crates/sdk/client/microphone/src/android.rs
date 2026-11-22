@@ -145,6 +145,7 @@ fn recordable_inputs<'a>(
         .map_err(map_jni)?;
     let infos = JObjectArray::from(infos);
     let len = env.get_array_length(&infos).map_err(map_jni)?;
+    let labels = crate::mic_labels();
     let mut out = Vec::new();
     for i in 0..len {
         let info = env.get_object_array_element(&infos, i).map_err(map_jni)?;
@@ -163,7 +164,7 @@ fn recordable_inputs<'a>(
                 .map_err(map_jni)?;
             String::from(env.get_string(&JString::from(text)).map_err(map_jni)?)
         };
-        if let Some(label) = crate::devices::android_input_label(kind, &product) {
+        if let Some(label) = crate::devices::android_input_label(&labels, kind, &product) {
             out.push((id, label, info));
         }
     }

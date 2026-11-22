@@ -1442,6 +1442,32 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **The words components and SDKs draw themselves can be translated** (`idea-ui` minor,
+  `idea-ui-layout` minor, `camera` minor, `microphone` minor, `file-picker` minor). A `Dialog`'s ✕
+  was always "Close" and a `ToolbarSearch` always said "Search", with no way to change either from
+  the app; the same held for about thirty other words. Each crate now reads a labels set that is
+  English until the app installs its own, once at boot:
+  - `idea_ui::install_ui_labels(UiLabels)`: an autocomplete's "Clear", "Show options", "No
+    results", "Loading…"; a date picker's "Select date" and Clear; "Invalid date" / "Invalid time";
+    the pager's "Previous page" / "Next page", "Rows" and count ("of 312 projects", now
+    `UiLabels::pager_count`); a table's "Select all rows" / "Select row", the card list's "3
+    selected", a group toggle's "Expand Drilling". `UiLabels::date` is the default of every date
+    component's `labels`, and what `format_date` / `parse_date` read.
+  - `idea_ui_layout::install_layout_labels(LayoutLabels)`: "Close" and "Back" on `Dialog`,
+    `DrillSheet`, `SplitView` and `PageHeader`; `ToolbarSearch`'s "Search" and "Clear search";
+    `SidebarToggle`'s "Menu" / "Collapse sidebar" / "Expand sidebar"; `ActionMenu`'s "More
+    actions"; `ListStates`' and `Blank`'s default lines; `Flow`'s "Step 2 of 5" (`FlowLabels`
+    gains `english()`, and its `Default` is the installed one).
+  - `camera::install_camera_labels`, `microphone::install_mic_labels`: the names given a device
+    the platform leaves unnamed ("Back camera", "Built-in microphone").
+    `file_picker::install_picker_labels`: the Linux portal's title and the Windows and Linux filter
+    names ("Images", "All files").
+
+  A prop that names the same thing on one instance still wins. The sets are read when a component
+  builds; after a language switch, install the new sets and rebuild what shows them. The English
+  constants (`SELECT_ALL_NAME`, `PREVIOUS_PAGE_LABEL`, `AUTOCOMPLETE_CLEAR_LABEL`, …) stay, as the
+  English defaults. See the `i18n` guide.
+
 - **A test keeps the app in front when it opens a URL** (`runtime-shared` minor, `runtime-vocabulary`
   minor, `robot-test` minor, `robot-relay` minor). New robot functions `urls.capture {on}`,
   `urls.opened` and `urls.clear`: while capturing, `open_url` records the URL instead of handing it

@@ -132,6 +132,11 @@ the user has chosen: Chrome on macOS rejects it with `NotAllowedError` for a
 freshly saved Desktop screenshot, and retrying would mean a second dialog. The
 `<input>` works the same in Chrome, Safari, Firefox and cross-origin iframes.
 
+The dialog's own words on Windows and Linux (the Linux portal's title, the
+filter names "Images", "PNG image", "All files") are `PickerLabels`, English
+until the app installs its own with `file_picker::install_picker_labels`. The
+other platforms name their dialogs and filters themselves.
+
 The Android Kotlin shim (`runtime/kotlin/.../RustFilePicker.kt`) is
 auto-discovered and compiled by `idealyst run android` via the
 `[package.metadata.idealyst.android]` block — no `MainActivity` edits needed.

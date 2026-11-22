@@ -297,7 +297,7 @@ pub fn HeaderBackButton(props: &HeaderBackButtonProps) -> Element {
             variant = variant::Ghost,
             tone = tone::Neutral,
             size = IconButtonSize::Md,
-            label = Some("Back".to_string()),
+            label = Some(crate::layout_labels().back.clone()),
             on_click = props.on_back.clone(),
             test_id = Some("header-back"),
         )
@@ -351,7 +351,7 @@ pub fn HeaderTrail(props: &HeaderTrailProps) -> Element {
                     ActionMenu(
                         actions = hidden.clone(),
                         icon = Some(ELLIPSIS),
-                        label = "Show the pages above this one".to_string(),
+                        label = crate::layout_labels().show_pages_above.clone(),
                         size = IconButtonSize::Md,
                         test_id = Some("header-crumbs-more"),
                     )

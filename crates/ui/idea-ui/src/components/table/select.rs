@@ -41,17 +41,20 @@ const MIXED_MARK: IconData = IconData {
 pub const SELECT_ALL_TEST_ID: &str = "table-select-all";
 /// The robot test id of every row's box (scope by row to pick one).
 pub const SELECT_ROW_TEST_ID: &str = "table-select-row";
-/// The select-all box's accessible name.
-pub const SELECT_ALL_NAME: &str = "Select all rows";
-/// A row box's accessible name when the table has no `select_row_label`.
-pub const SELECT_ROW_NAME: &str = "Select row";
+/// The select-all box's accessible name in English, the default of
+/// [`UiLabels::select_all_rows`](crate::UiLabels::select_all_rows).
+pub const SELECT_ALL_NAME: &str = crate::labels::EN_SELECT_ALL_ROWS;
+/// A row box's accessible name in English when the table has no
+/// `select_row_label`, the default of
+/// [`UiLabels::select_row`](crate::UiLabels::select_row).
+pub const SELECT_ROW_NAME: &str = crate::labels::EN_SELECT_ROW;
 
 /// Names a row's box from its id: `Table(select_row_label = …)`.
 pub type SelectRowLabel = Rc<dyn Fn(&RowId) -> String>;
 
 /// Row `id`'s box's accessible name.
 pub(super) fn row_box_name(label: Option<&SelectRowLabel>, id: &RowId) -> String {
-    label.map_or_else(|| SELECT_ROW_NAME.to_string(), |f| f(id))
+    label.map_or_else(|| crate::labels::ui_labels().select_row.clone(), |f| f(id))
 }
 
 /// How much of the visible, selectable set is selected.
@@ -148,7 +151,7 @@ fn select_all_control(
         disabled,
         label,
         test_id: Some(SELECT_ALL_TEST_ID),
-        accessibility_label: Some(SELECT_ALL_NAME.into()),
+        accessibility_label: Some(crate::labels::ui_labels().select_all_rows.clone()),
         ..Default::default()
     })
 }

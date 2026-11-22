@@ -287,8 +287,10 @@ Each [`CameraDevice`] carries:
   `deviceId` on web (per origin), the `/dev/videoN` path on Linux, the Media
   Foundation symbolic link on Windows.
 - `label` — never empty. Android names no cameras, so there it is built from
-  the facing ("Back camera"). Repeated names are numbered ("USB Camera",
-  "USB Camera 2") on every platform.
+  the facing ("Back camera"); a browser or Windows camera with a blank name
+  gets one the same way. Those names are `CameraLabels`, English until the
+  app installs its own with `camera::install_camera_labels`. Repeated names
+  are numbered ("USB Camera", "USB Camera 2") on every platform.
 - `facing` — `Front`, `Back`, or `Unreported` (desktop and USB webcams, every
   V4L2 and Media Foundation device).
 

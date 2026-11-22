@@ -313,10 +313,7 @@ impl Default for TableCardsProps {
 
 /// The select-all line's text when the host names none.
 fn default_selection_label(count: usize) -> String {
-    match count {
-        0 => "Select all".to_string(),
-        n => format!("{n} selected"),
-    }
+    (crate::labels::ui_labels().selection)(count)
 }
 
 /// Everything one card reads, shared by every card of the list.

@@ -57,19 +57,19 @@ mod android_type {
 /// inputs are named by kind: their `getProductName()` is the phone's model.
 /// Bluetooth and USB inputs use the product name, which names the accessory.
 #[cfg(any(test, target_os = "android"))]
-pub(crate) fn android_input_label(kind: i32, product: &str) -> Option<String> {
+pub(crate) fn android_input_label(labels: &crate::MicLabels, kind: i32, product: &str) -> Option<String> {
     use android_type::*;
     let named = |fallback: &str| {
         let p = product.trim();
         Some(if p.is_empty() { fallback.to_string() } else { p.to_string() })
     };
     match kind {
-        BUILTIN_MIC => Some("Built-in microphone".into()),
-        WIRED_HEADSET => Some("Wired headset".into()),
-        LINE_ANALOG | LINE_DIGITAL => Some("Line in".into()),
-        DOCK => Some("Dock".into()),
-        BLUETOOTH_SCO | BLE_HEADSET => named("Bluetooth headset"),
-        USB_DEVICE | USB_ACCESSORY | USB_HEADSET => named("USB microphone"),
+        BUILTIN_MIC => Some(labels.built_in.clone()),
+        WIRED_HEADSET => Some(labels.wired_headset.clone()),
+        LINE_ANALOG | LINE_DIGITAL => Some(labels.line_in.clone()),
+        DOCK => Some(labels.dock.clone()),
+        BLUETOOTH_SCO | BLE_HEADSET => named(&labels.bluetooth_headset),
+        USB_DEVICE | USB_ACCESSORY | USB_HEADSET => named(&labels.usb_microphone),
         _ => None,
     }
 }
@@ -101,14 +101,29 @@ mod tests {
 
     #[test]
     fn android_inputs_are_labelled_by_kind_or_product() {
-        assert_eq!(android_input_label(15, "Pixel 8").as_deref(), Some("Built-in microphone"));
-        assert_eq!(android_input_label(3, "Pixel 8").as_deref(), Some("Wired headset"));
-        assert_eq!(android_input_label(7, "WH-1000XM5").as_deref(), Some("WH-1000XM5"));
-        assert_eq!(android_input_label(7, " ").as_deref(), Some("Bluetooth headset"));
-        assert_eq!(android_input_label(22, "").as_deref(), Some("USB microphone"));
+        let en = crate::MicLabels::english();
+        assert_eq!(android_input_label(&en, 15, "Pixel 8").as_deref(), Some("Built-in microphone"));
+        assert_eq!(android_input_label(&en, 3, "Pixel 8").as_deref(), Some("Wired headset"));
+        assert_eq!(android_input_label(&en, 7, "WH-1000XM5").as_deref(), Some("WH-1000XM5"));
+        assert_eq!(android_input_label(&en, 7, " ").as_deref(), Some("Bluetooth headset"));
+        assert_eq!(android_input_label(&en, 22, "").as_deref(), Some("USB microphone"));
         // Telephony uplink (18), FM tuner (16), remote submix (25): not microphones.
         for kind in [16, 18, 25, 28] {
-            assert_eq!(android_input_label(kind, "x"), None, "type {kind} is not listed");
+            assert_eq!(android_input_label(&en, kind, "x"), None, "type {kind} is not listed");
         }
+    }
+
+    /// A user of the framework could not translate the names the SDK
+    /// gives unnamed inputs. They come from the installed labels.
+    #[test]
+    fn regression_unnamed_inputs_take_the_installed_names() {
+        let fr = crate::MicLabels {
+            built_in: "Micro intégré".into(),
+            bluetooth_headset: "Casque Bluetooth".into(),
+            ..crate::MicLabels::english()
+        };
+        assert_eq!(android_input_label(&fr, 15, "Pixel 8").as_deref(), Some("Micro intégré"));
+        assert_eq!(android_input_label(&fr, 7, "").as_deref(), Some("Casque Bluetooth"));
+        assert_eq!(android_input_label(&fr, 7, "WH-1000XM5").as_deref(), Some("WH-1000XM5"), "a product name stays");
     }
 }

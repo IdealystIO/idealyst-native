@@ -141,19 +141,21 @@ pub(crate) async fn pick(request: &PickRequest) -> Result<Option<Vec<PickedFile>
     }
 }
 
-/// `(label, pattern)` filter specs from the request. Always appends an
-/// "All files" entry (and that's the only one when unfiltered).
+/// `(label, pattern)` filter specs from the request, named from the
+/// installed [`PickerLabels`](crate::PickerLabels). Always appends an
+/// all-files entry (and that's the only one when unfiltered).
 fn build_filters(request: &PickRequest) -> Vec<(HSTRING, HSTRING)> {
     let mimes: Vec<&str> = match &request.kind {
         PickKind::Documents(m) => m.iter().map(String::as_str).collect(),
         PickKind::Media(k) => crate::mime::media_mimes(*k).to_vec(),
     };
+    let labels = crate::picker_labels();
     let mut out = Vec::new();
     for mime in &mimes {
-        if let Some((label, pattern)) = crate::mime::win_filter(mime) {
-            out.push((HSTRING::from(label), HSTRING::from(pattern)));
+        if let Some((label, pattern)) = crate::mime::win_filter(&labels, mime) {
+            out.push((HSTRING::from(label.as_str()), HSTRING::from(pattern)));
         }
     }
-    out.push((HSTRING::from("All files"), HSTRING::from("*.*")));
+    out.push((HSTRING::from(labels.all_files.as_str()), HSTRING::from("*.*")));
     out
 }

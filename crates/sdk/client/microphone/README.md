@@ -165,7 +165,9 @@ Ids survive relaunches everywhere except Android, which reassigns them when an
 input reconnects — a stored Android id can go stale. On Android, built-in and
 wired inputs are named by kind ("Built-in microphone", "Wired headset") because
 their product name is the phone's model; Bluetooth and USB inputs use the
-accessory's name.
+accessory's name. Those kind names, and the "Microphone" a browser input with a
+blank label gets, are `MicLabels`, English until the app installs its own with
+`microphone::install_mic_labels`.
 
 The rules are the same on every backend:
 

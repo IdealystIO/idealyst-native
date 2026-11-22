@@ -25,7 +25,8 @@ pub const SEARCH_POPOVER_WIDTH: f32 = 320.0;
 pub struct ToolbarSearchProps {
     /// The screen's search text. The control writes it on every edit.
     pub value: Signal<String>,
-    /// What the field asks for: "Search by name or employee ID".
+    /// What the field asks for: "Search by name or employee ID". Defaults
+    /// to the installed [`LayoutLabels::search`](crate::LayoutLabels::search).
     #[prop(static)]
     pub placeholder: String,
     /// The field itself, for a toolbar with nothing else at its left
@@ -56,7 +57,7 @@ impl Default for ToolbarSearchProps {
     fn default() -> Self {
         Self {
             value: signal(String::new()),
-            placeholder: "Search".to_string(),
+            placeholder: crate::layout_labels().search.clone(),
             inline: false,
             on_change: None,
             open: None,
@@ -123,7 +124,7 @@ pub fn ToolbarSearch(props: &ToolbarSearchProps) -> Element {
                     on_change = write.clone(),
                     placeholder = Some(placeholder.clone()),
                     leading = Adornment::Icon(SEARCH),
-                    trailing = Adornment::Button { icon: X, label: Some("Clear search".to_string()), on_press: clear.clone() },
+                    trailing = Adornment::Button { icon: X, label: Some(crate::layout_labels().clear_search.clone()), on_press: clear.clone() },
                     trailing_when = Some(has_term.clone()),
                     test_id = Some(test_id),
                 )
@@ -159,7 +160,7 @@ pub fn ToolbarSearch(props: &ToolbarSearchProps) -> Element {
                 tone = tone::Neutral,
                 on_click = toggle.clone(),
                 bind_to = Some(anchor),
-                label = Some("Search".to_string()),
+                label = Some(crate::layout_labels().search.clone()),
                 test_id = Some("toolbar-search-open"),
             )
             BadgeDot(on = rx!(!value.get().is_empty()))
@@ -182,7 +183,7 @@ pub fn ToolbarSearch(props: &ToolbarSearchProps) -> Element {
                             on_change = write.clone(),
                             placeholder = Some(placeholder.clone()),
                             leading = Adornment::Icon(SEARCH),
-                            trailing = Adornment::Button { icon: X, label: Some("Clear search".to_string()), on_press: clear.clone() },
+                            trailing = Adornment::Button { icon: X, label: Some(crate::layout_labels().clear_search.clone()), on_press: clear.clone() },
                             trailing_when = Some(has_term.clone()),
                             autofocus = true,
                             on_key_down = Some(on_key.clone()),

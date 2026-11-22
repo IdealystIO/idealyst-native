@@ -17,8 +17,8 @@
 //! always shown.
 //!
 //! The ‹ › steppers are glyph-only, so they carry accessible names
-//! (`previous_label` / `next_label`, "Previous page" / "Next page" by
-//! default — pass translated strings to localize), and on phones their
+//! (`previous_label` / `next_label`, defaulting to the installed
+//! [`UiLabels`](crate::UiLabels)), and on phones their
 //! tap target is floored at
 //! [`MIN_TOUCH_TARGET_PX`](crate::touch::MIN_TOUCH_TARGET_PX) square (the
 //! `nav` slot). The page numbers keep their compact width so a windowed
@@ -137,19 +137,20 @@ pub struct PaginationProps {
     /// Fires with the requested page when the user navigates.
     pub on_change: Rc<dyn Fn(usize)>,
     /// Accessible name of the ‹ stepper — what a screen reader announces
-    /// and what a robot finds it by. Default "Previous page"; pass a
-    /// translated string to localize.
+    /// and what a robot finds it by. Defaults to the installed
+    /// [`UiLabels::previous_page`](crate::UiLabels::previous_page).
     #[prop(static)]
     pub previous_label: String,
-    /// Accessible name of the › stepper. Default "Next page".
+    /// Accessible name of the › stepper. Defaults to the installed
+    /// [`UiLabels::next_page`](crate::UiLabels::next_page).
     #[prop(static)]
     pub next_label: String,
 }
 
-/// The ‹ stepper's default accessible name.
-pub const PREVIOUS_PAGE_LABEL: &str = "Previous page";
-/// The › stepper's default accessible name.
-pub const NEXT_PAGE_LABEL: &str = "Next page";
+/// The ‹ stepper's accessible name in English.
+pub const PREVIOUS_PAGE_LABEL: &str = crate::labels::EN_PREVIOUS_PAGE;
+/// The › stepper's accessible name in English.
+pub const NEXT_PAGE_LABEL: &str = crate::labels::EN_NEXT_PAGE;
 
 impl Default for PaginationProps {
     fn default() -> Self {
@@ -157,8 +158,8 @@ impl Default for PaginationProps {
             page: runtime_core::signal(1),
             total: Reactive::Static(1),
             on_change: Rc::new(|_| {}),
-            previous_label: PREVIOUS_PAGE_LABEL.to_string(),
-            next_label: NEXT_PAGE_LABEL.to_string(),
+            previous_label: crate::labels::ui_labels().previous_page.clone(),
+            next_label: crate::labels::ui_labels().next_page.clone(),
             styles: Default::default(),
         }
     }

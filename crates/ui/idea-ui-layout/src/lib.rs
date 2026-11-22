@@ -58,6 +58,7 @@ mod action;
 mod app_frame;
 pub mod blocks;
 mod flow;
+mod labels;
 mod list_states;
 pub mod overlay;
 pub mod page;
@@ -79,6 +80,7 @@ pub use blocks::{
     StateMessage, StateMessageProps,
 };
 pub use flow::{Flow, FlowLabels, FlowProps, FlowStep};
+pub use labels::{install_layout_labels, layout_labels, LayoutLabels};
 pub use list_states::{Blank, ListPhase, ListStates, ListStatesProps};
 pub use overlay::{
     dialog_block, dialog_presentation, sheet_serves, ActionMenu, ActionMenuProps, ActionMenuSurface,

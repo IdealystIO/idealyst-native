@@ -12,7 +12,8 @@
 //! just unfiltered for that entry — rather than failing.
 
 // Which of these helpers is actually *used* depends on which backend compiles
-// (`apple_uttype` on Apple, `win_filter` on Windows, …), so some are dead on
+// (`apple_uttype` on Apple, `win_filter` on Windows, `win_patterns` on
+// Linux, …), so some are dead on
 // any single target. They're all exercised by the host tests below.
 #![allow(dead_code)]
 
@@ -50,36 +51,47 @@ pub(crate) fn apple_uttype(mime: &str) -> &'static str {
     }
 }
 
-/// Map a MIME type to a Windows file-dialog filter: a human label plus a
-/// semicolon-separated glob pattern (e.g. `("PNG image", "*.png")`,
-/// `("Image", "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp")`).
+/// The `*.ext` glob patterns for a MIME type, semicolon-separated
+/// (`"*.png"`, `"*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.heic"`): the
+/// Windows filter spec, and the globs a Linux portal filter matches. The
+/// filter's NAME is the installed
+/// [`PickerLabels::type_name`](crate::PickerLabels::type_name).
 ///
-/// Returns `None` for the "any file" cases so the caller can emit a single
-/// `("All files", "*.*")` spec instead.
-pub(crate) fn win_filter(mime: &str) -> Option<(&'static str, &'static str)> {
+/// Returns `None` for the "any file" cases and for types not in the
+/// table.
+pub(crate) fn win_patterns(mime: &str) -> Option<&'static str> {
     Some(match normalize(mime).as_str() {
         "" | "*/*" | "application/octet-stream" => return None,
-        "image/*" => ("Images", "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.heic"),
-        "video/*" => ("Videos", "*.mp4;*.mov;*.m4v;*.webm;*.avi;*.mkv"),
-        "audio/*" => ("Audio", "*.mp3;*.m4a;*.wav;*.aac;*.flac;*.ogg"),
-        "text/*" => ("Text", "*.txt;*.csv;*.md;*.json;*.html"),
-        "application/pdf" => ("PDF", "*.pdf"),
-        "image/png" => ("PNG image", "*.png"),
-        "image/jpeg" => ("JPEG image", "*.jpg;*.jpeg"),
-        "image/gif" => ("GIF image", "*.gif"),
-        "image/heic" => ("HEIC image", "*.heic"),
-        "image/webp" => ("WebP image", "*.webp"),
-        "video/mp4" => ("MP4 video", "*.mp4;*.m4v"),
-        "video/quicktime" => ("QuickTime video", "*.mov"),
-        "audio/mpeg" => ("MP3 audio", "*.mp3"),
-        "text/plain" => ("Text", "*.txt"),
-        "text/csv" => ("CSV", "*.csv"),
-        "text/html" => ("HTML", "*.html;*.htm"),
-        "text/markdown" => ("Markdown", "*.md"),
-        "application/json" => ("JSON", "*.json"),
-        "application/zip" => ("ZIP archive", "*.zip"),
+        "image/*" => "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.heic",
+        "video/*" => "*.mp4;*.mov;*.m4v;*.webm;*.avi;*.mkv",
+        "audio/*" => "*.mp3;*.m4a;*.wav;*.aac;*.flac;*.ogg",
+        "text/*" => "*.txt;*.csv;*.md;*.json;*.html",
+        "application/pdf" => "*.pdf",
+        "image/png" => "*.png",
+        "image/jpeg" => "*.jpg;*.jpeg",
+        "image/gif" => "*.gif",
+        "image/heic" => "*.heic",
+        "image/webp" => "*.webp",
+        "video/mp4" => "*.mp4;*.m4v",
+        "video/quicktime" => "*.mov",
+        "audio/mpeg" => "*.mp3",
+        "text/plain" => "*.txt",
+        "text/csv" => "*.csv",
+        "text/html" => "*.html;*.htm",
+        "text/markdown" => "*.md",
+        "application/json" => "*.json",
+        "application/zip" => "*.zip",
         _ => return None,
     })
+}
+
+/// A Windows filter spec for a MIME type: the installed name for it and
+/// its [`win_patterns`]. `None` when either is missing, so the caller
+/// leaves the type to its "All files" spec.
+pub(crate) fn win_filter(labels: &crate::PickerLabels, mime: &str) -> Option<(String, &'static str)> {
+    let patterns = win_patterns(mime)?;
+    let name = (labels.type_name)(&normalize(mime))?;
+    Some((name, patterns))
 }
 
 /// The wildcard MIME types for a media kind, used by the desktop/web backends
@@ -151,18 +163,21 @@ mod tests {
 
     #[test]
     fn win_filter_specific_and_wildcard() {
-        assert_eq!(win_filter("application/pdf"), Some(("PDF", "*.pdf")));
+        let en = crate::PickerLabels::english();
+        assert_eq!(win_filter(&en, "application/pdf"), Some(("PDF".to_string(), "*.pdf")));
         assert_eq!(
-            win_filter("image/*"),
-            Some(("Images", "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.heic"))
+            win_filter(&en, "image/*"),
+            Some(("Images".to_string(), "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.heic"))
         );
     }
 
     #[test]
     fn win_filter_any_is_none() {
-        assert_eq!(win_filter(""), None);
-        assert_eq!(win_filter("*/*"), None);
-        assert_eq!(win_filter("application/octet-stream"), None);
+        let en = crate::PickerLabels::english();
+        assert_eq!(win_filter(&en, ""), None);
+        assert_eq!(win_filter(&en, "*/*"), None);
+        assert_eq!(win_filter(&en, "application/octet-stream"), None);
+        assert_eq!(win_patterns("*/*"), None);
     }
 
     #[test]
@@ -182,5 +197,22 @@ mod tests {
             media_mimes(MediaKind::ImagesAndVideos),
             &["image/*", "video/*"]
         );
+    }
+
+    /// A user of the framework could not translate a file dialog's filter
+    /// names. They come from the installed labels; a type the labels do
+    /// not name is left to the all-files filter.
+    #[test]
+    fn regression_filter_names_take_the_installed_labels() {
+        let fr = crate::PickerLabels {
+            type_name: std::sync::Arc::new(|mime| (mime == "image/*").then(|| "Images (fr)".to_string())),
+            ..crate::PickerLabels::english()
+        };
+        assert_eq!(
+            win_filter(&fr, "IMAGE/*"),
+            Some(("Images (fr)".to_string(), "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.heic"))
+        );
+        assert_eq!(win_filter(&fr, "application/pdf"), None);
+        assert_eq!(win_patterns("application/pdf"), Some("*.pdf"));
     }
 }
