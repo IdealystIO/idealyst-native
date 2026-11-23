@@ -10,7 +10,7 @@ use runtime_shared::primitives::activity_indicator::{
 use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_shared::primitives::slider::SliderHandle;
 use runtime_shared::primitives::text_area::TextAreaHandle;
-use runtime_shared::primitives::text_input::{KeyboardKind, TextInputHandle};
+use runtime_shared::primitives::text_input::{ContentSensitivity, KeyboardKind, TextInputHandle};
 use runtime_shared::primitives::toggle::ToggleHandle;
 use runtime_shared::Color;
 use runtime_scene::{item, Element};
@@ -247,6 +247,7 @@ pub fn text_input() -> TextInputBuilder {
             placeholder: Value::Const(None),
             secure: Value::Const(false),
             keyboard: Value::Const(KeyboardKind::Default),
+            content_sensitivity: Value::Const(ContentSensitivity::Auto),
             placeholder_color: Value::Const(None),
             autofocus: false,
             disabled: None,
@@ -341,6 +342,19 @@ impl TextInputBuilder {
     /// the closure's dependencies change.
     pub fn keyboard_dyn(mut self, f: impl Fn() -> KeyboardKind + 'static) -> Self {
         self.prim.keyboard = Value::Dyn(Box::new(f));
+        self
+    }
+
+    /// Whether the field holds something a screen share must not show
+    /// ([`ContentSensitivity`]).
+    pub fn content_sensitivity(mut self, sensitivity: ContentSensitivity) -> Self {
+        self.prim.content_sensitivity = Value::Const(sensitivity);
+        self
+    }
+
+    /// Live [`Self::content_sensitivity`], re-applied in place.
+    pub fn content_sensitivity_dyn(mut self, f: impl Fn() -> ContentSensitivity + 'static) -> Self {
+        self.prim.content_sensitivity = Value::Dyn(Box::new(f));
         self
     }
 

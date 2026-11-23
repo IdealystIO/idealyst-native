@@ -60,6 +60,8 @@ struct TraceBackend {
     /// `(node, kind)` per `update_text_input_keyboard`, on the side like
     /// `announcements`.
     keyboards: Vec<(u64, runtime_shared::primitives::text_input::KeyboardKind)>,
+    /// `(node, sensitivity)` per `update_text_input_content_sensitivity`.
+    sensitivities: Vec<(u64, runtime_shared::primitives::text_input::ContentSensitivity)>,
 }
 
 impl Host for TraceBackend {
@@ -247,6 +249,14 @@ impl caps::TextInputOps for TraceBackend {
         keyboard: runtime_shared::primitives::text_input::KeyboardKind,
     ) {
         self.keyboards.push((*node, keyboard));
+    }
+
+    fn update_text_input_content_sensitivity(
+        &mut self,
+        node: &u64,
+        sensitivity: runtime_shared::primitives::text_input::ContentSensitivity,
+    ) {
+        self.sensitivities.push((*node, sensitivity));
     }
 }
 impl caps::ToggleOps for TraceBackend {}
@@ -545,6 +555,31 @@ fn regression_text_input_keyboard_crosses_the_dev_wire() {
     let keyboards = wire_app.backend().borrow().keyboards.clone();
     assert_eq!(keyboards.len(), 1, "{keyboards:?}");
     assert_eq!(keyboards[0].1, KeyboardKind::Email);
+}
+
+/// `text_input`'s content sensitivity crosses the dev wire
+/// (PROTOCOL_VERSION 29): without it a field under runtime-server dev kept
+/// Android's own rule.
+#[test]
+fn text_input_content_sensitivity_crosses_the_dev_wire() {
+    use runtime_shared::primitives::text_input::ContentSensitivity as S;
+    use runtime_vocabulary::builders::{text_input, view};
+
+    let recorder = WireRecordingBackend::new();
+    let _session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, || {
+        view()
+            .child(text_input().content_sensitivity(S::NotSensitive))
+            .child(text_input().content_sensitivity(S::Sensitive))
+            .child(text_input())
+            .build()
+    });
+    let json = serde_json::to_string(&recorder.drain_commands()).expect("serialize");
+    let commands: Vec<Command> = serde_json::from_str(&json).expect("deserialize");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut wire_app = WireBackend::new(TraceBackend::default(), tx);
+    wire_app.apply_batch(commands).expect("replay succeeds");
+    let got: Vec<S> = wire_app.backend().borrow().sensitivities.iter().map(|(_, s)| *s).collect();
+    assert_eq!(got, [S::NotSensitive, S::Sensitive]);
 }
 
 /// Drive a link element through the recording backend. Verifies

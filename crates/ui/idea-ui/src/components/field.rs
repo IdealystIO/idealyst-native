@@ -74,6 +74,8 @@ use idea_theme::theme::IdeaThemeRef;
 /// The soft-keyboard hint [`FieldProps::keyboard`] takes (re-exported so a
 /// form can spell `field::KeyboardKind::Email`).
 pub use runtime_core::KeyboardKind;
+/// What [`FieldProps::content_sensitivity`] takes.
+pub use runtime_core::ContentSensitivity;
 use idea_theme::tokens;
 
 /// A leading/trailing adornment inside a [`Field`]'s box — an icon or a custom
@@ -658,6 +660,15 @@ pub struct FieldProps {
     /// input. Default `KeyboardKind::Default`.
     #[schema(constraint = "reactive: static KeyboardKind or Signal/rx!")]
     pub keyboard: KeyboardKind,
+    /// Whether the field holds something a screen share must not show.
+    /// Android 15+ blanks the whole window in a capture while a `secure`
+    /// field is on screen; `ContentSensitivity::NotSensitive` lets it show
+    /// (a kiosk PIN, supported over live video). Forwarded to the
+    /// `text_input` primitive's `content_sensitivity`; the other platforms
+    /// ignore it. Reactive. Default `Auto`: the app's own setting, else
+    /// Android's rule.
+    #[schema(constraint = "reactive: static ContentSensitivity or Signal/rx!")]
+    pub content_sensitivity: ContentSensitivity,
     /// Leading adornment (icon/element) rendered before the input, inside the
     /// field box. Default [`Adornment::None`]. See [`Adornment`]. An
     /// element-builder (children category) — kept bare; reactivity is internal
@@ -764,6 +775,7 @@ impl Default for FieldProps {
             variant: Reactive::Static(FieldAppearance::default()),
             secure: Reactive::Static(false),
             keyboard: Reactive::Static(KeyboardKind::Default),
+            content_sensitivity: Reactive::Static(ContentSensitivity::Auto),
             leading: Adornment::None,
             trailing: Adornment::None,
             leading_when: None,
@@ -886,6 +898,7 @@ pub fn Field(props: &FieldProps) -> Element {
     let mut input = runtime_core::text_input(value, move |v: String| (on_change)(v))
         .secure(secure)
         .keyboard(props.keyboard.clone())
+        .content_sensitivity(props.content_sensitivity.clone())
         .placeholder_reactive(props.placeholder.clone())
         .placeholder_color(crate::components::placeholder_ink())
         .autofocus(props.autofocus);

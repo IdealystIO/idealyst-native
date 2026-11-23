@@ -10,7 +10,7 @@ use runtime_shared::primitives::activity_indicator::{
 use runtime_shared::primitives::key::KeyDownHandler;
 use runtime_shared::primitives::slider::SliderHandle;
 use runtime_shared::primitives::text_area::TextAreaHandle;
-use runtime_shared::primitives::text_input::{BlurHandler, FocusHandler, KeyboardKind, TextInputHandle};
+use runtime_shared::primitives::text_input::{BlurHandler, ContentSensitivity, FocusHandler, KeyboardKind, TextInputHandle};
 use runtime_shared::primitives::toggle::ToggleHandle;
 use runtime_shared::Color;
 use runtime_world::Value;
@@ -103,6 +103,11 @@ pub struct TextInputPrim {
     /// through `update_text_input_keyboard`; a `Const(Default)` makes no
     /// backend call at all. Backends without a soft keyboard ignore it.
     pub keyboard: Value<KeyboardKind>,
+    /// Whether the field holds something a screen share must not show
+    /// ([`ContentSensitivity`]). Static or live like `keyboard`, through
+    /// `update_text_input_content_sensitivity`; a `Const(Auto)` makes no
+    /// backend call. Only Android acts on it.
+    pub content_sensitivity: Value<ContentSensitivity>,
     /// The placeholder's ink. `None` (the default) leaves the toolkit's
     /// own placeholder color, which on a native toolkit follows the OS
     /// appearance rather than the app's theme — a component library sets

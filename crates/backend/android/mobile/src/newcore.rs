@@ -1216,6 +1216,14 @@ mod native {
             AndroidBackend::update_text_input_keyboard_impl(self, node, keyboard)
         }
 
+        fn update_text_input_content_sensitivity(
+            &mut self,
+            node: &Self::Node,
+            sensitivity: primitives::text_input::ContentSensitivity,
+        ) {
+            crate::imp::content_sensitivity::apply(node, sensitivity)
+        }
+
         fn create_text_area(
             &mut self,
             initial_value: &str,

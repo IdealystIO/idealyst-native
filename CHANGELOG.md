@@ -1468,6 +1468,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `SCREEN_BRIGHTNESS`, `SCREEN_BRIGHTNESS_MODE`), and `system_setting(key)` to read one so it can
   be put back.
 
+- **A password field need not blank a screen share on Android 15+** (`runtime-shared` minor,
+  `runtime-vocabulary` minor, `runtime-macros-expand` minor, `idea-ui` minor,
+  `backend-android-mobile` minor, `build-ios` minor, `run-android` minor, `wire` major,
+  `dev-server`, `dev-client`). Android counts every password field as sensitive, and a window
+  holding one is black in any other app's capture. `content_sensitivity = "not_sensitive"` in
+  `[package.metadata.idealyst.app.android]` turns that off for the app's fields;
+  `text_input(content_sensitivity = ContentSensitivity::NotSensitive)` and `Field`'s prop do it
+  for one. The default leaves Android's rule. Wire `PROTOCOL_VERSION` 29, remote `CODEC_VERSION`
+  16.
+
 - **The words components and SDKs draw themselves can be translated** (`idea-ui` minor,
   `idea-ui-layout` minor, `camera` minor, `microphone` minor, `file-picker` minor). A `Dialog`'s ✕
   was always "Close" and a `ToolbarSearch` always said "Search", with no way to change either from

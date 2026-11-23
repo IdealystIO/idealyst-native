@@ -113,6 +113,18 @@ pub fn wire_keyboard_kind(
     }
 }
 
+/// Wire-to-framework reverse of `dev_server::convert_out::content_sensitivity_to_wire`.
+pub fn wire_content_sensitivity(
+    s: wire::WireContentSensitivity,
+) -> runtime_shared::primitives::text_input::ContentSensitivity {
+    use runtime_shared::primitives::text_input::ContentSensitivity as S;
+    match s {
+        wire::WireContentSensitivity::Auto => S::Auto,
+        wire::WireContentSensitivity::Sensitive => S::Sensitive,
+        wire::WireContentSensitivity::NotSensitive => S::NotSensitive,
+    }
+}
+
 pub fn wire_easing(e: WireEasing) -> Easing {
     match e {
         WireEasing::Linear => Easing::Linear,

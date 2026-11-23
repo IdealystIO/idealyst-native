@@ -1770,7 +1770,7 @@ static ANDROID_SDK_INT: std::sync::atomic::AtomicI32 = std::sync::atomic::Atomic
 /// the API-29+ `GradientDrawable.setColors(int[], float[])` path that
 /// honors non-uniform stop offsets, and the API-28+ outline shadow
 /// color setters in [`suppress_z_shadow`].
-fn android_sdk_int(env: &mut JNIEnv) -> i32 {
+pub(super) fn android_sdk_int(env: &mut JNIEnv) -> i32 {
     let cached = ANDROID_SDK_INT.load(std::sync::atomic::Ordering::Relaxed);
     if cached >= 0 {
         return cached;

@@ -510,6 +510,17 @@ where
             });
         }
     }
+    // Content sensitivity, the same two ways and also before the node is in
+    // a window.
+    match prim.content_sensitivity {
+        Value::Const(runtime_shared::primitives::text_input::ContentSensitivity::Auto) => {}
+        Value::Const(s) => backend.borrow_mut().update_text_input_content_sensitivity(&node, s),
+        live @ Value::Dyn(_) => {
+            let b = backend.clone();
+            let n = node.clone();
+            bind_dyn(live, move |&s| b.borrow_mut().update_text_input_content_sensitivity(&n, s));
+        }
+    }
     // Editable inputs also get `focus`/`blur` so the robot can drive
     // real keyboard focus. Handles are made ON DEMAND from the backend
     // node at call time.

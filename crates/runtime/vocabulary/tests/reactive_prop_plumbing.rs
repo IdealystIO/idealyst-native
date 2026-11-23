@@ -675,6 +675,46 @@ fn reactive_text_input_keyboard_effect_is_freed_on_teardown() {
     );
 }
 
+/// A static content sensitivity reaches the backend once, before the style
+/// and focus wiring (the node is not in a window yet, so a capture never
+/// sees the default); `Auto` makes no call; a live one re-applies in place
+/// and goes with its scope.
+#[test]
+fn text_input_content_sensitivity_reaches_the_backend() {
+    use runtime_shared::primitives::text_input::ContentSensitivity as S;
+    const OP: &str = "update_text_input_content_sensitivity";
+    let h = harness();
+    let world = h.world.clone();
+    let (realized, live) = world.enter(|| {
+        let live = signal(S::Auto);
+        let tree = view()
+            .child(text_input().secure(true).content_sensitivity(S::NotSensitive).autofocus(true))
+            .child(text_input().secure(true))
+            .child(text_input().content_sensitivity_dyn(move || live.get()))
+            .build();
+        (realize(&h.backend, &h.registry, tree), live)
+    });
+    let log = h.take_log();
+    let ops = ops_named(&log, OP);
+    assert_eq!(ops.len(), 2, "{log:?}");
+    assert!(ops[0].ends_with(" NotSensitive") && ops[1].ends_with(" Auto"), "{ops:?}");
+    let create = log.iter().position(|l| l.ends_with(" text_input")).expect("created");
+    let applied = log.iter().position(|l| l.starts_with(OP)).unwrap();
+    assert_eq!(applied, create + 1, "right after the create: {log:?}");
+
+    live.set(S::Sensitive);
+    world.flush();
+    let log = h.take_log();
+    let ops = ops_named(&log, OP);
+    assert!(ops.len() == 1 && ops[0].ends_with(" Sensitive"), "{ops:?}");
+    assert!(ops_named(&log, "create").is_empty(), "no rebuild: {log:?}");
+
+    drop(realized);
+    live.set(S::Auto);
+    world.flush();
+    assert!(ops_named(&h.take_log(), OP).is_empty(), "gone with the scope");
+}
+
 /// The author surface: `ui!`'s `keyboard = …` lowers to the glue setter,
 /// which takes a plain kind or a live source (`Signal`) through
 /// `Into<Reactive<KeyboardKind>>`.

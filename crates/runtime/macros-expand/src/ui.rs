@@ -1137,6 +1137,7 @@ const IMAGE_BUILDER_PROPS: &[&str] = &["on_load", "on_error", "alt_reactive", "b
 const TEXT_INPUT_BUILDER_PROPS: &[&str] = &[
     "secure",
     "keyboard",
+    "content_sensitivity",
     "on_focus",
     "on_blur",
     "on_key_down",

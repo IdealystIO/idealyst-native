@@ -68,7 +68,7 @@ pub use payload_serde::{
 /// [`WireStyleRules`] carries every `StyleRules` property; the
 /// conversions on both ends are exhaustive destructures, so a new
 /// property cannot compile until it crosses (see `WireStyleRules`).
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
 
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
@@ -779,6 +779,14 @@ pub enum Command {
     UpdateTextInputKeyboard {
         node: NodeId,
         keyboard: WireKeyboardKind,
+    },
+    /// Set whether an existing text input may show in a screen share
+    /// (PROTOCOL_VERSION 29): the vocabulary's
+    /// `update_text_input_content_sensitivity` op, verbatim. Replayed after
+    /// the create in a snapshot, like `UpdateTextInputKeyboard`.
+    UpdateTextInputContentSensitivity {
+        node: NodeId,
+        sensitivity: WireContentSensitivity,
     },
     /// Set an existing text input's placeholder ink (PROTOCOL_VERSION 27;
     /// `None`: the toolkit's own) — the vocabulary's
@@ -1605,6 +1613,19 @@ pub enum WireCursor {
     /// Also the catch-all: a peer that learns a new cursor before this
     /// one does lands here, which is what the node would have had
     /// anyway. Must stay last — `#[serde(other)]` requires it.
+    #[default]
+    #[serde(other)]
+    Auto,
+}
+
+/// Wire mirror of
+/// `runtime_shared::primitives::text_input::ContentSensitivity`, converted
+/// where [`WireKeyboardKind`] is.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WireContentSensitivity {
+    Sensitive,
+    NotSensitive,
+    /// Also the catch-all; must stay last (`#[serde(other)]`).
     #[default]
     #[serde(other)]
     Auto,

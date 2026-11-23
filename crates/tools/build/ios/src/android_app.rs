@@ -88,6 +88,10 @@ pub struct AndroidAppMetadata {
     /// Packages `device-admin` hides at the end of provisioning, emitted as
     /// the [`PROVISIONING_HIDE_META_DATA`] `<meta-data>` entry.
     pub provisioning_hide: Vec<String>,
+    /// No text field of the app counts as sensitive to screen sharing
+    /// (`content_sensitivity = "not_sensitive"`), emitted as the
+    /// [`CONTENT_SENSITIVITY_META_DATA`] `<meta-data>` entry.
+    pub content_not_sensitive: bool,
     /// The main activity's `android:resizeableActivity`; `None` leaves
     /// Android's default.
     pub resizeable: Option<bool>,
@@ -192,6 +196,15 @@ impl AndroidSigning {
     }
 }
 
+/// The `<application>` `<meta-data>` name `backend-android-mobile` reads
+/// [`AndroidAppMetadata::content_not_sensitive`] from
+/// (`imp/content_sensitivity.rs`); its value is
+/// [`CONTENT_NOT_SENSITIVE`].
+pub const CONTENT_SENSITIVITY_META_DATA: &str = "io.idealyst.CONTENT_SENSITIVITY";
+/// The one value written under [`CONTENT_SENSITIVITY_META_DATA`]; `"auto"`
+/// writes no entry.
+pub const CONTENT_NOT_SENSITIVE: &str = "not_sensitive";
+
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawAndroidAppMetadata {
@@ -203,6 +216,8 @@ pub(crate) struct RawAndroidAppMetadata {
     home_launcher: Option<bool>,
     #[serde(default)]
     provisioning_hide: Vec<String>,
+    #[serde(default)]
+    content_sensitivity: Option<String>,
     #[serde(default)]
     resizeable: Option<bool>,
     #[serde(default)]
@@ -237,6 +252,14 @@ impl AndroidAppMetadata {
             Some(other) => bail!(
                 "`[package.metadata.idealyst.app.android].lock_task_mode = {other:?}`: \
                  expected one of \"normal\", \"never\", \"always\", \"if_whitelisted\""
+            ),
+        };
+        let content_not_sensitive = match raw.content_sensitivity.as_deref() {
+            None | Some("auto") => false,
+            Some(CONTENT_NOT_SENSITIVE) => true,
+            Some(other) => bail!(
+                "`[package.metadata.idealyst.app.android].content_sensitivity = {other:?}`: \
+                 expected \"auto\" or \"not_sensitive\""
             ),
         };
         if let Some(o) = raw.screen_orientation.as_deref() {
@@ -299,6 +322,7 @@ impl AndroidAppMetadata {
             lock_task_mode,
             home_launcher: raw.home_launcher.unwrap_or(false),
             provisioning_hide: raw.provisioning_hide,
+            content_not_sensitive,
             resizeable: raw.resizeable,
             screen_orientation: raw.screen_orientation,
             keep_alive: raw.keep_alive.unwrap_or(false),
@@ -405,6 +429,15 @@ mod tests {
         assert!(m.home_launcher);
         assert!(parse("lock_task_mode = \"if_allowlisted\"").is_err());
         assert!(parse("lock_task = \"always\"").is_err(), "unknown keys are rejected");
+    }
+
+    #[test]
+    fn content_sensitivity_is_auto_or_not_sensitive() {
+        assert!(!parse("").unwrap().content_not_sensitive);
+        assert!(!parse("content_sensitivity = \"auto\"").unwrap().content_not_sensitive);
+        assert!(parse("content_sensitivity = \"not_sensitive\"").unwrap().content_not_sensitive);
+        let err = parse("content_sensitivity = \"off\"").unwrap_err().to_string();
+        assert!(err.contains("content_sensitivity"), "{err}");
     }
 
     #[test]

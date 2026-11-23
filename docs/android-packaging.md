@@ -23,6 +23,7 @@ version_code   = 42                # optional; see "Versioning"
 lock_task_mode = "if_whitelisted"  # the main activity's android:lockTaskMode
 home_launcher  = true              # add a HOME + DEFAULT intent filter
 provisioning_hide = ["com.example.oobe"]  # hidden at the end of QR provisioning (device-admin)
+content_sensitivity = "not_sensitive"     # password fields do not blank a screen share
 resizeable     = false             # the main activity's android:resizeableActivity
 screen_orientation = "landscape"   # the main activity's android:screenOrientation
 keep_alive     = true              # keep running in the background (foreground service)
@@ -55,6 +56,19 @@ should set it. `screen_orientation` takes the manifest's own values
 `landscape` or `sensorLandscape`. Leave either out for Android's default.
 Both hold because idealyst apps target API 34: Android 16 ignores them on
 large screens for apps targeting API 36.
+
+`content_sensitivity = "not_sensitive"` keeps password fields from blanking
+the app in a screen share. Android 15+ treats a window as secure, in any
+other app's capture, while it holds a sensitive view, and it counts every
+password field as one: a capture goes black with the toast "App content
+hidden from screen share for security". A kiosk supported over live video
+sets it. The default, `"auto"`, leaves Android's rule. One field can differ
+from the app with `text_input`'s (or `Field`'s) `content_sensitivity`. It
+does nothing below API 35, and does not change notifications, which Android
+protects on its own. To see what is blanking an app, start the capture and
+run `adb shell dumpsys window | grep -A3 SensitiveContentPackages`: a
+`windowToken` is a view in that window, `windowToken=null` is one of the
+app's notifications.
 
 `keep_alive = true` is for an app that must keep working while it is in the
 background: a websocket (`server::Socket`), a heartbeat, a timer. Android

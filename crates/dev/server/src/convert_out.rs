@@ -59,6 +59,18 @@ pub fn keyboard_kind_to_wire(
     }
 }
 
+/// Reverse: `dev_client::convert::wire_content_sensitivity`.
+pub fn content_sensitivity_to_wire(
+    s: runtime_shared::primitives::text_input::ContentSensitivity,
+) -> wire::WireContentSensitivity {
+    use runtime_shared::primitives::text_input::ContentSensitivity as S;
+    match s {
+        S::Auto => wire::WireContentSensitivity::Auto,
+        S::Sensitive => wire::WireContentSensitivity::Sensitive,
+        S::NotSensitive => wire::WireContentSensitivity::NotSensitive,
+    }
+}
+
 pub fn easing_to_wire(e: Easing) -> WireEasing {
     match e {
         Easing::Linear => WireEasing::Linear,

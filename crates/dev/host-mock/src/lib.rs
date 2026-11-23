@@ -1149,6 +1149,17 @@ impl caps::TextInputOps for HostMock {
         );
     }
 
+    fn update_text_input_content_sensitivity(
+        &mut self,
+        node: &Node,
+        sensitivity: runtime_shared::primitives::text_input::ContentSensitivity,
+    ) {
+        self.s.rec_v(
+            "update_text_input_content_sensitivity",
+            format!("update_text_input_content_sensitivity n{node} {sensitivity:?}"),
+        );
+    }
+
     fn update_text_input_placeholder_color(&mut self, node: &Node, color: Option<&runtime_shared::Color>) {
         self.s.rec_v(
             "update_text_input_placeholder_color",

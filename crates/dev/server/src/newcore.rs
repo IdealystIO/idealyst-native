@@ -582,6 +582,13 @@ impl caps::TextInputOps for WireRecordingBackend {
         WireRecordingBackend::update_text_input_keyboard(self, node, keyboard)
     }
 
+    fn update_text_input_content_sensitivity(
+        &mut self,
+        node: &Self::Node,
+        sensitivity: primitives::text_input::ContentSensitivity,
+    ) {
+        WireRecordingBackend::update_text_input_content_sensitivity(self, node, sensitivity)
+    }
 
     fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
         WireRecordingBackend::update_text_input_placeholder(self, node, placeholder)

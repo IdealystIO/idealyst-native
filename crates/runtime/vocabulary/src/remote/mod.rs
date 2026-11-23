@@ -98,7 +98,8 @@ pub mod wasm;
 ///   [`runtime_shared::primitives::virtual_grid::FrozenPanes`]).
 /// - 15: [`Node::TextInput`] and [`Node::TextArea`] carry
 ///   `placeholder_color`.
-pub const CODEC_VERSION: u32 = 15;
+/// - 16: [`Node::TextInput`] carries `content_sensitivity`.
+pub const CODEC_VERSION: u32 = 16;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -246,6 +247,8 @@ pub enum Node {
         secure: Val<bool>,
         /// The soft-keyboard hint (CODEC_VERSION 5).
         keyboard: Val<runtime_shared::primitives::text_input::KeyboardKind>,
+        /// Whether a screen share may show it (CODEC_VERSION 16).
+        content_sensitivity: Val<runtime_shared::primitives::text_input::ContentSensitivity>,
         /// The placeholder's ink (CODEC_VERSION 15).
         placeholder_color: Val<Option<runtime_shared::Color>>,
         /// `Some` when the author bound `disabled` (CODEC_VERSION 4).
@@ -1222,6 +1225,7 @@ remote_value!(
     runtime_shared::primitives::key::KeyOutcome,
     runtime_shared::primitives::image::ImageLoadEvent,
     runtime_shared::primitives::text_input::KeyboardKind,
+    runtime_shared::primitives::text_input::ContentSensitivity,
     runtime_shared::touch::TouchPoint,
     runtime_shared::host::ColorScheme,
 );

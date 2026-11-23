@@ -1312,6 +1312,42 @@ mod text_disabled {
     }
 }
 
+/// `text_input`'s content sensitivity crosses (CODEC_VERSION 16), static and
+/// live, exactly as the native field drives the backend.
+#[test]
+fn a_crossed_content_sensitivity_reaches_the_backend_exactly_like_the_native_one() {
+    use runtime_shared::primitives::text_input::ContentSensitivity as S;
+    use runtime_vocabulary::builders::text_input;
+    let script = |remote: bool| {
+        let h = Harness::new();
+        h.record_all();
+        let (tree, live) = h.world.enter(|| {
+            let live = signal(S::Sensitive);
+            let tree = view()
+                .child(text_input().content_sensitivity(S::NotSensitive))
+                .child(text_input().content_sensitivity_dyn(move || live.get()))
+                .child(text_input())
+                .build();
+            (tree, live)
+        });
+        let tree = if remote { cross(tree) } else { tree };
+        let realized = h.mount(tree);
+        h.flush();
+        let ops = |log: Vec<String>| -> Vec<String> {
+            log.into_iter().filter(|l| l.starts_with("update_text_input_content_sensitivity")).collect()
+        };
+        let mut steps = vec![ops(h.take_log())];
+        h.world.enter(|| live.set(S::NotSensitive));
+        h.flush();
+        steps.push(ops(h.take_log()));
+        drop(realized);
+        steps
+    };
+    let native = script(false);
+    assert_eq!(script(true), native);
+    assert_eq!((native[0].len(), native[1].len()), (2, 1), "{native:?}");
+}
+
 /// `text_input`'s soft-keyboard hint crosses (CODEC_VERSION 5): a crossed
 /// field drives the backend's `update_text_input_keyboard` exactly like the
 /// native one — once for a static kind, per change for a live one.

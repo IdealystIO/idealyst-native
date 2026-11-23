@@ -1817,6 +1817,18 @@ impl WireRecordingBackend {
         });
     }
 
+    pub fn update_text_input_content_sensitivity(
+        &mut self,
+        node: &NodeId,
+        sensitivity: runtime_shared::primitives::text_input::ContentSensitivity,
+    ) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateTextInputContentSensitivity {
+            node: *node,
+            sensitivity: convert_out::content_sensitivity_to_wire(sensitivity),
+        });
+    }
+
     pub fn update_text_input_placeholder_color(&mut self, node: &NodeId, color: Option<&runtime_shared::Color>) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateTextInputPlaceholderColor {

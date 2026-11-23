@@ -70,8 +70,9 @@ pub use runtime_shared::accessibility::{
 pub use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
 // The `text_input` soft-keyboard hint (`keyboard = KeyboardKind::Email`):
 // at the root so authors spell it `runtime_core::KeyboardKind`. Same for
-// the `on_blur` veto (`on_blur = || BlurOutcome::Keep`).
-pub use runtime_shared::primitives::text_input::{BlurOutcome, KeyboardKind};
+// the `on_blur` veto (`on_blur = || BlurOutcome::Keep`) and
+// `content_sensitivity = ContentSensitivity::NotSensitive`.
+pub use runtime_shared::primitives::text_input::{BlurOutcome, ContentSensitivity, KeyboardKind};
 pub use runtime_shared::primitives::icon::{FillRule, IconData, IconHandle, StrokeAnimation};
 // `Easing` is re-exported (not just imported): the `stylesheet!`
 // emitter spells `::runtime_core::Easing::…` for `transitions { … }`
@@ -915,10 +916,10 @@ pub use runtime_shared::color;
 // older single-slot key-down hook, now a wrapper over a listener.
 pub use crate::key_input::{add_key_listener, key_state, on_key, KeyState};
 pub use runtime_shared::key_input::KeyListener;
-pub use runtime_shared::primitives::key::{AppKeyEvent, KeyPhase};
 /// Whether a text field holds keyboard focus — what an app-wide shortcut
 /// checks before acting on a bare key (see `on_key`).
 pub use runtime_shared::focus::{text_entry_focused, TextEntryFocus};
+pub use runtime_shared::primitives::key::{AppKeyEvent, KeyPhase};
 pub use runtime_shared::set_app_key_handler;
 // App situation signals (focus, visibility, reduce-motion, primary
 // pointer, user activation, pointer lock, the system color scheme) and
@@ -2023,7 +2024,7 @@ pub mod primitives {
         use super::super::*;
 
         pub use runtime_shared::primitives::text_input::{
-            BlurOutcome, KeyboardKind, TextInputHandle,
+            BlurOutcome, ContentSensitivity, KeyboardKind, TextInputHandle,
         };
 
         /// `text_input(value, on_change)` (controlled single-line).
@@ -2124,6 +2125,22 @@ pub mod primitives {
                 self.b = match keyboard.into() {
                     super::super::Reactive::Static(kind) => self.b.keyboard(kind),
                     live => self.b.keyboard_dyn(move || live.get()),
+                };
+                self
+            }
+
+            /// Whether the field holds something a screen share must not
+            /// show. Android 15+ blanks the whole window in a capture while
+            /// a password field is on screen; `NotSensitive` lets a field
+            /// show (a kiosk supported over live video). A plain value or a
+            /// live source; the other platforms ignore it.
+            pub fn content_sensitivity(
+                mut self,
+                sensitivity: impl Into<super::super::Reactive<ContentSensitivity>>,
+            ) -> Self {
+                self.b = match sensitivity.into() {
+                    super::super::Reactive::Static(s) => self.b.content_sensitivity(s),
+                    live => self.b.content_sensitivity_dyn(move || live.get()),
                 };
                 self
             }

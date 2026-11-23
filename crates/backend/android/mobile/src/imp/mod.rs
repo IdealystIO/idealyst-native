@@ -39,6 +39,7 @@ mod style;
 pub(crate) mod introspect;
 pub(crate) mod view_rect;
 pub(crate) mod native_key;
+pub(crate) mod content_sensitivity;
 pub(crate) mod text_focus;
 pub(crate) mod focus_within;
 
@@ -3248,6 +3249,7 @@ impl AndroidBackend {
         a11y: &runtime_shared::accessibility::AccessibilityProps,
     ) -> GlobalRef {
         let node = primitives::text_input::create(self, initial_value, placeholder, on_change, on_key_down);
+        content_sensitivity::created(&node);
         // The field's focus listener: `on_blur` now, `on_focus` when the
         // framework installs it (`text_focus`).
         with_env(|env| text_focus::install(env, node.as_obj(), on_blur));

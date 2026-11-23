@@ -149,6 +149,37 @@ impl KeyboardKind {
     ];
 }
 
+/// Whether a `text_input` holds something a screen share must not show.
+///
+/// On Android 15+ (API 35) a window with a sensitive view in it is blank in
+/// any other app's screen capture, with a system toast, for as long as the
+/// view is on screen. Android counts every password field as sensitive, so
+/// one PIN box blanks a whole kiosk for the person supporting it remotely.
+/// The other platforms have no such setting and ignore this: iOS always
+/// leaves a secure field's text out of a capture, and nothing else there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ContentSensitivity {
+    /// The app's setting (`content_sensitivity` in
+    /// `[package.metadata.idealyst.app.android]`), else Android's own rule.
+    #[default]
+    Auto,
+    /// Sensitive whatever the field is.
+    Sensitive,
+    /// Not sensitive, even when it is a password field.
+    NotSensitive,
+}
+
+impl ContentSensitivity {
+    /// The field's own choice, else the app's.
+    pub fn or(self, app: ContentSensitivity) -> ContentSensitivity {
+        match self {
+            ContentSensitivity::Auto => app,
+            own => own,
+        }
+    }
+}
+
 /// Shared handler type carried into the backend `create_text_input`. Aliased so
 /// the Backend trait signature stays readable. Mirrors [`KeyDownHandler`].
 ///
@@ -326,6 +357,19 @@ impl<K> PendingFocus<K> {
     /// Whether the pending node is the one `is` matches.
     pub fn is_pending_for(&self, is: impl FnOnce(&K) -> bool) -> bool {
         self.slot.as_ref().is_some_and(is)
+    }
+}
+
+#[cfg(test)]
+mod content_sensitivity_tests {
+    use super::ContentSensitivity::{Auto, NotSensitive, Sensitive};
+
+    #[test]
+    fn a_field_overrides_the_app_and_auto_defers_to_it() {
+        assert_eq!(Auto.or(Auto), Auto);
+        assert_eq!(Auto.or(NotSensitive), NotSensitive);
+        assert_eq!(Sensitive.or(NotSensitive), Sensitive);
+        assert_eq!(NotSensitive.or(Auto), NotSensitive);
     }
 }
 

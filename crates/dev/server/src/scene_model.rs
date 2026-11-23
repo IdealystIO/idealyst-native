@@ -127,6 +127,9 @@ pub struct SceneModel {
     /// node's `Create*` so a late-joining client shows the same soft
     /// keyboard (email / phone / digits) as the live one.
     node_text_input_keyboard: HashMap<NodeId, Command>,
+    /// Per-text-input latest `UpdateTextInputContentSensitivity`, replayed
+    /// like the keyboard hint.
+    node_content_sensitivity: HashMap<NodeId, Command>,
     /// Per-text-input / text-area latest placeholder ink
     /// (`Update*PlaceholderColor`), replayed after the create like the
     /// keyboard hint.
@@ -611,6 +614,9 @@ impl SceneModel {
             Command::UpdateTextInputKeyboard { node, .. } => {
                 self.node_text_input_keyboard.insert(*node, cmd.clone());
             }
+            Command::UpdateTextInputContentSensitivity { node, .. } => {
+                self.node_content_sensitivity.insert(*node, cmd.clone());
+            }
             Command::UpdateTextInputPlaceholderColor { node, .. }
             | Command::UpdateTextAreaPlaceholderColor { node, .. } => {
                 self.node_placeholder_color.insert(*node, cmd.clone());
@@ -680,6 +686,7 @@ impl SceneModel {
         self.node_safe_area.remove(&node);
         self.node_keyboard_avoid.remove(&node);
         self.node_text_input_keyboard.remove(&node);
+        self.node_content_sensitivity.remove(&node);
         self.node_placeholder_color.remove(&node);
         self.navigators.remove(&node);
         self.nav_style_slots.remove(&node);
@@ -941,6 +948,9 @@ impl SceneModel {
                 out.push(cmd.clone());
             }
             if let Some(cmd) = self.node_text_input_keyboard.get(id) {
+                out.push(cmd.clone());
+            }
+            if let Some(cmd) = self.node_content_sensitivity.get(id) {
                 out.push(cmd.clone());
             }
             if let Some(cmd) = self.node_placeholder_color.get(id) {
@@ -1520,6 +1530,43 @@ mod tests {
                 .any(|c| matches!(c, Command::UpdateTextInputKeyboard { .. })),
             "a released node's hint is dropped",
         );
+    }
+
+    /// The latest content sensitivity replays after the create, and goes
+    /// with its node, as the keyboard hint does.
+    #[test]
+    fn text_input_content_sensitivity_replays_in_snapshot_after_create() {
+        let mut model = SceneModel::new();
+        let node = wire::NodeId(1);
+        model.apply(&Command::CreateTextInput {
+            id: node,
+            initial_value: String::new(),
+            placeholder: None,
+            on_change: wire::HandlerId(1),
+            secure: false,
+            a11y: Default::default(),
+        });
+        for sensitivity in [wire::WireContentSensitivity::Sensitive, wire::WireContentSensitivity::NotSensitive] {
+            model.apply(&Command::UpdateTextInputContentSensitivity { node, sensitivity });
+        }
+        model.apply(&Command::Finish { root: node });
+        let sent = |model: &SceneModel| -> Vec<wire::WireContentSensitivity> {
+            let snap = model.snapshot_commands();
+            let create = snap.iter().position(|c| matches!(c, Command::CreateTextInput { .. })).unwrap_or(usize::MAX);
+            snap.iter()
+                .enumerate()
+                .filter_map(|(i, c)| match c {
+                    Command::UpdateTextInputContentSensitivity { sensitivity, .. } => {
+                        assert!(i > create, "after the create");
+                        Some(*sensitivity)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(sent(&model), [wire::WireContentSensitivity::NotSensitive]);
+        model.apply(&Command::ReleaseNode { node });
+        assert!(sent(&model).is_empty());
     }
 
     /// The wire mirror covers every runtime kind distinctly, and an

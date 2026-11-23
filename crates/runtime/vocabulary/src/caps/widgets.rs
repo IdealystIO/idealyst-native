@@ -58,6 +58,22 @@ pub trait TextInputOps: ExternalOps {
     ) {
     }
 
+    /// Set whether a text input holds something a screen share must not
+    /// show ([`ContentSensitivity`]). Called right after
+    /// `create_text_input` (before the node is in a window, so a capture
+    /// never sees the default) for a static value other than `Auto`, and
+    /// per change of a live one. Default: no-op, for every platform without
+    /// the setting.
+    ///
+    /// [`ContentSensitivity`]: runtime_shared::primitives::text_input::ContentSensitivity
+    #[allow(unused_variables)]
+    fn update_text_input_content_sensitivity(
+        &mut self,
+        node: &Self::Node,
+        sensitivity: primitives::text_input::ContentSensitivity,
+    ) {
+    }
+
     /// Install a focus-change notifier (`handler(true)` on focus gain).
     #[allow(unused_variables)]
     fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {}

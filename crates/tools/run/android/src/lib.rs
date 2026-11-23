@@ -1210,7 +1210,9 @@ struct ManifestInputs<'a> {
 
 fn render_manifest(template: &str, i: &ManifestInputs<'_>) -> String {
     let sdk_root = i.sdk.render_root(i.package);
-    let sdk_application = i.sdk.render_application(i.package) + &provisioning_hide_meta_data(i.android);
+    let sdk_application = i.sdk.render_application(i.package)
+        + &provisioning_hide_meta_data(i.android)
+        + &content_sensitivity_meta_data(i.android);
     let uses_permissions = with_keep_alive_permissions(i.uses_permissions, i.android);
     let keep_alive = keep_alive_service(i.package, i.android);
     render(template, &[
@@ -1315,6 +1317,19 @@ fn provisioning_hide_meta_data(android: &AndroidAppMetadata) -> String {
         "\n<meta-data android:name=\"{}\" android:value=\"{}\" />",
         build_ios::android_app::PROVISIONING_HIDE_META_DATA,
         xml_escape(&android.provisioning_hide.join(","))
+    )
+}
+
+/// `content_sensitivity = "not_sensitive"` as the `<application>`
+/// `<meta-data>` the Android backend reads (empty for the default).
+fn content_sensitivity_meta_data(android: &AndroidAppMetadata) -> String {
+    if !android.content_not_sensitive {
+        return String::new();
+    }
+    format!(
+        "\n<meta-data android:name=\"{}\" android:value=\"{}\" />",
+        build_ios::android_app::CONTENT_SENSITIVITY_META_DATA,
+        build_ios::android_app::CONTENT_NOT_SENSITIVE,
     )
 }
 
@@ -2003,6 +2018,28 @@ mod tests {
             );
             let without = render_manifest(template, &inputs(&AndroidAppMetadata::default(), &sdk, false));
             assert!(!without.contains(build_ios::android_app::PROVISIONING_HIDE_META_DATA));
+        }
+    }
+
+    #[test]
+    fn content_sensitivity_becomes_application_meta_data() {
+        let sdk = SdkManifestContributions::default();
+        let with = AndroidAppMetadata { content_not_sensitive: true, ..Default::default() };
+        for template in [ANDROID_MANIFEST_LOCAL_XML, super::ANDROID_MANIFEST_AAS_XML] {
+            let xml = render_manifest(template, &inputs(&with, &sdk, false));
+            let doc = roxmltree::Document::parse(&xml).unwrap_or_else(|e| panic!("{e}\n{xml}"));
+            let app = doc.root_element().children().find(|c| c.has_tag_name("application")).unwrap();
+            let value = app
+                .children()
+                .find(|c| {
+                    c.has_tag_name("meta-data")
+                        && c.attribute((ANDROID_NS, "name"))
+                            == Some(build_ios::android_app::CONTENT_SENSITIVITY_META_DATA)
+                })
+                .and_then(|m| m.attribute((ANDROID_NS, "value")));
+            assert_eq!(value, Some("not_sensitive"), "{xml}");
+            let without = render_manifest(template, &inputs(&AndroidAppMetadata::default(), &sdk, false));
+            assert!(!without.contains(build_ios::android_app::CONTENT_SENSITIVITY_META_DATA));
         }
     }
 
