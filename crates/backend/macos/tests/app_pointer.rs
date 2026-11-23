@@ -39,6 +39,7 @@ mod imp {
     use std::ffi::c_void;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     use backend_macos::MacosBackend;
     use objc2::rc::Retained;
@@ -123,22 +124,27 @@ mod imp {
         }
     );
 
-    fn pump_for(seconds: f64) {
-        let turns = (seconds / 0.01).ceil() as usize;
-        for _ in 0..turns {
-            unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, 1) };
-        }
-    }
-
-    fn pump_until(mut done: impl FnMut() -> bool) -> bool {
-        const TURNS: usize = 100;
-        for _ in 0..TURNS {
-            if done() {
-                return true;
+    /// Run the main run loop until `done` or for `limit`. By the clock: a
+    /// turn returns as soon as it handles one source, so on a busy desktop
+    /// (real mouse movement) a fixed number of turns ends before a timer
+    /// the source armed (the 100 ms release poll) is due.
+    fn pump(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let end = Instant::now() + limit;
+        while !done() {
+            if Instant::now() >= end {
+                return false;
             }
             unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, 1) };
         }
-        done()
+        true
+    }
+
+    fn pump_for(seconds: f64) {
+        pump(Duration::from_secs_f64(seconds), || false);
+    }
+
+    fn pump_until(done: impl FnMut() -> bool) -> bool {
+        pump(Duration::from_secs(2), done)
     }
 
     struct Fixture {
@@ -321,11 +327,18 @@ mod imp {
             ]
         );
         assert!(got.iter().any(|e| e.phase == PointerPhase::Down && e.ctrl), "modifier flags are filled");
-        let mv = got.iter().find(|e| e.phase == PointerPhase::Move).expect("a move");
-        assert_eq!((mv.dx, mv.dy, mv.x.round(), mv.y.round()), (7.0, -3.0, 50.0, 60.0));
-        let wheel = got.iter().find(|e| e.phase == PointerPhase::Wheel).expect("a wheel");
-        assert!(wheel.wheel_dy > 0.0, "wheel toward the user is positive like web deltaY (got {})", wheel.wheel_dy);
-        assert_eq!(wheel.wheel_dx, 0.0);
+        // Ours among any the real device sends: the window sits under the
+        // developer's cursor, so a mouse nudge or a finger resting on the
+        // trackpad (a zero-delta wheel) can reach the monitor too.
+        assert!(
+            got.iter().any(|e| e.phase == PointerPhase::Move
+                && (e.dx, e.dy, e.x.round(), e.y.round()) == (7.0, -3.0, 50.0, 60.0)),
+            "the move, with its device deltas: {got:?}"
+        );
+        assert!(
+            got.iter().any(|e| e.phase == PointerPhase::Wheel && e.wheel_dy > 0.0 && e.wheel_dx == 0.0),
+            "wheel toward the user is positive like web deltaY: {got:?}"
+        );
         fx.backend.set_pointer_sink(None);
         let accepts: bool = unsafe { msg_send![&fx.window, acceptsMouseMovedEvents] };
         assert!(!accepts, "teardown restores acceptsMouseMovedEvents");
@@ -472,8 +485,14 @@ mod imp {
     /// App situation: the boot reading matches AppKit, and each followed
     /// notification — including the reduce-motion one, which is posted on
     /// NSWorkspace's OWN center — re-reads and runs the flush callback.
+    ///
+    /// Each case first reports the opposite of what AppKit says, so the
+    /// fact is restored only by its own observer's re-read. The flush count
+    /// alone does not show that: AppKit answers the display-options
+    /// notification by writing `effectiveAppearance` again, whose observer
+    /// flushes too, so one post can flush once or twice.
     fn app_state_reads_at_boot_and_follows_notifications(fx: &mut Fixture) {
-        use runtime_shared::app_state;
+        use runtime_shared::app_state::{self, AppStateChange};
         app_state::reset_for_tests();
         let flushes = Rc::new(Cell::new(0usize));
         let f = flushes.clone();
@@ -486,15 +505,35 @@ mod imp {
         assert_eq!(st.reduce_motion, reduce);
         assert_eq!(st.primary_pointer, app_state::PointerKind::Fine);
 
+        app_state::report(AppStateChange::Focused(!active));
+        let before = flushes.get();
         post_notification("NSApplicationDidBecomeActiveNotification");
-        assert!(pump_until(|| flushes.get() == 1), "focus notification → report + flush");
-        post_notification("NSApplicationDidChangeOcclusionStateNotification");
-        assert!(pump_until(|| flushes.get() == 2), "occlusion notification → report + flush");
+        assert!(
+            pump_until(|| app_state::current().focused == active && flushes.get() > before),
+            "focus notification → report + flush"
+        );
+
+        // The window is not on screen, so what AppKit reads is its own
+        // business: report both values, and one of them must be replaced.
+        let re_read = [true, false].into_iter().any(|stale| {
+            app_state::report(AppStateChange::Visible(stale));
+            let before = flushes.get();
+            post_notification("NSApplicationDidChangeOcclusionStateNotification");
+            assert!(pump_until(|| flushes.get() > before), "occlusion notification → flush");
+            app_state::current().visible != stale
+        });
+        assert!(re_read, "occlusion notification → report");
+
+        app_state::report(AppStateChange::ReduceMotion(!reduce));
+        let before = flushes.get();
         let ws_center: *mut AnyObject = unsafe { msg_send![ws, notificationCenter] };
         let name = NSString::from_str("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification");
         let nil: *mut AnyObject = std::ptr::null_mut();
         let _: () = unsafe { msg_send![ws_center, postNotificationName: &*name, object: nil] };
-        assert!(pump_until(|| flushes.get() == 3), "workspace-center reduce-motion notification → report + flush");
+        assert!(
+            pump_until(|| app_state::current().reduce_motion == reduce && flushes.get() > before),
+            "workspace-center reduce-motion notification → report + flush"
+        );
     }
 
     fn try_activate(fx: &Fixture) -> bool {

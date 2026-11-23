@@ -435,17 +435,19 @@ fn restart_retargets_flush_driver() {
     app2.stop();
 }
 
-/// Multi-root builds violate the single-root mount contract and panic
-/// loudly (same message shape as web/macOS).
+/// A root of several nodes nests under the one anchor the host attaches
+/// (`runtime_scene::realize`), and every node mounts, in order.
 #[test]
-#[should_panic(expected = "exactly one")]
-fn multi_root_build_panics() {
-    let _ = boot(|| {
+fn multi_root_build_mounts_under_one_root() {
+    let app = boot(|| {
         runtime_scene::fragment(vec![
             text().content("a").build(),
             text().content("b").build(),
         ])
     });
+    let root = root_of(&app);
+    assert_eq!(texts_of(&root), vec!["a".to_string(), "b".to_string()]);
+    app.stop();
 }
 
 // ===========================================================================
