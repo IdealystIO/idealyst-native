@@ -1112,10 +1112,13 @@ const VIEW_BUILDER_PROPS: &[&str] = &[
 ];
 
 /// `GlueView` setters with no inline spelling, and what to write instead.
-const VIEW_BUILDER_ONLY: &[(&str, &str)] = &[(
-    "container",
-    "`container` takes no value — chain `.container()` after the `view(…)` call",
-)];
+const VIEW_BUILDER_ONLY: &[(&str, &str)] = &[
+    ("container", "`container` takes no value — chain `.container()` after the `view(…)` call"),
+    (
+        "on_mount",
+        "`on_mount` takes a `FnOnce(&ViewHandle)` — chain `.on_mount(…)` after the `view(…)` call",
+    ),
+];
 
 /// `keyboard_avoiding_view`'s inline setters on `GlueKeyboardAvoidingView`.
 const KEYBOARD_AVOIDING_VIEW_BUILDER_PROPS: &[&str] = &["behavior", "animated", "safe_area", "bind"];
