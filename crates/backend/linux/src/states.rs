@@ -87,8 +87,11 @@ impl StateControllers {
 fn press_gesture(widget: &gtk4::Widget) -> Option<gtk4::GestureClick> {
     widget
         .observe_controllers()
-        .iter::<gtk4::EventController>()
-        .filter_map(Result::ok)
+        // Not `iter::<EventController>()`: it asserts on the list's declared
+        // item type, which GTK leaves at `GObject`.
+        .snapshot()
+        .into_iter()
+        .filter_map(|o| o.downcast::<gtk4::EventController>().ok())
         .find(|c| c.name().as_deref() == Some(crate::PRESS_GESTURE_NAME))
         .and_then(|c| c.downcast::<gtk4::GestureClick>().ok())
 }
@@ -126,15 +129,6 @@ pub(crate) fn attach(
     // press feedback, and `attach_states` stays independent of which
     // primitive built the node.
     let click = gtk4::GestureClick::new();
-    // Grouped with a pressable's activation gesture, so the two share the
-    // sequence's state. A press-down pressable CLAIMS the sequence at the
-    // press; GTK then DENIES it for every other ungrouped gesture on the
-    // widget without emitting `cancel` and stops feeding it events, so
-    // this gesture never saw the release and the node stayed pressed.
-    // In a group the claim covers this gesture too and it gets the release.
-    if let Some(activation) = press_gesture(widget) {
-        click.group_with(&activation);
-    }
     {
         let s = setter.clone();
         click.connect_pressed(move |_, _, _, _| s(StateBits::PRESSED, true));
@@ -155,6 +149,17 @@ pub(crate) fn attach(
         click.connect_unpaired_release(move |_, _, _, _, _| s(StateBits::PRESSED, false));
     }
     widget.add_controller(click.clone());
+    // Grouped with a pressable's activation gesture, so the two share the
+    // sequence's state. A press-down pressable CLAIMS the sequence at the
+    // press; GTK then DENIES it for every other ungrouped gesture on the
+    // widget without emitting `cancel` and stops feeding it events, so
+    // this gesture never saw the release and the node stayed pressed.
+    // In a group the claim covers this gesture too and it gets the release.
+    // Only once this one is on the widget: GTK refuses to group gestures
+    // that do not share a widget.
+    if let Some(activation) = press_gesture(widget) {
+        click.group_with(&activation);
+    }
 
     // --- focus -------------------------------------------------------
     //
