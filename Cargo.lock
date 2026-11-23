@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "9.2.2"
+version = "9.3.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "9.4.1"
+version = "9.5.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "backend-image-source",
  "base64",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "9.3.1"
+version = "9.4.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "10.3.7"
+version = "10.4.0"
 dependencies = [
  "css",
  "dev-client",
@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "build-ios"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "anyhow",
  "semver",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "camera"
-version = "9.1.0"
+version = "9.2.0"
 dependencies = [
  "async-channel",
  "base64",
@@ -3553,7 +3553,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "9.2.0"
+version = "9.3.0"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3635,7 +3635,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "11.2.0"
+version = "11.3.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3683,7 +3683,7 @@ dependencies = [
 
 [[package]]
 name = "device-admin"
-version = "7.1.0"
+version = "7.2.0"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -4346,7 +4346,7 @@ dependencies = [
 
 [[package]]
 name = "file-picker"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "ashpd",
  "backend-android-mobile",
@@ -5915,7 +5915,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "8.2.1"
+version = "8.3.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -6448,7 +6448,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "14.1.0"
+version = "14.2.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6469,7 +6469,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "24.1.0"
+version = "24.2.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6552,7 +6552,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui-layout"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "host-mock",
  "icons-lucide",
@@ -6603,7 +6603,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.6.2"
+version = "2.6.3"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7821,7 +7821,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.4.9"
+version = "2.4.10"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -8067,7 +8067,7 @@ dependencies = [
 
 [[package]]
 name = "microphone"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "cpal",
  "futures-channel",
@@ -10862,7 +10862,7 @@ dependencies = [
 
 [[package]]
 name = "robot-relay"
-version = "3.1.1"
+version = "3.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10872,7 +10872,7 @@ dependencies = [
 
 [[package]]
 name = "robot-test"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -10926,7 +10926,7 @@ dependencies = [
 
 [[package]]
 name = "run-android"
-version = "6.0.0"
+version = "6.1.0"
 dependencies = [
  "anyhow",
  "build-android",
@@ -11024,7 +11024,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-expand"
-version = "4.5.0"
+version = "4.6.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -11068,7 +11068,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "6.5.0"
+version = "6.6.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -11104,7 +11104,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "9.6.3"
+version = "9.7.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -15903,7 +15903,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "5.4.0"
+version = "5.5.0"
 dependencies = [
  "dev-client",
  "dev-server",
