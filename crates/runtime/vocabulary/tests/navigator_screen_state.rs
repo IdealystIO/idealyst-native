@@ -389,6 +389,32 @@ fn active_query_is_none_while_another_screen_is_active() {
 }
 
 #[test]
+fn swap_replace_with_state_updates_the_query_in_place() {
+    // A swap's `replace_with_state` is the verb for state that shouldn't add
+    // a Back step (a layout toggle, a filter): the reactive query moves
+    // through the route mirror, and the screen is not rebuilt.
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        set_initial_path(None);
+        let fx = mount_swap(&h);
+        assert_eq!(fx.inbox.builds(), 1);
+
+        fx.handle
+            .replace_with_state(&INBOX, (), Filters { tab: "starred".into(), page: 3 });
+        world.flush();
+
+        assert_eq!(fx.inbox.builds(), 1, "a query-only replace must not remount");
+        assert_eq!(fx.ctx.active_route.get(), "inbox");
+        assert_eq!(
+            Filters::from_query(&fx.ctx.query.get()),
+            Some(Filters { tab: "starred".into(), page: 3 }),
+            "the replaced state reaches the reactive query"
+        );
+    });
+}
+
+#[test]
 fn stack_replace_with_state_on_the_same_path_does_not_remount() {
     // `replace_with_state` is the documented verb for a filter change, so
     // it must behave like one: the URL and the reactive state move, the
