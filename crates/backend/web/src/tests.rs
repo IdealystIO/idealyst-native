@@ -3795,6 +3795,38 @@ async fn a_flat_list_row_with_its_own_height_keeps_it_in_the_slot() {
     list.remove();
 }
 
+/// REGRESSION TEST.
+///
+/// A padded grid's lanes were sized from `clientWidth`, which counts the
+/// padding, while the cells sit in the content box: the last lane ran past
+/// the right edge by the padding. Lanes share the content box, as the
+/// native lists' section inset has it.
+#[wasm_bindgen_test]
+async fn regression_web_padded_flat_list_lanes_overflowed_by_the_padding() {
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let layout = runtime_shared::VirtualLayout {
+        lanes: runtime_shared::Lanes::Fixed(2),
+        cross_spacing: 6.0,
+        ..Default::default()
+    };
+    let (list, _) = sized_rows_list(&mut backend, layout, false, vec![32.0; 4], "").await;
+    let _ = list.set_attribute(
+        "style",
+        "width: 300px; height: 200px; padding: 0 10px; box-sizing: border-box; \
+         overflow: hidden auto; scrollbar-width: none;",
+    );
+    let node: web_glue::dom::Node = list.clone().unchecked_into();
+    backend.virtualizer_data_changed_impl(&node);
+    sleep_ms(30).await;
+    let spacer = list.first_element_child().expect("the spacer");
+    let cell = spacer.query_selector("[data-row=\"1\"]").unwrap().expect("cell 1");
+    let (cell, content) = (cell.get_bounding_client_rect(), spacer.get_bounding_client_rect());
+    assert_eq!(cell.width(), (300.0 - 20.0 - 6.0) / 2.0, "a lane of the content box");
+    assert_eq!(cell.right(), content.right(), "the last lane ends at the content edge");
+    list.remove();
+}
+
 /// Each lane's cell fills its own slot in a grid row.
 #[wasm_bindgen_test]
 async fn a_flat_list_grid_cell_fills_its_slot() {

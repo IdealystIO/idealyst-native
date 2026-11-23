@@ -165,9 +165,17 @@
             });
         }
 
-        /** The container's cross-axis extent (perpendicular to scroll). */
+        /**
+         * The cross-axis extent the lanes share (perpendicular to
+         * scroll): the container's content box. `clientWidth/Height`
+         * include padding, and the spacer the rows sit in does not.
+         */
         _crossExtent() {
-            return this.horizontal ? this.container.clientHeight : this.container.clientWidth;
+            const cs = getComputedStyle(this.container);
+            const client = this.horizontal ? this.container.clientHeight : this.container.clientWidth;
+            const before = this.horizontal ? cs.paddingTop : cs.paddingLeft;
+            const after = this.horizontal ? cs.paddingBottom : cs.paddingRight;
+            return Math.max(0, client - (parseFloat(before) || 0) - (parseFloat(after) || 0));
         }
 
         /**
