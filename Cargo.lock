@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "9.3.0"
+version = "9.3.1"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "backend-cpu"
-version = "8.0.0"
+version = "8.0.1"
 dependencies = [
  "parity-goldens",
  "pico-args",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "9.5.0"
+version = "9.5.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "8.1.0"
+version = "8.1.1"
 dependencies = [
  "backend-image-source",
  "base64",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "9.4.0"
+version = "9.4.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1608,7 +1608,7 @@ dependencies = [
 
 [[package]]
 name = "backend-terminal"
-version = "9.0.0"
+version = "9.0.1"
 dependencies = [
  "parity-goldens",
  "runtime-layout",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "10.4.0"
+version = "10.4.1"
 dependencies = [
  "css",
  "dev-client",
@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "9.1.0"
+version = "9.1.1"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -10681,7 +10681,7 @@ dependencies = [
 
 [[package]]
 name = "render-wgpu"
-version = "9.0.0"
+version = "9.0.1"
 dependencies = [
  "backend-image-source",
  "bytemuck",
@@ -11010,7 +11010,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "6.0.3"
+version = "6.1.0"
 dependencies = [
  "runtime-shared",
  "taffy",
