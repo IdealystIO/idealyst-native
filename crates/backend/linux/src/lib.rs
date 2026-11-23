@@ -3144,6 +3144,16 @@ impl LinuxBackend {
     fn finish(&mut self, root: LinuxNode) {
         self.root_id = Some(root.id);
 
+        // An anchor root (several nodes, or a reactive region) is the
+        // window's box, sized by the window like any root rather than grown
+        // over its children (`size_anchors`).
+        if let Some(st) = self.nodes.get_mut(&root.id) {
+            self.layout.blockify_root(st.layout);
+            if st.kind == NodeKind::Anchor {
+                st.kind = NodeKind::View;
+            }
+        }
+
         // First mount: make the framework root the window's child so
         // GtkWindow stretches it to fill the content area, and install
         // the layout callback so the Taffy pass runs inside the root's

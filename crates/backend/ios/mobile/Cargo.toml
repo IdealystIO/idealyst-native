@@ -176,6 +176,10 @@ name = "fullscreen_overlay"
 harness = false
 
 [[test]]
+name = "anchor_root"
+harness = false
+
+[[test]]
 name = "flat_list_measured"
 harness = false
 

@@ -4718,6 +4718,10 @@ impl AndroidBackend {
     }
 
     pub(crate) fn finish_impl(&mut self, root: GlobalRef) {
+        // An anchor root (several nodes, or a reactive region) is the
+        // window's box.
+        let root_layout = self.layout_for_view(&root);
+        self.layout.blockify_root(root_layout);
         // Idempotent: in runtime-server mode, each reconnect / re-snapshot from
         // the dev-server replays the full command stream, which
         // includes the `Finish` that drives this method. The

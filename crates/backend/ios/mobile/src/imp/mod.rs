@@ -5091,6 +5091,10 @@ impl IosBackend {
         if let Some(host) = &self.host_root {
             pin_to_edges(host, root.as_view());
         }
+        // An anchor root (several nodes, or a reactive region) is the
+        // window's box.
+        let root_layout = self.layout_for_view(root.as_view());
+        self.layout.blockify_root(root_layout);
         self.run_layout_pass(&root);
     }
 

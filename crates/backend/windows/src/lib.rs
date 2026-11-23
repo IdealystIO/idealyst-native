@@ -1892,13 +1892,13 @@ impl WindowsBackend {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        self.compute_layout_roots(root_layout, width, height);
+        self.layout.compute(root_layout, width, height);
         // Private-layer and portal roots fill the same client area
         // (`private_layer`, `portal`).
         let private: Vec<u64> = self.private.roots().chain(self.portals.roots()).collect();
         for id in private {
             if let Some(layout) = self.layout_for_id.get(&id).copied() {
-                self.compute_layout_roots(layout, width, height);
+                self.layout.compute(layout, width, height);
             }
         }
 
@@ -2011,19 +2011,6 @@ impl WindowsBackend {
             |id| graphics.get(&id).map(|st| st.visuals.container.clone()),
             lifted,
         );
-    }
-
-    /// Lay out from `node`, filling the window. A root that is itself a
-    /// reactive anchor has no box: its children (through any nested
-    /// anchors) are the layout roots.
-    fn compute_layout_roots(&mut self, node: runtime_layout::LayoutNode, width: f32, height: f32) {
-        if self.layout.is_contents(node) {
-            for child in self.layout.logical_children_of(node) {
-                self.compute_layout_roots(child, width, height);
-            }
-        } else {
-            self.layout.compute(node, width, height);
-        }
     }
 
     /// The `on_layout` callbacks owed a size by the current frames
@@ -3038,6 +3025,11 @@ impl WindowsBackend {
 
     fn finish(&mut self, root: WindowsNode) {
         self.root_id = Some(root.id);
+        // An anchor root (several nodes, or a reactive region) is the
+        // window's box.
+        if let Some(layout) = self.layout_for_id.get(&root.id).copied() {
+            self.layout.blockify_root(layout);
+        }
         self.note_inserted(root.id);
         self.layout_pass();
         self.invalidate();

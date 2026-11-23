@@ -433,6 +433,11 @@ get right in a new backend after `Host`.
 7. **`on_node_unstyled(node)` fires when a styled node goes away**, so
    per-node bookkeeping (class slots, animator state) can be dropped.
 8. **`finish(root)` is called once, at the end of the initial mount.**
+   `root` is an anchor (`create_anchor`) when the app is rooted in several
+   nodes or in a reactive region. A backend whose anchors are
+   `runtime_layout` contents nodes calls `LayoutTree::blockify_root` on it,
+   which gives an unattached one the window's box and leaves any other root
+   alone; without it nothing lays the app out.
 9. **Calls are single-threaded and never re-entrant by the framework's
    own choice** — the mount path holds `Rc<RefCell<H>>` and borrows it
    per call.

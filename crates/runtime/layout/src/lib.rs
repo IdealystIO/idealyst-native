@@ -329,6 +329,9 @@ pub struct LayoutTree {
     /// size without moving its Taffy `Style`, so `set_style` compares
     /// these to know the cached measurement is stale.
     measure_inputs: HashMap<NodeId, String>,
+    /// Contents nodes given a box because they are a mounted root: see
+    /// [`Self::blockify_root`].
+    blockified: HashSet<NodeId>,
     /// Per node, the Taffy fields its style currently declares, with the
     /// value each held before the style declared it. `set_author_style`
     /// takes a node's COMPLETE author style: a field the previous one
@@ -471,6 +474,7 @@ impl LayoutTree {
             logical_children: HashMap::new(),
             measure_inputs: HashMap::new(),
             logical_parent: HashMap::new(),
+            blockified: HashSet::new(),
             declared: HashMap::new(),
         }
     }
@@ -489,6 +493,16 @@ impl LayoutTree {
     /// from before it), so these seed values hold wherever the author's
     /// current style does not override them.
     pub fn new_node(&mut self) -> LayoutNode {
+        let id = self
+            .tree
+            .new_leaf(Self::container_seed())
+            .expect("taffy new_leaf");
+        self.mark_auto(id);
+        LayoutNode(id)
+    }
+
+    /// The style a node starts with: see [`Self::new_node`].
+    fn container_seed() -> Style {
         let mut style = Style::default();
         style.display = Display::Flex;
         style.flex_direction = FlexDirection::Column;
@@ -507,16 +521,15 @@ impl LayoutTree {
         // parent resolves to no constraint, so this is a no-op until
         // some ancestor has a definite width — exactly when web clamps.
         style.max_size.width = LengthPercentageAuto::percent(1.0);
-        let id = self
-            .tree
-            .new_leaf(style)
-            .expect("taffy new_leaf");
-        // Seed style leaves width and height as `Auto`; record that so
-        // root nodes get filled to the viewport on each `compute()`.
+        style
+    }
+
+    /// Record the axes [`Self::container_seed`] leaves `Auto`, so a root
+    /// is filled to the viewport on each `compute()`.
+    fn mark_auto(&mut self, id: NodeId) {
         self.auto_width.insert(id);
         self.auto_height.insert(id);
         self.auto_max_width.insert(id);
-        LayoutNode(id)
     }
 
     /// Create a layout-TRANSPARENT node: CSS `display: contents`, which
@@ -543,7 +556,9 @@ impl LayoutTree {
     /// the origin, so a backend that parents the children under the
     /// contents node's native view applies their Taffy frames unchanged.
     /// A style applied to it is ignored, as CSS ignores box properties on
-    /// a `display: contents` element; it is never a layout root.
+    /// a `display: contents` element. It is not a layout root either,
+    /// unless it is mounted as the app root
+    /// ([`blockify_root`](Self::blockify_root)).
     pub fn new_contents_node(&mut self) -> LayoutNode {
         let id = self
             .tree
@@ -551,6 +566,77 @@ impl LayoutTree {
             .expect("taffy new_leaf");
         self.contents.insert(id);
         LayoutNode(id)
+    }
+
+    /// Give a mounted ROOT a box. Every backend calls this on its app root
+    /// as it mounts; it acts only on a contents node with no parent, which
+    /// is what an app rooted in several nodes or in a reactive region
+    /// (`if` / `match` / `for`) hands over. Such a node has no ancestor for
+    /// its children to join, so nothing would lay them out together. CSS
+    /// computes `display: contents` on the root element to a box for the
+    /// same reason.
+    ///
+    /// The box is the window, and lays its children out as the window
+    /// would: a lone in-flow child fills it, as an app root does, and
+    /// several stack in a column. Which one applies is re-read by each
+    /// [`Self::compute`], since a reactive root swaps its children.
+    pub fn blockify_root(&mut self, node: LayoutNode) {
+        if !self.contents.contains(&node.0) || self.logical_parent.contains_key(&node.0) {
+            return;
+        }
+        let flat = self.flat_nodes(node.0);
+        self.contents.remove(&node.0);
+        self.blockified.insert(node.0);
+        self.mark_auto(node.0);
+        let _ = self.tree.set_style(node.0, Self::container_seed());
+        for n in flat {
+            // A pass that ran before the mount computed each child as a
+            // root, which writes the viewport into its `Auto` axes.
+            if let Ok(existing) = self.tree.style(n) {
+                let mut style = existing.clone();
+                if self.auto_width.contains(&n) {
+                    style.size.width = Dimension::auto();
+                }
+                if self.auto_height.contains(&n) {
+                    style.size.height = Dimension::auto();
+                }
+                let _ = self.tree.set_style(n, style);
+            }
+            self.tree.add_child(node.0, n).expect("taffy add_child");
+            self.refresh_default_max_width(n);
+        }
+    }
+
+    /// Pick a blockified root's layout for the children it has now. A lone
+    /// in-flow child goes in a one-cell grid, whose items stretch on both
+    /// axes where they have no size of their own; the cell's tracks are
+    /// `minmax(0, 1fr)` so tall content cannot grow it past the window.
+    fn arrange_blockified(&mut self, root: NodeId) {
+        let in_flow = self
+            .tree
+            .children(root)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| self.tree.style(*n).is_ok_and(|s| !s.position.is_out_of_flow()))
+            .count();
+        let Ok(existing) = self.tree.style(root) else { return };
+        let lone = in_flow == 1;
+        if (existing.display == Display::Grid) == lone {
+            return;
+        }
+        let mut style = existing.clone();
+        if lone {
+            let cell = || vec![minmax(length(0.0), fr(1.0))];
+            style.display = Display::Grid;
+            style.grid_template_columns = cell();
+            style.grid_template_rows = cell();
+        } else {
+            let seed = Self::container_seed();
+            style.display = seed.display;
+            style.grid_template_columns = seed.grid_template_columns;
+            style.grid_template_rows = seed.grid_template_rows;
+        }
+        let _ = self.tree.set_style(root, style);
     }
 
     /// Whether `node` is a [`new_contents_node`](Self::new_contents_node).
@@ -908,6 +994,7 @@ impl LayoutTree {
             }
         }
         self.contents.remove(&node.0);
+        self.blockified.remove(&node.0);
         self.measure_fns.remove(&node.0);
         self.measure_inputs.remove(&node.0);
         self.auto_width.remove(&node.0);
@@ -2161,6 +2248,9 @@ impl LayoutTree {
             // Nothing to lay out: an unattached contents node's children
             // are roots of their own (see `is_root`).
             return;
+        }
+        if self.blockified.contains(&root.0) {
+            self.arrange_blockified(root.0);
         }
         // Fill viewport on axes the author left as `Auto`, but
         // preserve explicit `width` / `height`. Without this fallback,

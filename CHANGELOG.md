@@ -3928,6 +3928,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A view with hover or press styling no longer aborts at mount on Linux** (`backend-linux`).
+  Looking up its controllers asserted on the list's item type. A press-down pressable (a menu
+  button) also stays pressed only until its release; its press-state gesture was never grouped
+  with the one that claims the press.
+
+- **An app rooted in several nodes, or in an `if` / `match` / `for`, is laid out on native**
+  (`runtime-layout` minor, `backend-macos`, `backend-ios-mobile`, `backend-android-mobile`,
+  `backend-linux`, `backend-windows`). The root had no layout box: the window was empty on macOS
+  and Linux, and several root nodes sat on top of one another on iOS, Android and Windows. Several
+  stack in the window and a lone one fills it. Backends call the new
+  `LayoutTree::blockify_root` as they mount.
+
 - **A layout property given as a token lays out at the installed value** (`runtime-layout`). Native
   read a token's fallback, so an app that installed a 12pt page gutter still got the theme's 32.
   Paint and web already used the installed value.

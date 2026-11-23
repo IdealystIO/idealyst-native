@@ -6394,6 +6394,9 @@ impl MacosBackend {
         let Some(root_layout) = self.layout_of(root_view) else {
             return;
         };
+        // An anchor root (several nodes, or a reactive region) is the
+        // window's box.
+        self.layout.blockify_root(root_layout);
         // Remember the root for post-mount passes (`run_layout_pass_global`):
         // reactive resizes after this `finish` have no `root` argument to hand
         // us, so they recompute from this stashed node instead.
@@ -6540,5 +6543,65 @@ mod secondary_press_tests {
         h(&ev(TouchPhase::Began));
         h(&ev(TouchPhase::Ended));
         assert_eq!(clicks.get(), 1);
+    }
+}
+
+/// Off-window views only: frames need no `NSWindow`.
+#[cfg(test)]
+mod anchor_root_tests {
+    use super::{MacosBackend, MacosNode};
+    use objc2::msg_send;
+    use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker};
+    use runtime_scene::Host;
+    use runtime_shared::{Length, StyleRules};
+    use std::rc::Rc;
+
+    const W: f64 = 400.0;
+    const H: f64 = 300.0;
+
+    fn view(b: &mut MacosBackend, height: Option<f32>) -> MacosNode {
+        let v = b.create_view_impl(&Default::default());
+        let rules = StyleRules { height: height.map(|h| Length::Px(h).into()), ..Default::default() };
+        b.apply_style_impl(&v, &Rc::new(rules));
+        v
+    }
+
+    /// Mount `children` under the anchor the scene hands over for an app
+    /// rooted in a fragment or a reactive region; return their frames.
+    fn frames(heights: &[Option<f32>]) -> Vec<(f64, f64, f64, f64)> {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut b = MacosBackend::new(mtm);
+        let host = b.create_host_root().expect("host root");
+        let bounds = CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: CGSize { width: W, height: H } };
+        let _: () = unsafe { msg_send![&host, setFrame: bounds] };
+        b.set_host_root(host);
+        let mut root = b.create_anchor();
+        let children: Vec<MacosNode> = heights.iter().map(|h| view(&mut b, *h)).collect();
+        for c in &children {
+            b.insert(&mut root, c.clone());
+        }
+        b.finish_impl(root);
+        children
+            .iter()
+            .map(|c| {
+                let f: CGRect = unsafe { msg_send![c.as_view(), frame] };
+                (f.origin.x, f.origin.y, f.size.width, f.size.height)
+            })
+            .collect()
+    }
+
+    /// REGRESSION: an app whose root was several nodes showed an empty
+    /// window: the root anchor has no layout box and no ancestor, so
+    /// nothing laid its children out and every frame stayed 0×0.
+    #[test]
+    fn regression_an_app_rooted_in_several_nodes_is_laid_out() {
+        assert_eq!(frames(&[Some(40.0), Some(50.0)]), [(0.0, 0.0, W, 40.0), (0.0, 40.0, W, 50.0)]);
+    }
+
+    /// The same for an app rooted in an `if` / `match`, whose one branch
+    /// fills the window as any app root does.
+    #[test]
+    fn regression_an_app_rooted_in_a_reactive_branch_fills_the_window() {
+        assert_eq!(frames(&[None]), [(0.0, 0.0, W, H)]);
     }
 }
