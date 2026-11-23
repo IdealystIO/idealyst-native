@@ -294,3 +294,15 @@ harness = false
 [[test]]
 name = "hscroll_hit_test"
 harness = false
+
+# Real run loop: a view given a translate as it mounts (animated, or a static
+# style transform) carries it in the Core Animation commit that first shows it,
+# though AppKit builds the view's layer into the tree in that commit (the drag
+# ghost). Main-thread only, like `layout_before_commit`.
+[[test]]
+name = "mount_translate_first_commit"
+harness = false
+
+[[test]]
+name = "variant_restyle"
+harness = false

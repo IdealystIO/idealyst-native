@@ -23,7 +23,7 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
     use std::rc::Rc;
     use std::time::{Duration, Instant};
@@ -113,6 +113,14 @@ mod imp {
         children: Rc<RefCell<HashMap<usize, MacosNode>>>,
         /// Every `set_measured_size(scope_id, size)` call, in order.
         reports: Rc<RefCell<Vec<(u64, f32)>>>,
+        /// The list's parent and the list itself.
+        root: MacosNode,
+        list: MacosNode,
+        /// The data's row count; a test shrinks it.
+        count: Rc<Cell<usize>>,
+        /// Every `release_item` call. Each takes the backend's borrow, as
+        /// a real row's style teardown does.
+        released: Rc<RefCell<Vec<u64>>>,
     }
 
     impl Mounted {
@@ -193,6 +201,18 @@ mod imp {
     /// `ESTIMATE`. `Some(h)` rows carry an explicit `height: h`; `None` rows
     /// are content-sized around one `SHORT`-tall child.
     fn mount_list(mtm: MainThreadMarker, heights: Vec<Option<f32>>, measure_sizes: bool) -> Mounted {
+        mount_list_with(mtm, heights, measure_sizes, VirtualLayout::default(), StyleRules::default())
+    }
+
+    /// [`mount_list`] with the list's own layout and extra style rules
+    /// (layered over its fixed `LIST_W` x `LIST_H` size).
+    fn mount_list_with(
+        mtm: MainThreadMarker,
+        heights: Vec<Option<f32>>,
+        measure_sizes: bool,
+        virt_layout: VirtualLayout,
+        list_style: StyleRules,
+    ) -> Mounted {
         let backend = Rc::new(RefCell::new(MacosBackend::new(mtm)));
         // The cells lay their rows out through the global backend handle.
         backend_macos::install_global_self(Rc::downgrade(&backend));
@@ -204,12 +224,15 @@ mod imp {
         let reports: Rc<RefCell<Vec<(u64, f32)>>> = Rc::default();
         // scope_id = idx + 1 (0 is never handed out by the vocabulary).
         let overrides: Rc<RefCell<HashMap<usize, f32>>> = Rc::default();
-        let count = heights.len();
+        let count = Rc::new(Cell::new(heights.len()));
+        let released: Rc<RefCell<Vec<u64>>> = Rc::default();
         let mount = {
+            let mount_count = count.clone();
             let backend = backend.clone();
             let rows = rows.clone();
             let children = children.clone();
             Rc::new(move |i: usize| {
+                assert!(i < mount_count.get(), "mount_item asked past the end of the data");
                 let mut b = backend.borrow_mut();
                 let a11y = AccessibilityProps::default();
                 let mut root = b.create_view(&a11y);
@@ -231,7 +254,12 @@ mod imp {
         };
         let item_size = {
             let overrides = overrides.clone();
-            Rc::new(move |i: usize| overrides.borrow().get(&i).copied().unwrap_or(ESTIMATE))
+            let count = count.clone();
+            Rc::new(move |i: usize| {
+                // An author's size fn may index its data by `i`.
+                assert!(i < count.get(), "item_size asked past the end of the data");
+                overrides.borrow().get(&i).copied().unwrap_or(ESTIMATE)
+            })
         };
         let set_measured_size = {
             let overrides = overrides.clone();
@@ -242,32 +270,49 @@ mod imp {
             })
         };
         let callbacks = VirtualizerCallbacks {
-            item_count: Rc::new(move || count),
+            item_count: {
+                let count = count.clone();
+                Rc::new(move || count.get())
+            },
             item_key: Rc::new(|i| i as u64),
             item_size,
             measure_sizes,
             mount_item: mount,
-            release_item: Rc::new(|_| {}),
+            release_item: {
+                let (backend, released) = (backend.clone(), released.clone());
+                Rc::new(move |id| {
+                    let _b = backend.borrow_mut();
+                    released.borrow_mut().push(id);
+                })
+            },
             set_measured_size,
             on_scroll: None,
             item_changed: None,
         };
         let a11y = AccessibilityProps::default();
-        let list = {
+        let (root, list) = {
             let mut b = backend.borrow_mut();
             let mut root = b.create_view(&a11y);
             b.apply_style(&root, &sized(LIST_W as f32, LIST_H as f32));
-            let list = b.create_virtualizer(callbacks, 0.0, VirtualLayout::default(), &a11y);
-            b.apply_style(&list, &sized(LIST_W as f32, LIST_H as f32));
+            let list = b.create_virtualizer(callbacks, 0.0, virt_layout, &a11y);
+            b.apply_style(
+                &list,
+                &Rc::new(StyleRules {
+                    width: px(LIST_W as f32),
+                    height: px(LIST_H as f32),
+                    ..list_style
+                }),
+            );
             b.insert(&mut root, list.clone());
-            b.finish(root);
+            b.finish(root.clone());
             b.run_layout_pass_now();
-            list
+            (root, list)
         };
         let scroll = view_of(&list);
         let _: () = unsafe { msg_send![&scroll, layoutSubtreeIfNeeded] };
         let cv: Retained<NSView> = unsafe { msg_send_id![&scroll, documentView] };
-        let mounted = Mounted { backend, window, cv, rows, children, reports };
+        let mounted =
+            Mounted { backend, window, cv, rows, children, reports, root, list, count, released };
         mounted.settle();
         mounted
     }
@@ -367,6 +412,126 @@ mod imp {
         m.close();
     }
 
+    fn padded(h: f32, v: f32) -> StyleRules {
+        StyleRules {
+            padding_left: px(h),
+            padding_right: px(h),
+            padding_top: px(v),
+            padding_bottom: px(v),
+            ..Default::default()
+        }
+    }
+
+    /// REGRESSION: padding on the virtualizer's own style was ignored —
+    /// rows ran edge to edge (a Kanban column's `padding_horizontal: 8`
+    /// card list rendered flush on macOS, inset on web). Like a padded
+    /// scroll container on web, the rows sit inside the padding on every
+    /// side, a row fills the cross axis less the horizontal padding, and
+    /// the top + bottom padding are part of the scroll extent.
+    fn regression_virtualizer_padding_insets_its_rows(mtm: MainThreadMarker) {
+        const H: f32 = 8.0;
+        const V: f32 = 12.0;
+        let m = mount_list_with(
+            mtm,
+            vec![Some(TALL), Some(TALL), Some(TALL)],
+            false,
+            VirtualLayout::default(),
+            padded(H, V),
+        );
+        let cv_frame: CGRect = unsafe { msg_send![&m.cv, frame] };
+        let cv_w = cv_frame.size.width as f32;
+        let c0 = m.cell_frame(0);
+        assert_close(c0.origin.x, H, "row 0 is inset by padding_left");
+        assert_close(c0.origin.y, V, "row 0 is inset by padding_top");
+        assert_close(c0.size.width, cv_w - 2.0 * H, "row 0 fills the cross axis less the padding");
+        assert_close(m.row_frame(0).size.width, cv_w - 2.0 * H, "row 0 root width");
+        assert_close(m.cell_frame(1).origin.y, V + ESTIMATE, "row 1 follows row 0");
+        assert_close(m.content_main(), V + 3.0 * ESTIMATE + V, "scroll extent includes top + bottom padding");
+        m.close();
+    }
+
+    /// The grid half of the padding regression: lanes divide the cross
+    /// axis less the horizontal padding, and the first lane starts at it.
+    fn regression_virtualizer_padding_insets_its_lanes(mtm: MainThreadMarker) {
+        const H: f32 = 10.0;
+        const GAP: f32 = 6.0;
+        let layout = VirtualLayout {
+            lanes: runtime_shared::Lanes::Fixed(2),
+            cross_spacing: GAP,
+            ..VirtualLayout::default()
+        };
+        let m = mount_list_with(mtm, vec![Some(TALL); 4], false, layout, padded(H, 0.0));
+        let cv_frame: CGRect = unsafe { msg_send![&m.cv, frame] };
+        let cv_w = cv_frame.size.width as f32;
+        let lane = (cv_w - 2.0 * H - GAP) / 2.0;
+        let (c0, c1) = (m.cell_frame(0), m.cell_frame(1));
+        assert_close(c0.origin.x, H, "lane 0 starts at padding_left");
+        assert_close(c0.size.width, lane, "lane 0 width");
+        assert_close(c1.origin.x, H + lane + GAP, "lane 1 follows lane 0 and the gap");
+        assert_close(c1.size.width, lane, "lane 1 width");
+        assert_close(c1.origin.y, 0.0, "rows 0 and 1 share a line");
+        m.close();
+    }
+
+    /// REGRESSION: a data change reloaded inside `virtualizer_data_changed`,
+    /// under the backend's borrow, and the rows it ended displaying were
+    /// released there: "RefCell already borrowed", an abort across AppKit.
+    /// The rows are released and the new count shows on a later turn.
+    fn regression_a_data_change_under_the_backend_borrow_releases_rows_later(mtm: MainThreadMarker) {
+        let m = mount_list(mtm, vec![Some(SHORT); 3], false);
+        m.count.set(1);
+        {
+            let mut b = m.backend.borrow_mut();
+            b.virtualizer_data_changed(&m.list);
+            // Whatever lays out before the reload sees the old count.
+            let layout: Retained<AnyObject> = unsafe { msg_send_id![&m.cv, collectionViewLayout] };
+            let _: () = unsafe { msg_send![&layout, invalidateLayout] };
+            let _: () = unsafe { msg_send![&m.cv, layoutSubtreeIfNeeded] };
+            assert!(m.released.borrow().is_empty(), "nothing is released under the borrow");
+        }
+        m.settle();
+        assert!(!m.released.borrow().is_empty(), "the dropped rows are released");
+        assert_close(m.content_main(), ESTIMATE, "one row is left");
+        m.close();
+    }
+
+    /// REGRESSION: taking a list out of the tree (a route change) ends
+    /// displaying its rows under the backend's borrow, with the same abort.
+    fn regression_removing_the_list_under_the_backend_borrow_releases_rows_later(mtm: MainThreadMarker) {
+        let m = mount_list(mtm, vec![Some(SHORT); 3], false);
+        {
+            let mut b = m.backend.borrow_mut();
+            let mut root = m.root.clone();
+            b.remove_child(&mut root, &m.list);
+            // AppKit ends displaying its items when the collection view is
+            // next told its data is gone; force it here, under the borrow.
+            m.count.set(0);
+            let _: () = unsafe { msg_send![&m.cv, reloadData] };
+            let _: () = unsafe { msg_send![&m.cv, layoutSubtreeIfNeeded] };
+            assert!(m.released.borrow().is_empty(), "nothing is released under the borrow");
+        }
+        pump_for(0.1);
+        m.close();
+    }
+
+    /// REGRESSION: the scroll view, its clip and the collection view each
+    /// painted AppKit's opaque default over whatever the list's parent
+    /// painted. The list paints nothing of its own, as on web.
+    fn regression_a_list_is_transparent(mtm: MainThreadMarker) {
+        let m = mount_list(mtm, vec![Some(SHORT); 3], false);
+        let scroll = view_of(&m.list);
+        let draws: bool = unsafe { msg_send![&scroll, drawsBackground] };
+        assert!(!draws, "the scroll view");
+        let clip: Retained<AnyObject> = unsafe { msg_send_id![&scroll, contentView] };
+        let draws: bool = unsafe { msg_send![&clip, drawsBackground] };
+        assert!(!draws, "the clip view");
+        let colors: Retained<AnyObject> = unsafe { msg_send_id![&m.cv, backgroundColors] };
+        let color: Retained<AnyObject> = unsafe { msg_send_id![&colors, firstObject] };
+        let alpha: f64 = unsafe { msg_send![&color, alphaComponent] };
+        assert_eq!(alpha, 0.0, "the collection view");
+        m.close();
+    }
+
     pub fn run() {
         extern "C" {
             fn pthread_main_np() -> std::os::raw::c_int;
@@ -375,7 +540,7 @@ mod imp {
         // SAFETY: checked just above — this is the main thread.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         backend_macos::install_scheduler();
-        let tests: [(&str, fn(MainThreadMarker)); 4] = [
+        let tests: [(&str, fn(MainThreadMarker)); 9] = [
             (
                 "regression_measured_rows_are_spaced_by_their_rendered_size",
                 regression_measured_rows_are_spaced_by_their_rendered_size,
@@ -389,6 +554,23 @@ mod imp {
                 "regression_known_row_relays_out_after_a_content_change",
                 regression_known_row_relays_out_after_a_content_change,
             ),
+            (
+                "regression_virtualizer_padding_insets_its_lanes",
+                regression_virtualizer_padding_insets_its_lanes,
+            ),
+            (
+                "regression_virtualizer_padding_insets_its_rows",
+                regression_virtualizer_padding_insets_its_rows,
+            ),
+            (
+                "regression_a_data_change_under_the_backend_borrow_releases_rows_later",
+                regression_a_data_change_under_the_backend_borrow_releases_rows_later,
+            ),
+            (
+                "regression_removing_the_list_under_the_backend_borrow_releases_rows_later",
+                regression_removing_the_list_under_the_backend_borrow_releases_rows_later,
+            ),
+            ("regression_a_list_is_transparent", regression_a_list_is_transparent),
         ];
         for (name, t) in tests {
             t(mtm);

@@ -520,20 +520,31 @@ pub fn flush_pending_layout_pass() {
 }
 
 /// The pre-commit drain (see [`schedule_layout_pass`]). Fires on every run-loop
-/// turn, so it bails on the flag read. A nested run loop can turn while the
+/// turn, so it bails on the flag reads. A nested run loop can turn while the
 /// backend is borrowed, and the pass could not take the borrow; the flag stays
 /// armed for the next turn rather than being spent on a pass that never ran.
+///
+/// After the pass, transforms written to layers AppKit has not parented yet
+/// are restored over AppKit's layer-tree build, so a view placed by a
+/// transform as it mounts shows there in its first commit
+/// (`animated::restore_transforms_awaiting_layer_tree`). That runs after the
+/// pass because the pass's `sync_transform_after_layout` records views too.
 fn drain_queued_layout_pass() {
-    if !LAYOUT_PASS_QUEUED.with(|q| q.get()) {
+    let pass_queued = LAYOUT_PASS_QUEUED.with(|q| q.get());
+    if !pass_queued && !animated::transforms_await_layer_tree() {
         return;
     }
     let backend_free = MACOS_BACKEND_SELF
         .with(|s| s.borrow().clone())
         .and_then(|weak| weak.upgrade())
         .is_some_and(|rc| rc.try_borrow_mut().is_ok());
-    if backend_free {
+    if !backend_free {
+        return;
+    }
+    if pass_queued {
         run_pending_layout_pass("pre-commit");
     }
+    animated::restore_transforms_awaiting_layer_tree();
 }
 
 /// RAII guard that coalesces every layout pass a navigator screen-swap would
@@ -3261,11 +3272,10 @@ impl MacosBackend {
     /// `presence_deep_hit`).
     ///
     /// Contents, not in-flow: an in-flow placeholder is a real flex item,
-    /// and Taffy resolves an absolute child's insets against its DIRECT
-    /// layout parent — a `position: absolute; bottom: md` alert was placed
-    /// against a full-width, zero-height box and landed above its
-    /// positioned ancestor (the iOS "presence alert never appears" bug).
-    /// Upgrading the placeholder to `absolute; inset: 0` in `insert` is not
+    /// and a `position: absolute; bottom: md` alert inside it would sit in
+    /// a full-width, zero-height native view that `hitTest:` never
+    /// descends into, though layout places the alert against its
+    /// positioned ancestor. Upgrading the placeholder to `absolute; inset: 0` in `insert` is not
     /// enough — it still leaves a box in the way (padding, `flex_grow`).
     /// A contents node also keeps the toast stack stacking with its gap —
     /// the cards are the column's own flex items. The view itself is
@@ -4801,9 +4811,9 @@ impl MacosBackend {
     /// AppKit still PAINTS the absolute child (NSView doesn't clip subviews to
     /// bounds), but `hitTest:` won't descend into a subview unless the click is
     /// inside the 0×0 wrapper's frame — so the popover rendered fine yet
-    /// swallowed every click. Splicing gives the absolute branch the real parent
-    /// as its containing block (matching web's `display: contents` anchor), so it
-    /// both paints AND hit-tests. Mirrors iOS/Android, which already opt in.
+    /// swallowed every click. Splicing makes the real parent the absolute
+    /// branch's layout and native parent (matching web's `display: contents`
+    /// anchor), so it both paints AND hit-tests. Mirrors iOS/Android, which already opt in.
     pub(crate) fn supports_child_splice_impl(&self) -> bool {
         true
     }
@@ -5286,15 +5296,15 @@ impl MacosBackend {
                 s.padding_right = None;
                 s.padding_bottom = None;
                 s.padding_left = None;
-                self.layout.set_style(layout_node, &s)
+                self.layout.set_author_style(layout_node, &s)
             } else if let Some(placement) = self.portal_roots.get(&view_key) {
                 // Portal container: its target-derived placement stays the
                 // base and the portal's own style layers on top (see
                 // `portal_roots`).
                 let layered = placement.clone().merge(style);
-                self.layout.set_style(layout_node, &layered)
+                self.layout.set_author_style(layout_node, &layered)
             } else {
-                self.layout.set_style(layout_node, style)
+                self.layout.set_author_style(layout_node, style)
             }
         } else {
             false
@@ -5313,6 +5323,9 @@ impl MacosBackend {
         if is_external_scroller {
             measure_changed |= self.sync_external_scroller_padding(view_key, style);
         }
+        // A virtualizer's padding insets its rows (they are collection-view
+        // cells, out of Taffy's reach): see `virtualizer::sync_padding`.
+        virtualizer::sync_padding(&self.virtualizer_instances, view, style);
 
         // Per-node-type text styling. Labels and text views need
         // font/color/alignment applied directly to the AppKit

@@ -642,7 +642,91 @@ fn rebuild_transform(view: &NSView, state: &AnimatedState) {
         m31: 0.0, m32: 0.0, m33: 1.0, m34: 0.0,
         m41: tx + center_tx, m42: ty + center_ty, m43: 0.0, m44: 1.0,
     };
-    let _: () = unsafe { msg_send![&layer, setTransform: m] };
+    set_view_layer_transform(view, &layer, m);
+}
+
+thread_local! {
+    /// Views whose backing layer was given a non-identity transform before
+    /// AppKit put that layer in the window's layer tree, with the matrix
+    /// last written. See [`set_view_layer_transform`].
+    static AWAITING_LAYER_TREE: RefCell<HashMap<usize, (Retained<NSView>, CATransform3D)>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Write `m` to `view`'s backing `layer`, and remember it while AppKit has
+/// not yet parented that layer.
+///
+/// AppKit builds a new subview's layer into the tree lazily, in the window's
+/// display cycle inside the Core Animation commit (`NSWindowUpdateLayerTree`
+/// → `-[NSView _updateLayerGeometryFromView]`), and that build writes the
+/// view's own geometry onto the layer: `setAffineTransform:` with the view's
+/// identity transform. A transform written before the build (a translate set
+/// as the view mounts, which is how the drag ghost is placed) is wiped in the
+/// commit that first shows the view, and stays wiped until the value next
+/// changes, so the ghost painted at the window's top-left. A parented layer
+/// keeps its transform across `setFrame:`, so only the unparented case needs
+/// [`restore_transforms_awaiting_layer_tree`].
+fn set_view_layer_transform(view: &NSView, layer: &NSObject, m: CATransform3D) {
+    let _: () = unsafe { msg_send![layer, setTransform: m] };
+    let key = view as *const NSView as usize;
+    let superlayer: *mut NSObject = unsafe { msg_send![layer, superlayer] };
+    AWAITING_LAYER_TREE.with(|w| {
+        let mut w = w.borrow_mut();
+        if superlayer.is_null() && m != CATransform3D::IDENTITY {
+            // SAFETY: `view` is a live reference, so retaining it is sound.
+            let view = unsafe { Retained::retain(view as *const NSView as *mut NSView) };
+            if let Some(view) = view {
+                w.insert(key, (view, m));
+            }
+        } else {
+            w.remove(&key);
+        }
+    });
+}
+
+/// Whether any view is waiting for [`restore_transforms_awaiting_layer_tree`].
+pub(crate) fn transforms_await_layer_tree() -> bool {
+    AWAITING_LAYER_TREE.with(|w| !w.borrow().is_empty())
+}
+
+/// Build the waiting views' layers into their windows' layer trees now, then
+/// write their transforms back over what that build wrote, so the commit that
+/// first shows them carries the transforms. Runs before the commit (the
+/// pre-commit drain in `imp::mod`).
+///
+/// `-[NSWindow displayIfNeeded]` is the public entry to the display cycle the
+/// commit runs later in this same turn. Running it here moves that work
+/// earlier without adding to it; the commit's own cycle then finds nothing
+/// left to do. It can run drawing code that takes the backend, so the caller
+/// must not hold a backend borrow. A view with no window yet is dropped from
+/// the list: when it is inserted, the layout pass frames it for the first
+/// time, `sync_transform_after_layout` writes the transform again, and that
+/// write records it again.
+pub(crate) fn restore_transforms_awaiting_layer_tree() {
+    let pending = AWAITING_LAYER_TREE.with(|w| std::mem::take(&mut *w.borrow_mut()));
+    if pending.is_empty() {
+        return;
+    }
+    let mut windows: Vec<Retained<NSObject>> = Vec::new();
+    for (view, _) in pending.values() {
+        let window: Option<Retained<NSObject>> = unsafe { msg_send_id![&**view, window] };
+        if let Some(window) = window {
+            if !windows.iter().any(|w| Retained::as_ptr(w) == Retained::as_ptr(&window)) {
+                windows.push(window);
+            }
+        }
+    }
+    for window in &windows {
+        let _: () = unsafe { msg_send![&**window, displayIfNeeded] };
+    }
+    for (view, m) in pending.into_values() {
+        let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![&*view, layer] };
+        let Some(layer) = layer else { continue };
+        let superlayer: *mut NSObject = unsafe { msg_send![&layer, superlayer] };
+        if !superlayer.is_null() {
+            let _: () = unsafe { msg_send![&layer, setTransform: m] };
+        }
+    }
 }
 
 /// Apply a presence transform — uniform `scale` + (`tx`, `ty`) translate,
@@ -671,7 +755,7 @@ pub(crate) fn apply_presence_transform(view: &NSView, tx: f64, ty: f64, scale: f
         m31: 0.0, m32: 0.0, m33: 1.0, m34: 0.0,
         m41: tx + center_tx, m42: ty + center_ty, m43: 0.0, m44: 1.0,
     };
-    let _: () = unsafe { msg_send![&layer, setTransform: m] };
+    set_view_layer_transform(view, &layer, m);
 }
 
 /// The uniform scale currently on `layer` (its `transform.m11`). The icon

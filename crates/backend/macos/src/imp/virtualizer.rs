@@ -65,9 +65,9 @@ use objc2_app_kit::{
     NSCollectionViewFlowLayout, NSCollectionViewItem, NSScrollView, NSView,
 };
 use objc2_foundation::{
-    CGFloat, CGRect, CGSize, MainThreadMarker, NSInteger, NSObject, NSString,
+    CGFloat, CGRect, CGSize, MainThreadMarker, NSEdgeInsets, NSInteger, NSObject, NSString,
 };
-use runtime_shared::{VirtualizerCallbacks, VirtualLayout};
+use runtime_shared::{StyleRules, VirtualizerCallbacks, VirtualLayout};
 
 use super::MacosNode;
 
@@ -378,8 +378,17 @@ declare_class!(
                 };
                 clear_host_key(&prev.child);
                 unsafe { prev.child.removeFromSuperview() };
+                // The row's scope is released on a later turn, not here:
+                // AppKit ends displaying items synchronously from whatever
+                // made it lay out (a `remove_child` taking the collection
+                // view out of the window, a screenshot's forced display),
+                // and those run under the backend's `borrow_mut()`. The
+                // release tears down the row's styles, which borrow the
+                // backend again ("RefCell already borrowed", an abort).
+                // The row's view is already out of the tree.
                 if let Some(release) = release_fn {
-                    (release)(prev.scope_id);
+                    let scope_id = prev.scope_id;
+                    runtime_shared::scheduling::schedule_microtask(move || (release)(scope_id));
                 }
             }
         }
@@ -388,7 +397,7 @@ declare_class!(
         fn size_for_item_at(
             &self,
             cv: &NSObject,
-            _layout: &NSObject,
+            flow_layout: &NSObject,
             index_path: &NSObject,
         ) -> CGSize {
             if !*self.ivars().alive.borrow() {
@@ -400,16 +409,25 @@ declare_class!(
             };
             let item: NSInteger = unsafe { msg_send![index_path, item] };
             let idx = if item < 0 { 0usize } else { item as usize };
+            // Between a data change and its deferred reload AppKit still
+            // has the old count, and a layout in that gap asks about rows
+            // the data no longer has.
+            if idx >= (cb.item_count)() {
+                return CGSize::new(0.0, 0.0);
+            }
             let size_f = (cb.item_size)(idx) as CGFloat;
 
             let bounds: CGRect = unsafe { msg_send![cv, bounds] };
+            // The list's own padding (see [`sync_padding`]): the cross
+            // axis the rows share is the bounds less its two cross sides.
+            let inset: NSEdgeInsets = unsafe { msg_send![flow_layout, sectionInset] };
             let layout = self.ivars().layout;
             // Cross-axis extent divided into `lanes` columns minus
             // inter-lane gaps. One lane = list (cell fills cross axis).
             let usable_cross = if layout.axis.is_horizontal() {
-                bounds.size.height.max(0.0)
+                (bounds.size.height - inset.top - inset.bottom).max(0.0)
             } else {
-                bounds.size.width.max(0.0)
+                (bounds.size.width - inset.left - inset.right).max(0.0)
             };
             let lanes = layout.lanes.resolve(usable_cross as f32, layout.cross_spacing) as CGFloat;
             let lane_cross = if lanes >= 1.0 {
@@ -470,11 +488,16 @@ impl VirtualizerDataSource {
 
         let mount_fn = {
             let cb_opt = self.ivars().callbacks.borrow();
-            cb_opt.as_ref().map(|c| c.mount_item.clone())
+            cb_opt.as_ref().map(|c| (c.mount_item.clone(), (c.item_count)()))
         };
-        let Some(mount) = mount_fn else {
+        let Some((mount, count)) = mount_fn else {
             return item;
         };
+        // A stale row of a change not reloaded yet (see
+        // `size_for_item_at`): an empty item, gone with the reload.
+        if idx >= count {
+            return item;
+        }
         let (node, scope_id) = (mount)(idx);
         let child_view = node.as_view();
 
@@ -950,9 +973,8 @@ pub(crate) fn sync_item_z_for_child(view: &NSView) {
 
 pub(crate) struct VirtualizerInstance {
     pub(crate) data_source: Retained<VirtualizerDataSource>,
-    #[allow(dead_code)]
+    /// The flow layout; its `sectionInset` carries the list's padding.
     pub(crate) layout: Retained<NSObject>,
-    #[allow(dead_code)]
     pub(crate) collection_view: Retained<NSView>,
     /// `NSViewBoundsDidChangeNotification` target for the author's
     /// `on_scroll`, when one was supplied. `None` otherwise — no
@@ -1052,6 +1074,21 @@ pub(crate) fn create(
         msg_send![&scroll, setHasHorizontalScroller: horizontal]
     };
     let _: () = unsafe { msg_send![&scroll, setAutohidesScrollers: true] };
+    // Transparent, like a web scroller: the author's style paints any
+    // fill. AppKit's defaults are opaque on all three layers (the
+    // scroll view and its clip draw the window background, the
+    // collection view `controlBackgroundColor`), which covered whatever
+    // the parent painted beneath the row.
+    let _: () = unsafe { msg_send![&scroll, setDrawsBackground: false] };
+    let clip: *mut NSObject = unsafe { msg_send![&scroll, contentView] };
+    if !clip.is_null() {
+        let _: () = unsafe { msg_send![clip, setDrawsBackground: false] };
+    }
+    unsafe {
+        let clear: *mut AnyObject = msg_send![objc2::class!(NSColor), clearColor];
+        let colors: *mut AnyObject = msg_send![objc2::class!(NSArray), arrayWithObject: clear];
+        let _: () = msg_send![&cv, setBackgroundColors: colors];
+    }
     let _: () = unsafe { msg_send![&scroll, setDocumentView: &*cv] };
 
     // Author scroll observer on the SAME clip-view notification channel
@@ -1089,7 +1126,82 @@ pub(crate) fn data_changed(scroll_view: &NSView) {
     if doc_view.is_null() {
         return;
     }
-    let _: () = unsafe { msg_send![doc_view, reloadData] };
+    // On the next run-loop turn, not now: this runs under the backend's
+    // `borrow_mut()` (the data effect), and `reloadData` ends displaying
+    // the old rows synchronously, whose release tears down styles that
+    // borrow the backend again ("RefCell already borrowed", an abort).
+    // The `virtualizer_data_changed` contract asks for the deferral; a
+    // pending reload is replaced, so a burst of changes reloads once.
+    // Released before it runs, the data source is detached and the
+    // reload is a no-op. In the common modes: the default mode alone does
+    // not run while the user scrolls or resizes the window.
+    extern "C" {
+        static NSRunLoopCommonModes: &'static NSString;
+    }
+    let reload = objc2::sel!(reloadData);
+    unsafe {
+        let modes: Retained<AnyObject> =
+            msg_send_id![objc2::class!(NSArray), arrayWithObject: NSRunLoopCommonModes];
+        let _: () = msg_send![
+            objc2::class!(NSObject),
+            cancelPreviousPerformRequestsWithTarget: doc_view,
+            selector: reload,
+            object: std::ptr::null_mut::<AnyObject>()
+        ];
+        let _: () = msg_send![
+            doc_view,
+            performSelector: reload,
+            withObject: std::ptr::null_mut::<AnyObject>(),
+            afterDelay: 0.0 as CGFloat,
+            inModes: &*modes
+        ];
+    }
+}
+
+/// The list's own `padding_*` as flow-layout section insets. Unset
+/// padding is 0; a percent length is 0, as for every other padding the
+/// backend realizes outside Taffy (`text_style::length_to_px`).
+fn padding_insets(style: &StyleRules) -> NSEdgeInsets {
+    let resolve = |t: &Option<runtime_shared::Tokenized<runtime_shared::Length>>| {
+        t.as_ref()
+            .map(|tok| super::text_style::length_to_px(&tok.resolve()))
+            .unwrap_or(0.0)
+    };
+    NSEdgeInsets {
+        top: resolve(&style.padding_top),
+        left: resolve(&style.padding_left),
+        bottom: resolve(&style.padding_bottom),
+        right: resolve(&style.padding_right),
+    }
+}
+
+/// Realize the virtualizer's own `padding_*` as its flow layout's
+/// `sectionInset`. Rows are cells of the collection view, not Taffy
+/// children of the list's node, so Taffy's padding on that node reaches
+/// no row. The section inset gives the web result: a web virtualizer is a
+/// padded scroll container whose rows fill its content box, so the rows
+/// sit inside the padding on all four sides and the main-axis padding is
+/// part of the scroll extent (the flow layout adds the section's insets
+/// to `collectionViewContentSize`). `sizeForItemAtIndexPath` subtracts
+/// the cross-axis sides before dividing into lanes. No-op when `view` is
+/// not a virtualizer or the insets are unchanged.
+pub(crate) fn sync_padding(
+    instances: &HashMap<usize, VirtualizerInstance>,
+    scroll_view: &NSView,
+    style: &StyleRules,
+) {
+    let key = scroll_view as *const NSView as usize;
+    let Some(instance) = instances.get(&key) else {
+        return;
+    };
+    let next = padding_insets(style);
+    let current: NSEdgeInsets = unsafe { msg_send![&instance.layout, sectionInset] };
+    if current == next {
+        return;
+    }
+    let _: () = unsafe { msg_send![&instance.layout, setSectionInset: next] };
+    // The cached item sizes were sized against the old cross extent.
+    invalidate_item_sizes(&instance.collection_view);
 }
 
 /// Tear down — disconnect the data source so AppKit events stop,
@@ -1235,6 +1347,39 @@ mod tests {
 
         release(&mut instances, &scroll);
         assert!(instances.is_empty(), "release drains the instance map");
+    }
+
+    /// The list's padding lands on the flow layout's section inset, and a
+    /// restyle without padding (a variant swap) takes it off again.
+    #[test]
+    fn virtualizer_padding_follows_the_list_style() {
+        use runtime_shared::{Length, StyleRules};
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut instances = HashMap::new();
+        let scroll = create(mtm, &mut instances, empty_callbacks(), 1.0, vlist());
+        let inset = |instances: &HashMap<usize, VirtualizerInstance>| -> NSEdgeInsets {
+            let layout = &instances.values().next().expect("instance").layout;
+            unsafe { msg_send![layout, sectionInset] }
+        };
+        let px = |v: f32| Some(Length::Px(v).into());
+        let padded = StyleRules {
+            padding_top: px(1.0),
+            padding_left: px(2.0),
+            padding_bottom: px(3.0),
+            padding_right: px(4.0),
+            ..Default::default()
+        };
+        sync_padding(&instances, &scroll, &padded);
+        assert_eq!(
+            inset(&instances),
+            NSEdgeInsets { top: 1.0, left: 2.0, bottom: 3.0, right: 4.0 },
+        );
+        sync_padding(&instances, &scroll, &StyleRules::default());
+        assert_eq!(
+            inset(&instances),
+            NSEdgeInsets { top: 0.0, left: 0.0, bottom: 0.0, right: 0.0 },
+        );
+        release(&mut instances, &scroll);
     }
 
     /// The flow layout must re-query item sizes when the CROSS axis

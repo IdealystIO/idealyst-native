@@ -537,7 +537,7 @@ declare_class!(
         fn size_for_item_at(
             &self,
             cv: &NSObject,
-            _layout: &NSObject,
+            flow_layout: &NSObject,
             index_path: &NSObject,
         ) -> CGSize {
             if !*self.ivars().alive.borrow() {
@@ -556,9 +556,17 @@ declare_class!(
             ) as CGFloat;
             // Read the collection view's bounds; subtract content
             // insets so cells don't get clipped under nav bars / safe
-            // area when the user has set `contentInset`.
+            // area when the user has set `contentInset`, and the list's
+            // own padding (the section inset, see [`sync_padding`]).
             let bounds: CGRect = unsafe { msg_send![cv, bounds] };
-            let insets: UIEdgeInsets = unsafe { msg_send![cv, contentInset] };
+            let content: UIEdgeInsets = unsafe { msg_send![cv, contentInset] };
+            let section: UIEdgeInsets = unsafe { msg_send![flow_layout, sectionInset] };
+            let insets = UIEdgeInsets {
+                top: content.top + section.top,
+                left: content.left + section.left,
+                bottom: content.bottom + section.bottom,
+                right: content.right + section.right,
+            };
             let layout = self.ivars().layout;
             // Cross-axis extent available to lanes (perpendicular to
             // scroll), then split into `lanes` columns minus gaps. With
@@ -599,7 +607,7 @@ declare_class!(
 // from this struct here, so duplicating it keeps the feature list
 // minimal.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct UIEdgeInsets {
     top: CGFloat,
     left: CGFloat,
@@ -805,8 +813,58 @@ pub(crate) struct VirtualizerInstance {
     pub(crate) data_source: Retained<VirtualizerDataSource>,
     /// Held to keep alive — UIKit doesn't strongly retain assigned
     /// layouts in all cases, and the flow layout has no other owner.
-    #[allow(dead_code)]
+    /// Its `sectionInset` carries the list's padding.
     pub(crate) layout: Retained<NSObject>,
+}
+
+/// Realize the virtualizer's own `padding_*` as its flow layout's
+/// `sectionInset`. Rows are cells of the collection view, not Taffy
+/// children of the list's node, so Taffy's padding on that node reaches
+/// no row. The section inset gives the web result: a web virtualizer is a
+/// padded scroll container whose rows fill its content box, so the rows
+/// sit inside the padding on all four sides and the main-axis padding is
+/// part of the scroll extent (the flow layout adds the section's insets
+/// to `collectionViewContentSize`). `sizeForItemAtIndexPath` subtracts
+/// the cross-axis sides before dividing into lanes. Unset or percent
+/// padding is 0. No-op when `view` is not a virtualizer or the insets are
+/// unchanged.
+pub(crate) fn sync_padding(
+    instances: &HashMap<usize, VirtualizerInstance>,
+    view: &UIView,
+    style: &runtime_shared::StyleRules,
+) {
+    let key = view as *const UIView as usize;
+    let Some(instance) = instances.get(&key) else {
+        return;
+    };
+    let resolve = |t: &Option<runtime_shared::Tokenized<runtime_shared::Length>>| {
+        t.as_ref()
+            .map(|tok| match tok.resolve() {
+                runtime_shared::Length::Px(px) => px as CGFloat,
+                _ => 0.0,
+            })
+            .unwrap_or(0.0)
+    };
+    let next = UIEdgeInsets {
+        top: resolve(&style.padding_top),
+        left: resolve(&style.padding_left),
+        bottom: resolve(&style.padding_bottom),
+        right: resolve(&style.padding_right),
+    };
+    let current: UIEdgeInsets = unsafe { msg_send![&instance.layout, sectionInset] };
+    if current == next {
+        return;
+    }
+    let _: () = unsafe { msg_send![&instance.layout, setSectionInset: next] };
+    // A section-inset change invalidates the flow layout, but its cached
+    // item sizes were sized against the old cross extent: re-query them.
+    if let Some(ctx_cls) = objc2::runtime::AnyClass::get("UICollectionViewFlowLayoutInvalidationContext") {
+        unsafe {
+            let ctx: Retained<NSObject> = msg_send_id![msg_send_id![ctx_cls, alloc], init];
+            let _: () = msg_send![&ctx, setInvalidateFlowLayoutDelegateMetrics: true];
+            let _: () = msg_send![&instance.layout, invalidateLayoutWithContext: &*ctx];
+        }
+    }
 }
 
 /// Build a UICollectionView with a vertical flow layout, register our

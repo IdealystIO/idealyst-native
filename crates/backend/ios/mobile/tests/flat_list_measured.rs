@@ -89,6 +89,11 @@ mod imp {
     /// A window with a column padded `PAD` each side holding a three-row
     /// list; `measure` picks `Measured` (true) or `Known` (false).
     fn mount(mtm: MainThreadMarker, measure: bool) -> Mounted {
+        mount_with(mtm, measure, StyleRules::default())
+    }
+
+    /// [`mount`] with `list_style` applied to the list itself.
+    fn mount_with(mtm: MainThreadMarker, measure: bool, list_style: StyleRules) -> Mounted {
         let backend = Rc::new(RefCell::new(IosBackend::new(mtm)));
         backend_ios::install_global_self(Rc::downgrade(&backend));
         let frame = CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: CGSize { width: WIN_W, height: WIN_H } };
@@ -154,6 +159,7 @@ mod imp {
             );
             let layout = VirtualLayout { main_spacing: GAP, ..VirtualLayout::default() };
             let list = b.create_virtualizer(callbacks, 0.0, layout, &a11y);
+            b.apply_style(&list, &Rc::new(list_style));
             let list_v = view_of(&list);
             b.insert(&mut column, list);
             b.finish(column);
@@ -204,12 +210,52 @@ mod imp {
         assert_eq!((x, w, h), (PAD as f64, WIN_W - 2.0 * PAD as f64, ESTIMATE as f64), "the cell's box");
     }
 
+    /// REGRESSION: padding on the virtualizer's own style was ignored —
+    /// rows ran edge to edge where web insets them (a Kanban column's
+    /// `padding_horizontal: 8` card list). Like a padded scroll container
+    /// on web, rows sit inside the padding on every side, fill the cross
+    /// axis less the horizontal padding, and the top + bottom padding are
+    /// part of the scroll extent.
+    fn regression_virtualizer_padding_insets_its_rows(mtm: MainThreadMarker) {
+        const H: f32 = 8.0;
+        const V: f32 = 12.0;
+        let m = mount_with(
+            mtm,
+            false,
+            StyleRules {
+                padding_left: px(H),
+                padding_right: px(H),
+                padding_top: px(V),
+                padding_bottom: px(V),
+                ..Default::default()
+            },
+        );
+        let window: &UIView = &m.window;
+        let (list_x, list_y, list_w, _) = window_frame(&m.list, window);
+        let row = m.rows.borrow()[0].clone();
+        let (x, y, w, h) = window_frame(&row, window);
+        assert_eq!(x, list_x + H as f64, "row 0 is inset by padding_left");
+        // The rest offset folds in UIKit's safe-area content inset.
+        let offset: CGPoint = unsafe { msg_send![&m.list, contentOffset] };
+        assert_eq!(y, list_y - offset.y + V as f64, "row 0 is inset by padding_top");
+        assert_eq!(w, list_w - 2.0 * H as f64, "row 0 fills the cross axis less the padding");
+        assert_eq!(h, ESTIMATE as f64, "row 0 keeps its Known size");
+        let content: CGSize = unsafe { msg_send![&m.list, contentSize] };
+        let rows = HEIGHTS.len() as f64;
+        assert_eq!(
+            content.height,
+            V as f64 + rows * ESTIMATE as f64 + (rows - 1.0) * GAP as f64 + V as f64,
+            "scroll extent includes top + bottom padding"
+        );
+    }
+
     pub fn run() {
         // SAFETY: `harness = false` — `main` IS the main thread.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         backend_ios::install_scheduler();
         regression_measured_rows_take_their_rendered_height_and_their_cell_width(mtm);
         a_known_list_is_never_measured(mtm);
-        println!("flat_list_measured: 2 passed");
+        regression_virtualizer_padding_insets_its_rows(mtm);
+        println!("flat_list_measured: 3 passed");
     }
 }

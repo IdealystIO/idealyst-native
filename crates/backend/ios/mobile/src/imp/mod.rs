@@ -3420,7 +3420,7 @@ impl IosBackend {
     /// painted (a 0×0 superview clips a larger subview). Splicing the
     /// active branch DIRECTLY into the real parent (via `remove_child` /
     /// `insert_at`) gives in-flow content normal flow AND absolute content
-    /// the real parent as its containing block — both matching web's
+    /// the real parent as its native superview — both matching web's
     /// `display: contents` anchor, with no per-case wrapper hack. It also
     /// upgrades reactive `for` to keyed reconciliation.
     pub(crate) fn supports_child_splice_impl(&self) -> bool {
@@ -3863,6 +3863,9 @@ impl IosBackend {
     pub(crate) fn apply_style_impl(&mut self, node: &IosNode, style: &Rc<StyleRules>) {
         let view = node.as_view();
         apply_style_to_view(view, style);
+        // A virtualizer's padding insets its rows (they are collection-view
+        // cells, out of Taffy's reach): see `virtualizer::sync_padding`.
+        virtualizer::sync_padding(&self.virtualizer_instances, view, style);
         self.impl_apply_static_opacity(node, style);
         // A layout transition is a standing declaration, as in CSS: the
         // frame pass animates this view's frame changes until a style
@@ -4113,7 +4116,7 @@ impl IosBackend {
                 text_style.padding_right = None;
                 text_style.padding_top = None;
                 text_style.padding_bottom = None;
-                self.layout.set_style(layout_node, &text_style);
+                self.layout.set_author_style(layout_node, &text_style);
             } else if let Some(content) = self
                 .external_content_measures
                 .get(&view_key_for_style)
@@ -4173,7 +4176,7 @@ impl IosBackend {
                 scroller_style.padding_right = None;
                 scroller_style.padding_top = None;
                 scroller_style.padding_bottom = None;
-                self.layout.set_style(layout_node, &scroller_style);
+                self.layout.set_author_style(layout_node, &scroller_style);
                 // The measure_fn's output changed (the label folds the new
                 // insets into `sizeThatFits:`), but the padding-STRIPPED
                 // Taffy style may be byte-identical to the previous apply —
@@ -4185,9 +4188,9 @@ impl IosBackend {
                 // `style` alone would reset the placement's
                 // `justify_content` (see `PortalEntry::container_rules`).
                 let layered = entry.container_rules.clone().merge(style);
-                self.layout.set_style(layout_node, &layered);
+                self.layout.set_author_style(layout_node, &layered);
             } else {
-                self.layout.set_style(layout_node, style);
+                self.layout.set_author_style(layout_node, style);
             }
             self.layout_style_keys.insert(view_key_for_style, next_layout_key);
         }
