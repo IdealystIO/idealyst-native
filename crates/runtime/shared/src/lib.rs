@@ -299,7 +299,7 @@ pub use touch::{
 };
 pub use wheel::{WheelEvent, WheelHandler, WheelKind};
 pub use hover::HoverHandler;
-pub use focus::FocusWithinHandler;
+pub use focus::{text_entry_focused, FocusWithinHandler, TextEntryFocus};
 pub use file_drop::{DroppedFile, FileDropEvent, FileDropHandler, FileDropPhase};
 pub use touch::recognizer::{
     AsyncNotifier, GestureState, Recognizer, RecognizerCtx, RecognizerKind, RecognizerUpdate,

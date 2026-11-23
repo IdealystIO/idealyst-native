@@ -13,6 +13,32 @@ use crate::style_attach::{attach_style, StyleServices};
 
 use super::{bind_dyn, bind_value, initial_of};
 
+/// A text entry's focus handler: feeds its focus into
+/// [`runtime_shared::focus::text_entry_focused`], then passes each change
+/// on to `then` (the author's handler, already scope-guarded).
+///
+/// The entry's claim is released when the node's ownership scope drops —
+/// [`runtime_world::on_owned_drop`], the node's own lifetime, not
+/// `on_scope_drop`, which also fires when an enclosing driver effect
+/// re-runs over a node that survives (a keyed list edit) and would clear
+/// a field that still holds focus. A toolkit need not blur a field it is
+/// removing, so the release can't wait for one. The update itself is not
+/// scope-guarded: it touches only the app-wide count, and a blur that
+/// arrives during teardown must still land.
+pub(crate) fn text_entry_focus(then: Option<Rc<dyn Fn(bool)>>) -> Rc<dyn Fn(bool)> {
+    let entry = Rc::new(runtime_shared::focus::TextEntryFocus::new());
+    {
+        let entry = entry.clone();
+        runtime_world::on_owned_drop(move || entry.set(false));
+    }
+    Rc::new(move |focused: bool| {
+        entry.set(focused);
+        if let Some(then) = then.as_ref() {
+            then(focused);
+        }
+    })
+}
+
 /// Mount a `toggle`.
 ///
 /// Sequence: `create_toggle(initial, on_change)` → attach_style →
@@ -578,15 +604,14 @@ where
     };
     #[cfg(not(feature = "robot"))]
     let on_focus = prim.on_focus;
-    // Guarded like the other callbacks: removing a focused input fires its
+    // Always installed: every field's focus feeds `text_entry_focused`, so
+    // app-wide shortcuts know when keys are typing. The author's handler is
+    // guarded like the other callbacks: removing a focused input fires its
     // blur DURING the teardown that frees the scope (the web does this
-    // synchronously on DOM removal), and the author's handler writes that
-    // scope's signals.
-    if let Some(on_focus) = on_focus {
-        backend
-            .borrow_mut()
-            .set_text_input_focus_handler(&node, alive.wrap1(on_focus));
-    }
+    // synchronously on DOM removal), and that handler writes the scope's
+    // signals.
+    let on_focus = text_entry_focus(on_focus.map(|f| alive.wrap1(f)));
+    backend.borrow_mut().set_text_input_focus_handler(&node, on_focus);
     {
         let b = backend.clone();
         let n = node.clone();

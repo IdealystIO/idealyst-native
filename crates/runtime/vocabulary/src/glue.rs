@@ -916,6 +916,9 @@ pub use runtime_shared::color;
 pub use crate::key_input::{add_key_listener, key_state, on_key, KeyState};
 pub use runtime_shared::key_input::KeyListener;
 pub use runtime_shared::primitives::key::{AppKeyEvent, KeyPhase};
+/// Whether a text field holds keyboard focus — what an app-wide shortcut
+/// checks before acting on a bare key (see `on_key`).
+pub use runtime_shared::focus::{text_entry_focused, TextEntryFocus};
 pub use runtime_shared::set_app_key_handler;
 // App situation signals (focus, visibility, reduce-motion, primary
 // pointer, user activation, pointer lock, the system color scheme) and

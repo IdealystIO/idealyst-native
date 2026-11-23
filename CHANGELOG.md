@@ -1442,6 +1442,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Shortcuts can tell when keys are typing: `text_entry_focused()`** (`runtime-shared` minor,
+  `runtime-vocabulary` minor). An app-wide `on_key` listener sees keys typed into fields too,
+  and nothing said where focus was, so a shortcut on a bare key (`T` for a new task) fired while
+  typing unless every screen wired each of its fields' focus by hand. `text_entry_focused()`
+  (`runtime_core::text_entry_focused`) is `true` while a `text_input` or `text_area` holds
+  keyboard focus. Every field reports with no opt-in (a `text_input` through its focus notifier,
+  a `text_area` through the focus-within channel on its own node, registered by
+  `register_builtins` as the new `register_text_area_with_focus`), and a field unmounted while
+  focused releases its claim. `TextEntryFocus` lets an editor not built on those primitives
+  report its own focus. See `docs/keyboard-input.md`.
+
 - **`keep-awake`: keep the display on while the app needs it** (`keep-awake` new, `mcp-catalog`
   patch). An app had no way to stop the screen dimming and sleeping. `keep_screen_on()` is a
   counted guard; `use_keep_screen_on(on)` holds while `on` is true and the calling component is

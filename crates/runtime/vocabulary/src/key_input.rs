@@ -37,7 +37,11 @@ use runtime_shared::primitives::key::{AppKeyEvent, KeyOutcome};
 /// (until it re-runs), or a scoped deferred body. The listener sees keys
 /// regardless of focus, including keys typed into a focused text input,
 /// so act only on the keys you care about and return
-/// [`KeyOutcome::Default`] otherwise.
+/// [`KeyOutcome::Default`] otherwise. A shortcut on a bare key (`T` for a
+/// new task) stands down while
+/// [`text_entry_focused`](runtime_shared::focus::text_entry_focused) is
+/// `true`, so typing a `t` into any field is just typing: every
+/// `text_input` and `text_area` reports its focus there without opting in.
 ///
 /// Outside any scope (e.g. a button's `on_click`) there is no lifetime to
 /// tie it to: use [`add_key_listener`] and hold the guard yourself. Calling

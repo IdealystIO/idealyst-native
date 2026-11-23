@@ -42,6 +42,7 @@ fn Game() -> Element {
 | `on_key(f)` | Listen to every key down and up while the calling component (or effect run) lives. |
 | `key_state()` | A `KeyState` handle: `is_down(code)`, `any_down(&[codes])`, `keys_down()`. Tracks held keys while the component lives. |
 | `add_key_listener(f) -> KeyListener` | Same as `on_key` with an explicit lifetime: the listener lives until the guard drops. Use it outside a component (e.g. from a button's `on_click`); `on_key` there registers nothing and logs a warning. |
+| `text_entry_focused() -> bool` | Whether a text field holds keyboard focus, so a shortcut on a bare key can stand down while keys are typing. See below. |
 | `set_app_key_handler(Option<handler>)` | The older single-slot hook: key-downs only, one handler app-wide. Kept for existing code. |
 
 Every listener sees every event. A key's default is prevented if any
@@ -49,6 +50,35 @@ listener returns `KeyOutcome::PreventDefault`. Listeners also see keys typed
 into a focused text input, so act only on the keys you care about — including
 a key the field's `on_key_down` prevented: the field doesn't type it, but the
 listeners still hear it, as a `document` listener does on the web.
+
+### Shortcuts on bare keys: `text_entry_focused()`
+
+A shortcut on a key with no modifier (`T` for a new task, `/` for search)
+must stand down while the user is typing, or typing a `t` into any field
+opens the dialog. `text_entry_focused()` answers that: `true` while a field
+that takes typing holds keyboard focus.
+
+```rust
+on_key(move |e| {
+    if !e.is_press() || text_entry_focused() {
+        return KeyOutcome::Default;
+    }
+    if e.key == "t" {
+        new_task();
+        return KeyOutcome::PreventDefault;
+    }
+    KeyOutcome::Default
+});
+```
+
+Every `text_input` and `text_area` reports its focus there on its own —
+including the ones inside components (`Field`, `Textarea`, a code editor
+built on `text_area`) — so no screen has to wire up its fields. A field
+removed while focused releases its claim even if the toolkit never blurs
+it. It is read where the key arrives, not reactive. An editor drawn some
+other way (a canvas, a web view) holds a `TextEntryFocus` and calls
+`set(focused)` on its own focus changes. A backend with no keyboard-focus
+model reports nothing, and it stays `false`.
 
 ## `AppKeyEvent`
 

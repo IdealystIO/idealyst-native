@@ -146,8 +146,29 @@ pub fn register_text_input<H: TextInputOps + StyleServices + IntrospectionOps + 
     registry.register::<PrimCell<TextInputPrim>, _>(|cx, p, children| mount_text_input(cx, p.take(), children));
 }
 /// Register the `text_area` primitive handler.
+///
+/// Its focus feeds `text_entry_focused` only on a backend with a keyboard
+/// focus model, which these bounds don't ask for: [`register_builtins`]
+/// registers [`register_text_area_with_focus`] instead.
 pub fn register_text_area<H: TextInputOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
     registry.register::<PrimCell<TextAreaPrim>, _>(|cx, p, children| mount_text_area(cx, p.take(), children));
+}
+/// Register the `text_area` primitive handler with its keyboard focus
+/// feeding `runtime_shared::focus::text_entry_focused`, as a
+/// `text_input`'s does. A text area has no focus notifier of its own, so
+/// this listens through the focus-within channel on the area's own node
+/// ([`InputOps::install_focus_handler`]), which every backend with a
+/// focus model delivers for any node; a text field always counts as
+/// keyboard focus there.
+pub fn register_text_area_with_focus<H: TextInputOps + InputOps + StyleServices + IntrospectionOps + 'static>(
+    registry: &mut Registry<H>,
+) {
+    registry.register::<PrimCell<TextAreaPrim>, _>(|cx, p, children| {
+        let node = mount_text_area(cx, p.take(), children);
+        let on_focus = widgets::text_entry_focus(None);
+        cx.backend().borrow_mut().install_focus_handler(&node, on_focus);
+        node
+    });
 }
 /// Register the `scroll_view` primitive handler.
 pub fn register_scroll_view<H: ScrollOps + SafeAreaOps + StyleServices + IntrospectionOps + 'static>(registry: &mut Registry<H>) {
@@ -378,7 +399,7 @@ macro_rules! builtin_set_keep {
         fn text_area<H: $crate::caps::AllCaps + 'static>(
             registry: &mut $crate::__scene::Registry<H>,
         ) {
-            $crate::handlers::register_text_area(registry)
+            $crate::handlers::register_text_area_with_focus(registry)
         }
     };
     (@keep scroll_view) => {

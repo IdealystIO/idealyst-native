@@ -56,7 +56,7 @@ pub use crate::handlers::{register_builtins_with, AllBuiltins, BuiltinSet};
 pub use crate::handlers::{
     register_activity_indicator, register_button, register_icon, register_image, register_link,
     register_pressable, register_scroll_view, register_slider, register_text, register_text_area,
-    register_text_input, register_toggle, register_view,
+    register_text_area_with_focus, register_text_input, register_toggle, register_view,
 };
 
 // --- substrate -------------------------------------------------------------
