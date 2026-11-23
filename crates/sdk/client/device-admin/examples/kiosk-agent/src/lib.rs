@@ -23,6 +23,11 @@
 //!   adb shell chown -R $(adb shell stat -c %u /data/data/io.idealyst.kioskagent) \
 //!       /data/data/io.idealyst.kioskagent/files
 //!   ```
+//! - **Wake when off** keeps the process alive and, from then on, wakes the
+//!   screen [`WAKE_AFTER_MS`] after each time it turns off, with whatever is
+//!   in front left there.
+//! - **Screen settings** reads the three system settings, changes each, reads
+//!   them back, tries a key Android refuses, and restores them.
 //! - **Release** undoes the lock-down and relinquishes device owner.
 //!
 //! Every SDK event is appended to the log on screen.
@@ -33,6 +38,32 @@ use runtime_core::{on_scope_drop, signal, text, ui, Element, Signal};
 const KIOSK: &str = "io.idealyst.kioskapp";
 const AGENT: &str = "io.idealyst.kioskagent";
 const UPDATE_DIR: &str = "/data/data/io.idealyst.kioskagent/files";
+
+/// Long enough to see the screen go dark, and for the agent to be well
+/// in the background.
+const WAKE_AFTER_MS: i32 = 5_000;
+
+/// Change each system setting and put it back, describing what was read.
+fn screen_settings() -> String {
+    use device_admin::{set_system_setting, setting, system_setting};
+    let mut out = Vec::new();
+    for (key, value) in [
+        (setting::SCREEN_OFF_TIMEOUT, "2147483647"),
+        (setting::SCREEN_BRIGHTNESS_MODE, "0"),
+        (setting::SCREEN_BRIGHTNESS, "200"),
+    ] {
+        let before = system_setting(key);
+        let set = set_system_setting(key, value);
+        let after = system_setting(key);
+        out.push(format!("{key}: {before:?} -> {set:?} -> {after:?}"));
+        if let Ok(Some(before)) = before {
+            let restored = set_system_setting(key, &before).and_then(|()| system_setting(key));
+            out.push(format!("restored: {restored:?}"));
+        }
+    }
+    out.push(format!("font_scale: {:?}", set_system_setting("font_scale", "1.5")));
+    out.join("\n")
+}
 
 /// Run `steps` in order, stopping at the first failure, and describe the
 /// outcome.
@@ -82,7 +113,17 @@ pub fn app() -> Element {
     let status: Signal<String> = signal(owner_label());
     let log: Signal<Vec<String>> = signal(Vec::new());
 
+    let wake: Signal<bool> = signal(false);
     let subscription = device_admin::events(move |event| {
+        runtime_core::logging::log(runtime_core::logging::LogLevel::Info, &format!("[agent] {event:?}"));
+        if *event == device_admin::Event::ScreenOff && wake.peek() {
+            runtime_core::after_ms_detached(WAKE_AFTER_MS, || {
+                runtime_core::logging::log(
+                    runtime_core::logging::LogLevel::Info,
+                    &format!("[agent] wake: {:?}", device_admin::wake_screen()),
+                );
+            });
+        }
         let mut lines = log.get();
         lines.push(format!("{event:?}"));
         let excess = lines.len().saturating_sub(8);
@@ -110,6 +151,16 @@ pub fn app() -> Element {
             });
         });
     };
+    let on_wake = move || {
+        let kept = device_admin::start_keep_alive("Kiosk agent", "Wakes the screen");
+        wake.set(true);
+        status.set(format!("Wake when off: {kept:?}; screen on: {:?}", device_admin::is_screen_on()));
+    };
+    let on_settings = move || {
+        let report = screen_settings();
+        runtime_core::logging::log(runtime_core::logging::LogLevel::Info, &format!("[agent] {report}"));
+        status.set(report);
+    };
     let on_release = move || status.set(format!("Release: {}; {}", release(), owner_label()));
 
     ui! {
@@ -117,6 +168,8 @@ pub fn app() -> Element {
             text(move || status.get())
             button(label = "Lock down".to_string(), on_click = on_lock)
             button(label = "Install update".to_string(), on_click = on_install)
+            button(label = "Wake when off".to_string(), on_click = on_wake)
+            button(label = "Screen settings".to_string(), on_click = on_settings)
             button(label = "Release".to_string(), on_click = on_release)
             text(move || log.get().join("\n"))
         }

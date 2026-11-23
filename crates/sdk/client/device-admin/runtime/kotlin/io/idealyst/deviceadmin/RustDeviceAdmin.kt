@@ -18,6 +18,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import java.io.File
 import java.security.MessageDigest
@@ -63,6 +65,9 @@ object RustDeviceAdmin {
     private var nativeReady = false
     private var packageStatusReceiver: BroadcastReceiver? = null
     private var packageReplacedReceiver: BroadcastReceiver? = null
+    private var screenReceiver: BroadcastReceiver? = null
+    /** The last screen state seen, so each change is reported once. */
+    private var screenWasOn = true
 
     private class Failure(val code: String, message: String) : Exception(message)
 
@@ -166,6 +171,9 @@ object RustDeviceAdmin {
             throw Failure("unsupported", "$what needs API $level; this device runs API ${Build.VERSION.SDK_INT}")
         }
     }
+
+    private fun isScreenOn(ctx: Context): Boolean =
+        (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
 
     private fun activity(ctx: Context): Activity =
         ctx as? Activity ?: throw Failure("platform", "lock task needs the app's Activity; the context is ${ctx.javaClass.name}")
@@ -391,6 +399,36 @@ object RustDeviceAdmin {
                 requireOwner(ctx)
                 dpm.setGlobalSetting(admin(ctx), args.getString("key"), args.getString("value"))
             }
+            "set_system_setting" -> {
+                requireApi(28, "setSystemSetting")
+                requireDeviceOrProfileOwner(ctx)
+                // A key Android does not allow here throws SecurityException,
+                // which `call` reports as a platform error.
+                dpm.setSystemSetting(admin(ctx), args.getString("key"), args.getString("value"))
+            }
+            "system_setting" -> return Settings.System.getString(ctx.contentResolver, args.getString("key"))
+            "is_screen_on" -> return isScreenOn(ctx)
+            "wake_screen" -> {
+                requireOwner(ctx)
+                if (isScreenOn(ctx)) return null
+                val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                val locked = Build.VERSION.SDK_INT >= 23 && am.lockTaskModeState == ActivityManager.LOCK_TASK_MODE_LOCKED
+                // Android drops the start without an error, so say why here.
+                if (locked && !dpm.isLockTaskPermitted(ctx.packageName)) {
+                    throw Failure(
+                        "platform",
+                        "lock task is active and ${ctx.packageName} is not one of its packages; add it to set_lock_task_packages",
+                    )
+                }
+                ctx.startActivity(
+                    Intent(ctx, WakeActivity::class.java)
+                        .addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS,
+                        ),
+                )
+            }
             "install_apk" -> {
                 requireOwner(ctx)
                 install(ctx, File(args.getString("path")), args.getString("expected_cert_sha256"), token)
@@ -543,7 +581,7 @@ object RustDeviceAdmin {
         }
     }
 
-    private fun register(ctx: Context, receiver: BroadcastReceiver, filter: IntentFilter, exported: Boolean) {
+    fun register(ctx: Context, receiver: BroadcastReceiver, filter: IntentFilter, exported: Boolean) {
         if (Build.VERSION.SDK_INT >= 33) {
             ctx.registerReceiver(receiver, filter, if (exported) Context.RECEIVER_EXPORTED else Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -712,6 +750,24 @@ object RustDeviceAdmin {
             register(app, receiver, filter, exported = true)
             packageReplacedReceiver = receiver
         }
+        if (screenReceiver == null) {
+            // Android delivers these two to receivers registered by a
+            // running app, never to one in the manifest. A process frozen
+            // in the background gets them late and can get a pair whose
+            // first half it already saw, so only a change is reported.
+            screenWasOn = isScreenOn(app)
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    val on = intent.action == Intent.ACTION_SCREEN_ON
+                    if (on == screenWasOn) return
+                    screenWasOn = on
+                    emit(context, JSONObject().put("type", if (on) "screen_on" else "screen_off"))
+                }
+            }
+            val filter = IntentFilter(Intent.ACTION_SCREEN_ON).apply { addAction(Intent.ACTION_SCREEN_OFF) }
+            register(app, receiver, filter, exported = false)
+            screenReceiver = receiver
+        }
         drainQueue(app)
     }
 
@@ -739,6 +795,8 @@ object RustDeviceAdmin {
         nativeReady = false
         packageReplacedReceiver?.let { app.unregisterReceiver(it) }
         packageReplacedReceiver = null
+        screenReceiver?.let { app.unregisterReceiver(it) }
+        screenReceiver = null
     }
 
     fun bundleToJson(bundle: PersistableBundle?): JSONObject {

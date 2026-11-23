@@ -1449,6 +1449,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   recreation, and needs no permission. Android, iOS, macOS, Windows, Linux and web;
   `is_supported()` is `false` elsewhere.
 
+- **`device-admin`: wake the screen, hear it turn on and off, and set the screen's system settings**
+  (`device-admin` minor). `wake_screen()` turns a sleeping device's screen on from the background
+  with whatever was in front left there (a kiosk stays in lock task); `is_screen_on()`;
+  `Event::ScreenOn` / `Event::ScreenOff`, once per change. `set_system_setting(key, value)` for
+  the three keys Android allows a device owner (`setting::SCREEN_OFF_TIMEOUT`,
+  `SCREEN_BRIGHTNESS`, `SCREEN_BRIGHTNESS_MODE`), and `system_setting(key)` to read one so it can
+  be put back.
+
 - **The words components and SDKs draw themselves can be translated** (`idea-ui` minor,
   `idea-ui-layout` minor, `camera` minor, `microphone` minor, `file-picker` minor). A `Dialog`'s ✕
   was always "Close" and a `ToolbarSearch` always said "Search", with no way to change either from

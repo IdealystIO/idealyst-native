@@ -515,7 +515,7 @@ sdk!(
     "device-admin",
     SdkCategory::Device,
     SdkKind::Api,
-    "Android device-owner policy for kiosks and dedicated devices: lock an app onto the screen (`set_lock_task_packages` / `start_lock_task`), disable the keyguard and status bar, set the home activity, add user restrictions, and silently `install_apk` (certificate-pinned) / `uninstall` / `reboot`, and limit which accessibility services may be switched on (`set_permitted_accessibility_services`), with no MDM or app store. Every policy call returns `Error::NotDeviceOwner` unless the app is the device owner, and `Error::Unsupported` off Android. On iOS only lock-task (Autonomous Single App Mode on a supervised device), `lock_task_state` (Guided Access) and `managed_config` exist."
+    "Android device-owner policy for kiosks and dedicated devices: lock an app onto the screen (`set_lock_task_packages` / `start_lock_task`), disable the keyguard and status bar, set the home activity, add user restrictions, and silently `install_apk` (certificate-pinned) / `uninstall` / `reboot`, and limit which accessibility services may be switched on (`set_permitted_accessibility_services`), `wake_screen` / `is_screen_on` with `Event::ScreenOn` / `ScreenOff`, and set the screen timeout and brightness (`set_system_setting`), with no MDM or app store. Every policy call returns `Error::NotDeviceOwner` unless the app is the device owner, and `Error::Unsupported` off Android. On iOS only lock-task (Autonomous Single App Mode on a supervised device), `lock_task_state` (Guided Access) and `managed_config` exist."
 );
 sdk!(
     "accessibility-service",

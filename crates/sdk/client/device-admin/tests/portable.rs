@@ -30,6 +30,10 @@ fn every_sync_call_is_unsupported_off_mobile() {
     unsupported(add_user_restriction(restriction::DISALLOW_SAFE_BOOT));
     unsupported(clear_user_restriction(restriction::DISALLOW_SAFE_BOOT));
     unsupported(set_global_setting("stay_on_while_plugged_in", "7"));
+    unsupported(set_system_setting(setting::SCREEN_OFF_TIMEOUT, "2147483647"));
+    unsupported(system_setting(setting::SCREEN_OFF_TIMEOUT));
+    unsupported(wake_screen());
+    unsupported(is_screen_on());
     unsupported(installed_version("com.example.kiosk"));
     unsupported(set_application_hidden("com.example.bloat", true));
     unsupported(set_application_hidden("com.example.bloat", false));

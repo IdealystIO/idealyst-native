@@ -84,6 +84,8 @@ is not installed is skipped. See "Device-owner provisioning" in
 | `set_home_activity(pkg, activity)` / `clear_home_activity(pkg)` | `addPersistentPreferredActivity` (HOME) | 21 | `Unsupported` |
 | `add_user_restriction(r)` / `clear_user_restriction(r)` | `addUserRestriction` / `clearUserRestriction` | 21 | `Unsupported` |
 | `set_global_setting(key, value)` | `setGlobalSetting` (an allow-listed set of keys; not the animation scales) | 21 | `Unsupported` |
+| `set_system_setting(key, value)` / `system_setting(key)` | `setSystemSetting` (the three keys in `setting`: `screen_off_timeout`, `screen_brightness`, `screen_brightness_mode`) / `Settings.System.getString` | 28 / 1 | `Unsupported` |
+| `wake_screen()` / `is_screen_on()` | an invisible `setTurnScreenOn` activity / `PowerManager.isInteractive` | 21 / 20 | `Unsupported` |
 | `set_application_hidden(pkg, b)` / `is_application_hidden(pkg)` | `setApplicationHidden` / `isApplicationHidden` | 21 | `Unsupported` |
 | `set_packages_suspended(&[pkg], b)` / `is_package_suspended(pkg)` | `setPackagesSuspended` / `isPackageSuspended` | 24 | `Unsupported` |
 | `enable_system_app(pkg)` | `enableSystemApp` | 21 | `Unsupported` |
@@ -121,6 +123,23 @@ a foreground service, which keeps the process out of the freezer and shows
 an ongoing notification. The service uses the `systemExempted` type Android
 14+ reserves for device and profile owners, so it has no time limit.
 `stop_keep_alive()` ends it.
+
+## The screen
+
+```rust,ignore
+// Put the timeout back when the tablet is released.
+let before = device_admin::system_setting(setting::SCREEN_OFF_TIMEOUT)?;
+device_admin::set_system_setting(setting::SCREEN_OFF_TIMEOUT, "2147483647")?;
+
+// A console's "wake" button, with the kiosk in front or the screen off.
+device_admin::wake_screen()?;
+```
+
+`wake_screen()` leaves what was in front in front. In lock task the agent
+must be on the lock-task list too, or Android will not start its activity.
+To see `Event::ScreenOff` as it happens, the agent's process must not be
+frozen: call `start_keep_alive` first. Keeping the screen on from inside the
+app that is in front, with no device owner, is the `keep-awake` SDK.
 
 ## Bundled apps
 
@@ -195,6 +214,7 @@ let subscription = device_admin::events(|event| match event {
 | `InstallResult(_)` | the `PackageInstaller` status intent |
 | `PackageReplaced { package }` | `ACTION_PACKAGE_REPLACED`, only while a listener is registered |
 | `BootCompleted` | `ACTION_BOOT_COMPLETED` |
+| `ScreenOn` / `ScreenOff` | `ACTION_SCREEN_ON` / `ACTION_SCREEN_OFF`, only while a listener is registered, once per change |
 
 Listeners run on the UI thread, so register them there. The OS raises most
 of these events while the app's Rust side is not running: at boot,
@@ -215,6 +235,7 @@ until the app becomes device owner:
   `res/xml/device_admin.xml` policy list;
 - the two activities QR provisioning requires on Android 10+;
 - a boot receiver;
+- the invisible activity behind `wake_screen`;
 - `RECEIVE_BOOT_COMPLETED`, `REQUEST_INSTALL_PACKAGES`,
   `REQUEST_DELETE_PACKAGES` and `QUERY_ALL_PACKAGES`. The last is what
   `installed_version` and `launch` need to see other packages on Android
@@ -257,7 +278,18 @@ built by `idealyst build --android`:
   package is hidden, a missing one is skipped, and all of it survives a
   reboot. With the step removed, the launcher stays home and the event waits.
 
+- The screen, on API 34 and API 37 emulators: with the kiosk in lock task,
+  the keyguard disabled and the agent in the background behind
+  `start_keep_alive`, `wake_screen()` turns the screen on, the kiosk is in
+  front and still locked, and no task is left behind, time after time. With
+  the screen on it starts nothing. `ScreenOff` and `ScreenOn` each arrive
+  once, including for the power button. Each `setting` takes effect and is
+  restored; another key is `Platform`.
+
 Not verified yet:
+
+- `wake_screen()` refusing while lock task is active and the agent is not on
+  the lock-task list.
 
 - The full QR flow on a wiped device: the setup wizard downloading the APK
   and handing over the extras bundle, including `idealyst.hide_packages`

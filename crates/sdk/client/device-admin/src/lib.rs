@@ -44,7 +44,7 @@
 //! # Events
 //!
 //! [`events`] registers a listener for provisioning, admin, lock-task,
-//! install and boot events. Events the OS raises while no listener is
+//! install, boot and screen events. Events the OS raises while no listener is
 //! registered — a boot, the provisioning hand-off, before the app's Rust side
 //! is running — are queued on the device and delivered when the first
 //! listener registers. Listeners run on the UI thread; register them there.
@@ -355,6 +355,18 @@ pub mod restriction {
     pub const DISALLOW_ADJUST_VOLUME: &str = "no_adjust_volume";
 }
 
+/// The `Settings.System` keys a device owner may set, for
+/// [`set_system_setting`]. Android allows these three and no others.
+pub mod setting {
+    /// Milliseconds without input before the screen turns off.
+    pub const SCREEN_OFF_TIMEOUT: &str = "screen_off_timeout";
+    /// The screen's brightness, `"0"` to `"255"`. Has no effect while
+    /// [`SCREEN_BRIGHTNESS_MODE`] is automatic.
+    pub const SCREEN_BRIGHTNESS: &str = "screen_brightness";
+    /// `"0"` for a fixed brightness, `"1"` for automatic.
+    pub const SCREEN_BRIGHTNESS_MODE: &str = "screen_brightness_mode";
+}
+
 // ── Android policy calls ────────────────────────────────────────────────
 
 /// Whether this app is the device owner. Everything marked "device owner"
@@ -493,6 +505,41 @@ pub fn clear_user_restriction(restriction: &str) -> Result<()> {
 /// `animator_duration_scale`) are not among them. Device owner; API 21.
 pub fn set_global_setting(key: &str, value: &str) -> Result<()> {
     call("set_global_setting", json!({ "key": key, "value": value })).map(drop)
+}
+
+/// Set a `Settings.System` value, e.g.
+/// `(setting::SCREEN_OFF_TIMEOUT, "2147483647")` for a screen that does not
+/// time out. Android allows exactly the three keys in [`setting`]; any other
+/// is [`Error::Platform`]. The value stays until it is set again, so read it
+/// with [`system_setting`] first to put it back. Device or profile owner;
+/// API 28.
+pub fn set_system_setting(key: &str, value: &str) -> Result<()> {
+    call("set_system_setting", json!({ "key": key, "value": value })).map(drop)
+}
+
+/// The current `Settings.System` value of `key` (one of [`setting`]), or
+/// `None` when it was never set. Any app may read these; API 1.
+pub fn system_setting(key: &str) -> Result<Option<String>> {
+    Ok(call("system_setting", json!({ "key": key }))?.as_str().map(str::to_string))
+}
+
+// ── The screen ──────────────────────────────────────────────────────────
+
+/// Turn the screen on. Does nothing when it already is. What was in front
+/// stays in front: a kiosk in lock task, the lock screen when there is one.
+/// Works with the app in the background (from
+/// [`start_keep_alive`]'s service). Returns once Android is asked;
+/// [`Event::ScreenOn`] reports the screen coming on. While lock task is
+/// active the app must be one of [`set_lock_task_packages`], or this is
+/// [`Error::Platform`]. It cannot power on a device that is off. Device
+/// owner; API 21.
+pub fn wake_screen() -> Result<()> {
+    call("wake_screen", json!({})).map(drop)
+}
+
+/// Whether the screen is on (`PowerManager.isInteractive`). Any app; API 20.
+pub fn is_screen_on() -> Result<bool> {
+    as_bool(call("is_screen_on", json!({}))?)
 }
 
 /// Install (or update) the APK at `path`, silently. The APK's signing

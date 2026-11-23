@@ -47,6 +47,14 @@ pub enum Event {
     },
     /// The device finished booting.
     BootCompleted,
+    /// The screen turned on (`ACTION_SCREEN_ON`), by whatever means. Seen
+    /// only while a listener is registered; once per change. The process
+    /// must not be frozen to see it when it happens
+    /// ([`start_keep_alive`](crate::start_keep_alive)).
+    ScreenOn,
+    /// The screen turned off (`ACTION_SCREEN_OFF`): the power button, the
+    /// timeout, or a lock. Seen as [`Event::ScreenOn`] is.
+    ScreenOff,
 }
 
 /// Parse one event from the platform half. `None` for an event type this
@@ -73,6 +81,8 @@ pub(crate) fn parse(json: &str) -> Option<Event> {
             package: string("package")?,
         },
         "boot_completed" => Event::BootCompleted,
+        "screen_on" => Event::ScreenOn,
+        "screen_off" => Event::ScreenOff,
         _ => return None,
     })
 }
@@ -184,6 +194,8 @@ mod tests {
             Some(Event::PackageReplaced { package: "com.k".into() })
         );
         assert_eq!(parse(r#"{"type":"boot_completed"}"#), Some(Event::BootCompleted));
+        assert_eq!(parse(r#"{"type":"screen_on"}"#), Some(Event::ScreenOn));
+        assert_eq!(parse(r#"{"type":"screen_off"}"#), Some(Event::ScreenOff));
     }
 
     #[test]

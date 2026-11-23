@@ -30,6 +30,14 @@
         <category android:name="android.intent.category.DEFAULT" />
     </intent-filter>
 </activity>
+<!-- `wake_screen`: turns the screen on and finishes. A task of its own
+     (empty affinity), so finishing it uncovers whatever was in front. -->
+<activity android:name="io.idealyst.deviceadmin.WakeActivity"
+    android:exported="false"
+    android:taskAffinity=""
+    android:excludeFromRecents="true"
+    android:launchMode="singleInstance"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 <!-- `start_keep_alive`: keeps the process out of Android's cached-apps
      freezer while it is in the background. `systemExempted` is the
      foreground-service type for device- and profile-owner apps. -->
