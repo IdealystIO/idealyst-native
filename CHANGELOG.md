@@ -11,6 +11,23 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **On native, an unset `position` is CSS `static`** (`runtime-layout` minor, every Taffy backend
+  patch). A `position: absolute` box resolved against its direct parent on native and against its
+  nearest positioned ancestor on web. Native now does what web does: `relative`, `absolute`,
+  `sticky` or a non-empty `transform` makes a box a containing block, an unset `position` does not,
+  and `top` / `left` on an unset `position` do nothing. An absolute box that relied on an unstyled
+  parent moves to where web already put it; give that parent `position: relative` to keep it.
+  On macOS and iOS a box that now lies outside its parent's frame paints there but takes no
+  presses there, since both hit-test inside the parent. See `crates/runtime/layout/README.md`.
+
+- **On native, leaving a variant drops the layout properties it declared** (`runtime-layout` minor,
+  every Taffy backend patch). A variant `off { width: 0, height: 0 }` left the node 0×0 after the
+  flip to an `on {}` that says nothing about size. Each restyle is now the node's complete style,
+  as a class is on web: a property it leaves out goes back to the value from before the author
+  declared it. A navigator given a style keeps only what that style declares, as on web. Custom
+  backends call `LayoutTree::set_author_style` for the author's style and keep `set_style` for
+  their own layers.
+
 - **A theme in Auto follows the OS while the app runs** (`runtime-shared` minor,
   `runtime-vocabulary` minor, `idea-theme` minor, `backend-web`, `backend-macos`,
   `backend-ios-mobile`, `backend-android-mobile`, `backend-windows`, `backend-linux` patch).
@@ -3910,6 +3927,34 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A layout property given as a token lays out at the installed value** (`runtime-layout`). Native
+  read a token's fallback, so an app that installed a 12pt page gutter still got the theme's 32.
+  Paint and web already used the installed value.
+
+- **Removing an absolutely positioned box no longer aborts native layout** (`runtime-layout`). A
+  containing block left with no children kept the removed box in Taffy's hoisted list and the next
+  pass panicked with "invalid SlotMap key used". The removed box's slot is kept until no list names
+  it, whatever order the box and its ancestors are removed or moved in.
+
+- **On wgpu, a scroll view's child keeps its `position` and `display`** (`render-wgpu`,
+  `runtime-layout` `set_flex_shrink`). Pinning the child's `flex_shrink` reset both.
+
+- **Padding on a `flat_list` insets its rows on macOS and iOS** (`backend-macos`,
+  `backend-ios-mobile`). Rows ran edge to edge. They sit inside the padding, lanes divide what is
+  left, and the main-axis padding is part of the scroll extent, as on web.
+
+- **A padded multi-lane `flat_list` no longer overflows on web** (`backend-web`). Lane widths
+  counted the list's padding, so the last lane ran past the edge by that much.
+
+- **A `flat_list` whose data changes, or that is removed, no longer aborts on macOS**
+  (`backend-macos`). Rows were released while the backend was borrowed. The reload and the releases
+  run on a later turn. The list is also transparent, as on web, where AppKit's defaults covered
+  what its parent painted.
+
+- **A view placed by a translate as it mounts shows there in its first frame on macOS**
+  (`backend-macos`). AppKit wrote the identity transform over it while building the layer tree, so
+  a drag ghost flashed at the window's top-left.
 
 - **Ctrl-F selects the term already in a `ToolbarSearch`** (`idea-ui-layout`). The find chord went
   to the field and left the caret in the old term, so typing added to it. The term is selected,

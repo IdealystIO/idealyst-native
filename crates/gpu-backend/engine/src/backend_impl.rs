@@ -1295,11 +1295,7 @@ impl WgpuBackend {
         // `flex_shrink` in their stylesheet — this only sets the
         // Taffy default for children of scrollviews.
         if parent_is_scroll {
-            let no_shrink = StyleRules {
-                flex_shrink: Some(Tokenized::Literal(0.0)),
-                ..Default::default()
-            };
-            self.layout.set_style(child_layout, &no_shrink);
+            self.layout.set_flex_shrink(child_layout, 0.0);
         }
 
         request_redraw();
@@ -1888,7 +1884,7 @@ impl WgpuBackend {
         };
         let style: &Rc<StyleRules> = &effective_style;
 
-        self.layout.set_style(layout, style);
+        self.layout.set_author_style(layout, style);
 
         // Snapshot the colors that have transitions declared
         // *before* applying the new style. If the property's old

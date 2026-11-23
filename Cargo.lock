@@ -6560,6 +6560,7 @@ dependencies = [
  "idea-ui",
  "idea-ui-nav",
  "runtime-core",
+ "runtime-layout",
  "runtime-scene",
  "runtime-shared",
  "runtime-vocabulary",

@@ -1125,7 +1125,7 @@ impl caps::StyleOps for TerminalBackend {
         // user as "doesn't update".
         let _ = style.background.as_ref().map(|t| t.resolve());
         let _ = style.color.as_ref().map(|t| t.resolve());
-        self.layout.set_style(layout_node, style);
+        self.layout.set_author_style(layout_node, style);
 
         // Cache the resolved fg/bg + gradient so the renderer's hot
         // path doesn't re-parse on every cell write.

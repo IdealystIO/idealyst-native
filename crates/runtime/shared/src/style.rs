@@ -650,9 +650,14 @@ impl GridPlacement {
     pub const SPAN_ALL: Self = Self::Lines(1, -1);
 }
 
+/// A set CSS `position`. Every variant makes the box a containing block
+/// for `position: absolute` descendants; leaving
+/// [`StyleRules::position`] unset is CSS `static`, which does not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Position {
+    /// In flow, shifted by its `top`/`right`/`bottom`/`left` without
+    /// moving its siblings.
     #[default]
     Relative,
     Absolute,
@@ -1570,6 +1575,13 @@ pub struct StyleRules {
     pub border_style: Option<BorderStyle>,
 
     // --- Position ---
+    /// CSS `position`. `None` is CSS `static`: the box lays out in flow,
+    /// `top`/`right`/`bottom`/`left` do nothing, and it is NOT the
+    /// containing block of a `position: absolute` descendant — that
+    /// resolves against the nearest ancestor with a `position` set (or a
+    /// non-empty `transform`), else the layout root. Same on every
+    /// backend: web leaves the CSS default, Taffy hosts map it to Taffy's
+    /// `Position::Static` (`runtime-layout`).
     pub position: Option<Position>,
     pub top: Option<Tokenized<Length>>,
     pub right: Option<Tokenized<Length>>,

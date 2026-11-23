@@ -1747,9 +1747,8 @@ pub fn outlet_fill_rules() -> crate::style::StyleRules {
 /// so `None` collapses to 0 and renders blank), and `position: relative`
 /// makes the container the containing block the
 /// [`stack_screen_fill_rules`] absolute screen placement resolves
-/// against on web/SSR. `Relative` is already the framework's default
-/// `Position`, so declaring it is a no-op for native layout — it only
-/// matters where unset position lowers to CSS `static`.
+/// against — on every backend, since an unset `position` is CSS
+/// `static` and not a containing block.
 ///
 /// This is the single source of the container's styling: the stack SDK
 /// installs it as the navigator's default style (when the author sets

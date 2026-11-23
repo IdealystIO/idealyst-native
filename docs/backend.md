@@ -616,10 +616,12 @@ The presence placeholder must be **layout-transparent** — the default is
 `Host::create_anchor` (`display: contents` on web, a `runtime_layout`
 contents node on Taffy hosts), so presence's child lays out exactly as if
 it were the direct child of presence's parent. A plain view there is a
-real flex item: Taffy resolves an absolute child's insets against its
-direct layout parent, so a `position: absolute; bottom: …` child landed
-against a zero-height wrapper at the top of its positioned ancestor and
-rendered off screen (the iOS "presence alert never appears" bug). An
+real flex item: it hugs a `flex_grow` child to nothing, takes a slot in
+its parent's gap, and wraps a `position: absolute; bottom: …` child in a
+zero-height native view that frame-bounded hit-testing (AppKit, UIKit)
+never descends into. (Layout resolves that child against its nearest
+positioned ancestor either way — an unpositioned `runtime_layout` node is
+CSS `static`, not a containing block.) An
 override may choose a different native view class (macOS does, for its
 deep-descent `hitTest:`) but must still register a contents layout node.
 The placeholder is never animated — `apply_presence` targets the child's

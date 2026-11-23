@@ -45,7 +45,7 @@ impl caps::ViewOps for MyBackend {
 
 impl caps::StyleOps for MyBackend {
     fn apply_style(&mut self, node: &Self::Node, rules: &Rc<StyleRules>) {
-        self.layout.set_style(node.layout(), rules);
+        self.layout.set_author_style(node.layout(), rules);
         paint_native(node.view(), rules);
     }
 }
@@ -92,11 +92,38 @@ then come back here. The gotchas above are what you'll hit if you don't.
 
 ## Style translation
 
-The `LayoutTree::set_style(node, rules)` call is the single point where
-`runtime_shared::StyleRules` becomes a Taffy `Style`. Adding new layout
+`LayoutTree::set_author_style(node, rules)` and `LayoutTree::set_style(node,
+rules)` share the single point where `runtime_shared::StyleRules` becomes a
+Taffy `Style`. Both write the fields `rules` declares (and always `position`,
+`display` and the grid fields, which an unset value resets).
+`set_author_style` is for the node's complete author style (what
+`StyleOps::apply_style` receives): a field the previous author style declared
+and the new one leaves out reverts to its value from before the author
+declared it, so leaving a stylesheet variant drops its properties as on web.
+`set_style` merges a backend's own partial layer (a portal placement, a scroll
+content seed) without touching the author's declarations. Adding new layout
 properties to the shared style model means extending this translation
 alongside whatever native paint changes the backend needs.
 
 Layout-only properties (flex direction, justify, gap, padding, …) go
 through Taffy. Paint properties (background color, border, shadow, …) are
 the backend's job; this crate has no opinion on them.
+
+## Positioning and containing blocks
+
+Positioning follows CSS. An unset `position` is `static`: in flow, insets
+ignored, and not a containing block. `relative`, `absolute`, `sticky`, and
+any box with a non-empty `transform` are containing blocks. A
+`position: absolute` box resolves its insets and percentage sizes against
+its nearest containing-block ancestor, else the layout root — not against
+its direct parent. Taffy carries this natively (`Position::Static`, and
+out-of-flow boxes hoisted to their containing block's `hoisted_children`).
+
+`frame_of` is always relative to the node's layout parent (`parent_of`),
+because native backends nest each view in its parent's view. Taffy reports
+a hoisted box's location relative to its containing block, so `frame_of`
+re-bases it by the offsets of the static ancestors in between. The result
+can lie outside the parent's bounds (a negative `y` when the containing
+block starts above the parent): a backend that clips subviews to their
+parent, or hit-tests only inside the parent's frame, will clip or miss such
+a box. See `tests/containing_block.rs`.

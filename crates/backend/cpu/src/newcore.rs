@@ -1008,7 +1008,7 @@ impl caps::StyleOps for CpuBackend {
         // the second toggle, not the first.
         let _ = style.background.as_ref().map(|t| t.resolve());
         let _ = style.color.as_ref().map(|t| t.resolve());
-        self.layout.set_style(layout_node, style);
+        self.layout.set_author_style(layout_node, style);
 
         let fg = style
             .color

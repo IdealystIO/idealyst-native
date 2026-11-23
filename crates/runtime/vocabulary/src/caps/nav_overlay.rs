@@ -55,14 +55,11 @@ pub trait PresenceOps: ViewOps {
     /// `runtime_layout` contents node on Taffy hosts). The author never
     /// wrote this node, so presence's child has to lay out exactly as if
     /// it were the direct child of presence's parent. A plain view here
-    /// is a real flex item, and Taffy resolves an absolute child's insets
-    /// against its DIRECT layout parent: a `position: absolute; bottom:
-    /// md` child of a plain-view placeholder was placed against a
-    /// full-width, ZERO-height box at the top of the positioned ancestor
-    /// and landed above it, off screen (the reported iOS "alert never
-    /// appears" bug; web hid it because a static `<div>` is not a CSS
-    /// containing block). The same box also hugged a `flex_grow` child
-    /// to nothing. Pinned by `tests/presence_layout.rs`.
+    /// is a real flex item: it hugs a `flex_grow` child to nothing, takes
+    /// a slot in its parent's gap, and wraps a `position: absolute` child
+    /// in a full-width, ZERO-height native view — the child paints outside
+    /// it, where AppKit's and UIKit's frame-bounded `hitTest:` never
+    /// reaches. Pinned by `tests/presence_layout.rs`.
     ///
     /// The enter/exit animation never targets this node — the handler
     /// applies [`apply_presence`](Self::apply_presence) to the CHILD's

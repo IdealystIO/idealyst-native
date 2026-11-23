@@ -2877,7 +2877,7 @@ impl AndroidBackend {
     /// absolute child — though Taffy gave it a correct frame — never
     /// painted (a 0×0 ViewGroup doesn't lay out a larger child). Splicing
     /// the branch into the real parent gives in-flow content normal flow
-    /// AND absolute content the real parent as its containing block, both
+    /// AND absolute content the real parent as its native parent, both
     /// matching web with no per-case wrapper hack. It also upgrades
     /// reactive `for` to keyed reconciliation (per-row state survives).
     pub(crate) fn supports_child_splice_impl(&self) -> bool {
@@ -4069,18 +4069,18 @@ impl AndroidBackend {
             text_style.padding_right = None;
             text_style.padding_top = None;
             text_style.padding_bottom = None;
-            self.layout.set_style(layout_node, &text_style);
+            self.layout.set_author_style(layout_node, &text_style);
         } else if let Some(rules) = primitives::overlay::overlay_layout_style(self, node, style) {
-            self.layout.set_style(layout_node, &rules);
+            self.layout.set_author_style(layout_node, &rules);
         } else {
-            self.layout.set_style(layout_node, style);
+            self.layout.set_author_style(layout_node, style);
         }
         // A scroll view's content-arranging rules belong to the inner that
         // holds its children — see `scroll_axis_policy::inner_forwarded_rules`.
         if let Some(inner) = self.scroll_view_inner.get(&key).cloned() {
             let inner_layout = self.layout_for_view(&inner);
             self.layout
-                .set_style(inner_layout, &crate::scroll_axis_policy::inner_forwarded_rules(style));
+                .set_author_style(inner_layout, &crate::scroll_axis_policy::inner_forwarded_rules(style));
         }
 
         // `overscroll_behavior` → `View.setOverScrollMode` and `scrollbar`

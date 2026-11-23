@@ -31,6 +31,9 @@ icons-lucide = { workspace = true }
 # The recording scene `Host` + capability mock the mount tests run on.
 host-mock = { path = "../../dev/host-mock" }
 runtime-scene = { path = "../../runtime/scene" }
+# The native layout engine, to lay out a kit token the way a native
+# backend does.
+runtime-layout = { path = "../../runtime/layout" }
 # The app-key dispatcher, to press Ctrl-F at a mounted search.
 runtime-shared = { path = "../../runtime/shared" }
 # The robot registry, to find a control by its accessible name.

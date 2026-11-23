@@ -38,7 +38,7 @@
 //!
 //! impl runtime_vocabulary::caps::StyleOps for MyBackend {
 //!     fn apply_style(&mut self, node: &MyNode, rules: &Rc<StyleRules>) {
-//!         self.layout.set_style(node.layout(), rules);
+//!         self.layout.set_author_style(node.layout(), rules);
 //!         paint_native(node.view(), rules);
 //!     }
 //! }
@@ -190,6 +190,25 @@ pub struct LayoutTree {
     /// Temporary — remove once the wgpu backend lifecycle ordering is
     /// proven correct.
     dropped: HashSet<NodeId>,
+    /// Removed nodes whose Taffy slot is kept because a containing block
+    /// still lists them as hoisted out-of-flow children. Taffy rebuilds a
+    /// block's hoisted list only when the block lays out as a container:
+    /// `compute_oof_layout` returns early for a leaf, so a block whose
+    /// last child was the removed absolute box keeps the stale entry, and
+    /// `round_layout` walks it — freeing the slot made the next `compute`
+    /// panic ("invalid SlotMap key used", an abort behind a native
+    /// backend's non-unwinding boundary). A held node is detached and
+    /// childless; [`Self::release_held`] frees it once no list names it
+    /// (see `tests/hoisted_removal.rs`).
+    held: HashSet<NodeId>,
+    /// Every block whose hoisted list may name a node no longer below it.
+    /// A list goes stale only when a descendant is unlinked, so each
+    /// unlink records the blocks above it ([`Self::note_stale_hoists`]).
+    /// Recording the BLOCK, not a removed node's last place, keeps the
+    /// answer right however the node moves between its unlink and its
+    /// removal: re-linked under another block, or removed passes after its
+    /// own parent. Pruned in `release_held` once a list is accurate again.
+    stale_hoists: HashSet<NodeId>,
     /// Per-node measure functions for intrinsically-sized leaves
     /// (Text, etc.). Looked up during `compute` and forwarded to
     /// Taffy's `compute_layout_with_measure`.
@@ -310,6 +329,101 @@ pub struct LayoutTree {
     /// size without moving its Taffy `Style`, so `set_style` compares
     /// these to know the cached measurement is stale.
     measure_inputs: HashMap<NodeId, String>,
+    /// Per node, the Taffy fields its style currently declares, with the
+    /// value each held before the style declared it. `set_author_style`
+    /// takes a node's COMPLETE author style: a field the previous one
+    /// declared and the next leaves out goes back to that value (see
+    /// [`Self::revert_undeclared`]), as a browser drops a declaration when
+    /// its class goes away. The remembered value, not Taffy's initial one,
+    /// because a node's starting style carries framework seeds — the
+    /// `new_node` flex column, a scroller's `flex_grow: 1` fill, an
+    /// intrinsic `min_size` floor — that must survive an author override
+    /// coming and going. Without it a variant `off { width: 0, height: 0 }`
+    /// left the node 0×0 after the flip back to an `on {}` that declares
+    /// no size.
+    declared: HashMap<NodeId, Declared>,
+}
+
+/// One node's entry in [`LayoutTree::declared`].
+#[derive(Default)]
+struct Declared {
+    /// `DECL_*` bits of the fields the node's style declares.
+    mask: u32,
+    /// Each declared field's value from before the style declared it;
+    /// fields whose bit is clear are unused.
+    seed: Style,
+    /// Whether the node was in `auto_width` / `auto_height` /
+    /// `auto_max_width` before its style declared `width` / `height` /
+    /// `max_width`, so dropping the declaration restores the membership.
+    auto: AutoAxes,
+}
+
+/// A node's membership in the `auto_*` sets, captured at the start of a
+/// `set_style` before its declarations remove it.
+#[derive(Clone, Copy, Default)]
+struct AutoAxes {
+    width: bool,
+    height: bool,
+    max_width: bool,
+}
+
+const DECL_FLEX_DIRECTION: u32 = 1 << 0;
+const DECL_FLEX_WRAP: u32 = 1 << 1;
+const DECL_ALIGN_ITEMS: u32 = 1 << 2;
+const DECL_ALIGN_CONTENT: u32 = 1 << 3;
+const DECL_GAP_WIDTH: u32 = 1 << 4;
+const DECL_GAP_HEIGHT: u32 = 1 << 5;
+const DECL_FLEX_GROW: u32 = 1 << 6;
+const DECL_FLEX_SHRINK: u32 = 1 << 7;
+const DECL_FLEX_BASIS: u32 = 1 << 8;
+const DECL_ALIGN_SELF: u32 = 1 << 9;
+const DECL_WIDTH: u32 = 1 << 10;
+const DECL_HEIGHT: u32 = 1 << 11;
+const DECL_MIN_WIDTH: u32 = 1 << 12;
+const DECL_MIN_HEIGHT: u32 = 1 << 13;
+const DECL_MAX_WIDTH: u32 = 1 << 14;
+const DECL_MAX_HEIGHT: u32 = 1 << 15;
+const DECL_ASPECT_RATIO: u32 = 1 << 16;
+const DECL_PADDING_TOP: u32 = 1 << 17;
+const DECL_PADDING_RIGHT: u32 = 1 << 18;
+const DECL_PADDING_BOTTOM: u32 = 1 << 19;
+const DECL_PADDING_LEFT: u32 = 1 << 20;
+const DECL_MARGIN_TOP: u32 = 1 << 21;
+const DECL_MARGIN_RIGHT: u32 = 1 << 22;
+const DECL_MARGIN_BOTTOM: u32 = 1 << 23;
+const DECL_MARGIN_LEFT: u32 = 1 << 24;
+const DECL_INSET_TOP: u32 = 1 << 25;
+const DECL_INSET_RIGHT: u32 = 1 << 26;
+const DECL_INSET_BOTTOM: u32 = 1 << 27;
+const DECL_INSET_LEFT: u32 = 1 << 28;
+
+/// A style value as the installed theme has it: a token reads the token
+/// registry (`Tokenized::resolve`), a literal is itself. Every layout read
+/// goes through this, never `Tokenized::value()`: `value()` is a token's
+/// FALLBACK (its theme's default), so a theme that installs another value
+/// would lay out at the default while paint and web's `var(--name)` use
+/// the installed one (an app's 12pt `layout-gutter-desktop` padding by
+/// the standard 32).
+///
+/// Inside a style effect the read also subscribes it to the theme, the
+/// same as a paint-side resolve.
+trait Installed {
+    type Value;
+    fn installed(&self) -> Self::Value;
+}
+
+impl Installed for runtime_shared::Tokenized<FwLength> {
+    type Value = FwLength;
+    fn installed(&self) -> FwLength {
+        self.resolve()
+    }
+}
+
+impl Installed for runtime_shared::Tokenized<f32> {
+    type Value = f32;
+    fn installed(&self) -> f32 {
+        self.resolve()
+    }
 }
 
 /// What a measured leaf's size depends on beyond its Taffy `Style`. A
@@ -322,11 +436,11 @@ fn text_measure_inputs(rules: &StyleRules) -> String {
     };
     format!(
         "{family}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
-        rules.font_size.as_ref().map(|t| *t.value()),
+        rules.font_size.as_ref().map(Installed::installed),
         rules.font_weight,
         rules.font_style,
-        rules.line_height.as_ref().map(|t| *t.value()),
-        rules.letter_spacing.as_ref().map(|t| *t.value()),
+        rules.line_height.as_ref().map(Installed::installed),
+        rules.letter_spacing.as_ref().map(Installed::installed),
         rules.text_transform,
         rules.max_lines,
     )
@@ -338,6 +452,8 @@ impl LayoutTree {
         Self {
             tree: TaffyTree::new(),
             dropped: HashSet::new(),
+            held: HashSet::new(),
+            stale_hoists: HashSet::new(),
             measure_fns: HashMap::new(),
             auto_width: HashSet::new(),
             auto_height: HashSet::new(),
@@ -355,6 +471,7 @@ impl LayoutTree {
             logical_children: HashMap::new(),
             measure_inputs: HashMap::new(),
             logical_parent: HashMap::new(),
+            declared: HashMap::new(),
         }
     }
 
@@ -367,9 +484,10 @@ impl LayoutTree {
     /// flex_direction: Row, align_items: None` — that would arrange
     /// children of unstyled containers horizontally and size each to
     /// its intrinsic content width, leaving lots of empty space.
-    /// `set_style` merges into the existing style rather than
-    /// replacing it, so these seed values survive unless the author
-    /// explicitly overrides them.
+    /// `set_style` / `set_author_style` write only the properties a style
+    /// declares (an author declaration that goes away reverts to the value
+    /// from before it), so these seed values hold wherever the author's
+    /// current style does not override them.
     pub fn new_node(&mut self) -> LayoutNode {
         let mut style = Style::default();
         style.display = Display::Flex;
@@ -644,6 +762,7 @@ impl LayoutTree {
             kids.retain(|k| *k != node);
         }
         if let Some(ancestor) = self.real_ancestor(parent) {
+            self.note_stale_hoists(ancestor);
             for n in self.flat_nodes(node) {
                 let _ = self.tree.remove_child(ancestor, n);
                 if self.hscroll_content.contains(&n) {
@@ -761,17 +880,33 @@ impl LayoutTree {
     /// node's children were Taffy children of the real ancestor and are
     /// unlinked from it here), exactly as Taffy orphans a removed node's
     /// children.
+    ///
+    /// A node a containing block still lists as a hoisted out-of-flow
+    /// child keeps its Taffy slot, detached and childless, until no list
+    /// names it (see [`Self::release_held`]); to every caller it is gone.
     pub fn remove_node(&mut self, node: LayoutNode) {
         self.detach(node.0);
         // The children's flat nodes are already unlinked: a contents
         // node's by `detach` (they hung off the ancestor), a real node's
-        // by Taffy's `remove` below (it orphans its children).
+        // by Taffy's `remove` / `set_children` below (it orphans its
+        // children).
         if let Some(kids) = self.logical_children.remove(&node.0) {
             for k in kids {
                 self.logical_parent.remove(&k);
             }
         }
-        let _ = self.tree.remove(node.0);
+        if self.is_hoisted_by_stale(node.0) {
+            // Its own list is stale from here on too: it lost its children
+            // and is never laid out again.
+            self.note_stale_hoists(node.0);
+            let _ = self.tree.set_children(node.0, &[]);
+            self.held.insert(node.0);
+        } else {
+            let _ = self.tree.remove(node.0);
+            if self.stale_hoists.remove(&node.0) {
+                self.free_unlisted_held();
+            }
+        }
         self.contents.remove(&node.0);
         self.measure_fns.remove(&node.0);
         self.measure_inputs.remove(&node.0);
@@ -787,7 +922,73 @@ impl LayoutTree {
         self.grid_items.remove(&node.0);
         self.table_grids.remove(&node.0);
         self.declared_width.remove(&node.0);
+        self.declared.remove(&node.0);
         self.dropped.insert(node.0);
+    }
+
+    /// Record every block at or above `from` that lists hoisted children,
+    /// as a descendant of `from` is being unlinked: the hoisted box may be
+    /// in the unlinked subtree. Taffy hoists an out-of-flow box only to an
+    /// ancestor, so the walk reaches every block that can list it.
+    fn note_stale_hoists(&mut self, from: NodeId) {
+        let mut cur = Some(from);
+        while let Some(n) = cur {
+            if self.tree.hoisted_children(n).is_ok_and(|list| !list.is_empty()) {
+                self.stale_hoists.insert(n);
+            }
+            cur = self.tree.parent(n);
+        }
+    }
+
+    /// Whether a block's hoisted list may still name the unlinked `node`.
+    fn is_hoisted_by_stale(&self, node: NodeId) -> bool {
+        self.stale_hoists
+            .iter()
+            .any(|block| self.tree.hoisted_children(*block).is_ok_and(|list| list.contains(&node)))
+    }
+
+    /// Drop the blocks whose list is accurate again (every box it names
+    /// is below the block), then free the held nodes no list names.
+    fn release_held(&mut self) {
+        let accurate: Vec<NodeId> = self
+            .stale_hoists
+            .iter()
+            .copied()
+            .filter(|block| {
+                self.tree
+                    .hoisted_children(*block)
+                    .is_ok_and(|list| list.iter().all(|n| self.is_under(*n, *block)))
+            })
+            .collect();
+        for block in accurate {
+            self.stale_hoists.remove(&block);
+        }
+        self.free_unlisted_held();
+    }
+
+    /// Free every held node no stale list names. Repeats, since freeing a
+    /// held block frees what only it listed.
+    ///
+    /// Run after a layout pass and when a stale block's own slot goes, not
+    /// per removed node: unmounting a block's many absolute rows would
+    /// rescan the block's list for each one.
+    fn free_unlisted_held(&mut self) {
+        while !self.held.is_empty() {
+            let listed: HashSet<NodeId> = self
+                .stale_hoists
+                .iter()
+                .flat_map(|block| self.tree.hoisted_children(*block).unwrap_or_default().iter().copied())
+                .collect();
+            let free: Vec<NodeId> = self.held.difference(&listed).copied().collect();
+            if free.is_empty() {
+                return;
+            }
+            for node in free {
+                self.held.remove(&node);
+                self.stale_hoists.remove(&node);
+                let _ = self.tree.remove(node);
+            }
+        }
     }
 
     /// How many nodes currently hold a slot in the tree (freed ones
@@ -948,19 +1149,28 @@ impl LayoutTree {
             + self.keyboard_padding.get(&id).copied().unwrap_or(0.0)
     }
 
-    /// Apply the framework's resolved style rules to a node by
-    /// *merging into* the existing Taffy style — only fields the
-    /// author explicitly set in `StyleRules` get updated; everything
-    /// else keeps its previous value.
-    ///
-    /// This shape is essential because `apply_style` runs more than
-    /// once per node (base style + state overlays for hover/press
-    /// etc.). A state overlay typically only sets a handful of
-    /// properties (e.g. `background: hover_color`); if we naively
-    /// replaced the whole Taffy style we'd lose every other property
-    /// the base style established (gap, padding, flex_direction,
-    /// width, …) — which is exactly the bug we saw with the dashboard
-    /// page's gap getting wiped.
+    /// A style dimension that is a definite pixel length, or `None` for
+    /// `auto` / percentage / unset. Percentages are excluded on purpose: a
+    /// percentage floor would resolve against the parent and could exceed the
+    /// space the parent actually has.
+    fn definite_length_of(
+        dim: Option<&runtime_shared::Tokenized<runtime_shared::Length>>,
+    ) -> Option<f32> {
+        match dim.map(Installed::installed) {
+            Some(runtime_shared::Length::Px(px)) if px.is_finite() && px >= 0.0 => Some(px),
+            _ => None,
+        }
+    }
+
+    /// Merge `rules` into the node's Taffy style: the fields `rules`
+    /// declares are written and the others keep their value. Except
+    /// `position`, `display`, the grid template and the grid placement,
+    /// which are written whether declared or not: a layer that leaves one
+    /// out resets it. For a backend's own layers on a node it places (a
+    /// portal's placement, a scroll content seed); on a node the author
+    /// styles, use a setter for the one field, as
+    /// [`Self::set_flex_shrink`]. The author's style goes through
+    /// [`Self::set_author_style`].
     ///
     /// Returns `true` iff this changed the node's **layout** geometry. The
     /// Taffy `Style` we build holds geometry only — flex / size / spacing /
@@ -970,23 +1180,38 @@ impl LayoutTree {
     /// swap): a backend can skip scheduling a layout pass for it. Text-measure
     /// inputs (font, line-height) also aren't in the Taffy `Style` — a node
     /// with a measure fn must gate on those separately (see the macOS
-    /// backend's text-measure signature). The `tree.set_style` write itself is
-    /// unconditional, so Taffy's dirty bookkeeping is identical for every
-    /// backend; only the return value is advisory.
-    /// A style dimension that is a definite pixel length, or `None` for
-    /// `auto` / percentage / unset. Percentages are excluded on purpose: a
-    /// percentage floor would resolve against the parent and could exceed the
-    /// space the parent actually has.
-    fn definite_length_of(
-        dim: Option<&runtime_shared::Tokenized<runtime_shared::Length>>,
-    ) -> Option<f32> {
-        match dim.map(|t| *t.value()) {
-            Some(runtime_shared::Length::Px(px)) if px.is_finite() && px >= 0.0 => Some(px),
-            _ => None,
-        }
+    /// backend's text-measure signature).
+    pub fn set_style(&mut self, node: LayoutNode, rules: &StyleRules) -> bool {
+        self.write_style(node, rules, false)
     }
 
-    pub fn set_style(&mut self, node: LayoutNode, rules: &StyleRules) -> bool {
+    /// Write `flex_shrink` alone, leaving every other field (the author's
+    /// `position` and `display` among them) as it is. A later author style
+    /// that declares `flex_shrink` overrides it.
+    pub fn set_flex_shrink(&mut self, node: LayoutNode, shrink: f32) {
+        let Ok(existing) = self.tree.style(node.0) else { return };
+        if existing.flex_shrink == shrink {
+            return;
+        }
+        let style = Style { flex_shrink: shrink, ..existing.clone() };
+        let _ = self.tree.set_style(node.0, style);
+    }
+
+    /// Apply the node's COMPLETE author style — what a backend's
+    /// `StyleOps::apply_style` receives: the resolved base, variants and
+    /// active overlays in one `StyleRules`. Like [`Self::set_style`] it
+    /// writes the fields `rules` declares, and in addition a field the
+    /// previous author style declared and `rules` leaves out reverts to
+    /// its value from before the author declared it (see
+    /// [`Self::declared`]) — the way a browser drops a declaration when
+    /// its class goes away. Backend layers written with `set_style` are
+    /// not author declarations, so an author restyle neither keeps nor
+    /// drops them. Same return value as [`Self::set_style`].
+    pub fn set_author_style(&mut self, node: LayoutNode, rules: &StyleRules) -> bool {
+        self.write_style(node, rules, true)
+    }
+
+    fn write_style(&mut self, node: LayoutNode, rules: &StyleRules, author: bool) -> bool {
         if self.contents.contains(&node.0) {
             // No box: box properties are meaningless, as CSS ignores
             // them on a `display: contents` element. Nothing changed.
@@ -1008,6 +1233,11 @@ impl LayoutTree {
         );
         let existing = self.tree.style(node.0).cloned().unwrap_or_default();
         let mut style = existing.clone();
+        let auto_before = AutoAxes {
+            width: self.auto_width.contains(&node.0),
+            height: self.auto_height.contains(&node.0),
+            max_width: self.auto_max_width.contains(&node.0),
+        };
 
         // Display defaults to Flex (the framework's React-Native-like
         // convention); a style may opt a node into Grid, which is what
@@ -1038,11 +1268,23 @@ impl LayoutTree {
         style.grid_row = grid_placement_line(rules.grid_row);
         style.grid_column = grid_placement_line(rules.grid_column);
 
-        // Position — always set (Relative/Absolute is binary, no
-        // "unset" form in our rules).
+        // Position — always written. An unset `position` is CSS `static`:
+        // laid out in flow, insets ignored, and NOT a containing block, so
+        // an absolute descendant resolves against the nearest positioned
+        // ancestor (or the root), as on web. Taffy's `Static` carries
+        // exactly that. A transform makes a box a containing block in CSS
+        // whatever its `position`; `Relative` with no insets is the same
+        // in-flow box that also claims absolute descendants.
         style.position = match rules.position {
             Some(FwPosition::Absolute) => Position::Absolute,
-            _ => Position::Relative,
+            Some(FwPosition::Relative) => Position::Relative,
+            // Taffy lays a sticky box out in flow WITHOUT applying its
+            // insets: they are the pin thresholds the backend's sticky
+            // registry reads from the style (`runtime_shared::sticky`), not
+            // offsets. It is a containing block, as in CSS.
+            Some(FwPosition::Sticky) => Position::Sticky,
+            None if rules.transform.as_ref().is_some_and(|t| !t.is_empty()) => Position::Relative,
+            None => Position::Static,
         };
 
         // --- Flex container properties ---
@@ -1107,26 +1349,26 @@ impl LayoutTree {
                 FwAlignContent::SpaceAround => AlignContent::SPACE_AROUND,
             };
         }
-        if let Some(gap) = rules.gap.as_ref().map(|t| t.value()) {
-            let lp = length_to_lp(*gap);
+        if let Some(gap) = rules.gap.as_ref().map(Installed::installed) {
+            let lp = length_to_lp(gap);
             style.gap = Size { width: lp, height: lp };
         }
-        if let Some(g) = rules.row_gap.as_ref().map(|t| t.value()) {
-            style.gap.height = length_to_lp(*g);
+        if let Some(g) = rules.row_gap.as_ref().map(Installed::installed) {
+            style.gap.height = length_to_lp(g);
         }
-        if let Some(g) = rules.column_gap.as_ref().map(|t| t.value()) {
-            style.gap.width = length_to_lp(*g);
+        if let Some(g) = rules.column_gap.as_ref().map(Installed::installed) {
+            style.gap.width = length_to_lp(g);
         }
 
         // --- Flex item properties ---
 
-        if let Some(grow) = rules.flex_grow.as_ref().map(|t| *t.value()) {
+        if let Some(grow) = rules.flex_grow.as_ref().map(Installed::installed) {
             style.flex_grow = grow;
         }
-        if let Some(shrink) = rules.flex_shrink.as_ref().map(|t| *t.value()) {
+        if let Some(shrink) = rules.flex_shrink.as_ref().map(Installed::installed) {
             style.flex_shrink = shrink;
         }
-        if let Some(basis) = rules.flex_basis.as_ref().map(|t| *t.value()) {
+        if let Some(basis) = rules.flex_basis.as_ref().map(Installed::installed) {
             style.flex_basis = length_to_dim(basis);
         }
         if let Some(asf) = rules.align_self {
@@ -1142,11 +1384,10 @@ impl LayoutTree {
 
         // --- Sizing ---
 
-        if let Some(w) = rules.width.as_ref().map(|t| *t.value()) {
+        if let Some(w) = rules.width.as_ref().map(Installed::installed) {
             style.size.width = length_to_dim(w);
             self.auto_width.remove(&node.0);
-            // Same merge policy as the Taffy slot: an absent `width`
-            // leaves the previous declaration standing.
+            // An absent `width` clears this in `revert_undeclared`.
             match Self::definite_length_of(rules.width.as_ref()) {
                 Some(px) => {
                     self.declared_width.insert(node.0, px);
@@ -1156,11 +1397,11 @@ impl LayoutTree {
                 }
             }
         }
-        if let Some(h) = rules.height.as_ref().map(|t| *t.value()) {
+        if let Some(h) = rules.height.as_ref().map(Installed::installed) {
             style.size.height = length_to_dim(h);
             self.auto_height.remove(&node.0);
         }
-        if let Some(w) = rules.min_width.as_ref().map(|t| *t.value()) {
+        if let Some(w) = rules.min_width.as_ref().map(Installed::installed) {
             style.min_size.width = length_to_lpa(Some(w));
         } else if self.grid_items.contains(&node.0) {
             // Grid item with no author min-width: reset the CSS `auto`
@@ -1208,7 +1449,7 @@ impl LayoutTree {
             // box to shrink say so with `min_width` or `flex_shrink`.
             style.min_size.width = LengthPercentageAuto::length(w);
         }
-        if let Some(h) = rules.min_height.as_ref().map(|t| *t.value()) {
+        if let Some(h) = rules.min_height.as_ref().map(Installed::installed) {
             style.min_size.height = length_to_lpa(Some(h));
         }
         // NOTE: deliberately NO height counterpart to the width floor above.
@@ -1219,12 +1460,12 @@ impl LayoutTree {
         // to fix was measured on the main axis only; adding the cross axis
         // speculatively broke two existing regressions, so it stays out until
         // something actually measures a cross-axis divergence.
-        if let Some(w) = rules.max_width.as_ref().map(|t| *t.value()) {
+        if let Some(w) = rules.max_width.as_ref().map(Installed::installed) {
             style.max_size.width = length_to_lpa(Some(w));
             // Author owns max-width now — stop applying the default clamp.
             self.auto_max_width.remove(&node.0);
         }
-        if let Some(h) = rules.max_height.as_ref().map(|t| *t.value()) {
+        if let Some(h) = rules.max_height.as_ref().map(Installed::installed) {
             style.max_size.height = length_to_lpa(Some(h));
         }
         if let Some(ar) = rules.aspect_ratio {
@@ -1240,7 +1481,7 @@ impl LayoutTree {
         // (the common case); a percent author value falls back to a
         // pure author write — safe-area on the same side is silently
         // skipped in that mode.
-        if let Some(v) = rules.padding_top.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.padding_top.as_ref().map(Installed::installed) {
             if let FwLength::Px(px) = v {
                 self.author_padding.entry(node.0).or_insert([0.0; 4])[0] = px;
                 let extra = self.safe_area_extra.get(&node.0).map(|e| e[0]).unwrap_or(0.0);
@@ -1249,7 +1490,7 @@ impl LayoutTree {
                 style.padding.top = length_to_lp(v);
             }
         }
-        if let Some(v) = rules.padding_right.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.padding_right.as_ref().map(Installed::installed) {
             if let FwLength::Px(px) = v {
                 self.author_padding.entry(node.0).or_insert([0.0; 4])[1] = px;
                 let extra = self.safe_area_extra.get(&node.0).map(|e| e[1]).unwrap_or(0.0);
@@ -1258,7 +1499,7 @@ impl LayoutTree {
                 style.padding.right = length_to_lp(v);
             }
         }
-        if let Some(v) = rules.padding_bottom.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.padding_bottom.as_ref().map(Installed::installed) {
             if let FwLength::Px(px) = v {
                 self.author_padding.entry(node.0).or_insert([0.0; 4])[2] = px;
                 let extra = self.bottom_extra_of(node.0);
@@ -1267,7 +1508,7 @@ impl LayoutTree {
                 style.padding.bottom = length_to_lp(v);
             }
         }
-        if let Some(v) = rules.padding_left.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.padding_left.as_ref().map(Installed::installed) {
             if let FwLength::Px(px) = v {
                 self.author_padding.entry(node.0).or_insert([0.0; 4])[3] = px;
                 let extra = self.safe_area_extra.get(&node.0).map(|e| e[3]).unwrap_or(0.0);
@@ -1279,49 +1520,45 @@ impl LayoutTree {
 
         // --- Margin (per-side, all optional) ---
 
-        if let Some(v) = rules.margin_top.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.margin_top.as_ref().map(Installed::installed) {
             style.margin.top = length_to_lpa(Some(v));
         }
-        if let Some(v) = rules.margin_right.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.margin_right.as_ref().map(Installed::installed) {
             style.margin.right = length_to_lpa(Some(v));
         }
-        if let Some(v) = rules.margin_bottom.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.margin_bottom.as_ref().map(Installed::installed) {
             style.margin.bottom = length_to_lpa(Some(v));
         }
-        if let Some(v) = rules.margin_left.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.margin_left.as_ref().map(Installed::installed) {
             style.margin.left = length_to_lpa(Some(v));
         }
 
         // --- Inset (top/right/bottom/left for position: absolute) ---
 
-        if let Some(v) = rules.top.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.top.as_ref().map(Installed::installed) {
             style.inset.top = length_to_lpa(Some(v));
         }
-        if let Some(v) = rules.right.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.right.as_ref().map(Installed::installed) {
             style.inset.right = length_to_lpa(Some(v));
         }
-        if let Some(v) = rules.bottom.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.bottom.as_ref().map(Installed::installed) {
             style.inset.bottom = length_to_lpa(Some(v));
         }
-        if let Some(v) = rules.left.as_ref().map(|t| *t.value()) {
+        if let Some(v) = rules.left.as_ref().map(Installed::installed) {
             style.inset.left = length_to_lpa(Some(v));
         }
-        // A sticky box's sides are its pin THRESHOLDS — the backend's
-        // sticky registry reads them from the style (`runtime_shared::sticky`)
-        // — not offsets: CSS lays a sticky box out in flow and moves it only
-        // once scrolled to a threshold. Taffy has no sticky and shifts a
-        // `Relative` box by its insets, so a frozen column `left: 44` after
-        // a 44px selection column rested at 88, and a `top: 32` table of
-        // contents sat 32px low until scrolled.
-        if rules.position == Some(FwPosition::Sticky) {
-            style.inset = Rect::auto();
+
+        // Properties the previous author style declared and this one does
+        // not go back to their seed (see `declared`).
+        if author {
+            self.revert_undeclared(node.0, rules, &existing, &mut style, auto_before);
         }
 
         // Re-derive the default `max-width: 100%` cross-axis clamp from
         // the now-merged style. Runs last so it sees the final
         // `position` / `aspect_ratio` / explicit `width` this apply
-        // produced (state overlays carry partial rules, so we must read
-        // the merged result, not the incoming `rules`).
+        // produced, seeds included — read the merged result, not the
+        // incoming `rules`.
         self.apply_default_max_width(node.0, &mut style);
         self.apply_hscroll_content_width(node.0, &mut style);
 
@@ -1408,6 +1645,134 @@ impl LayoutTree {
             }
         }
         changed || remeasure
+    }
+
+    /// The revert half of `set_author_style` (see [`Self::declared`]). `existing`
+    /// is the node's Taffy style before this apply and `style` the one it
+    /// is writing. A field declared now for the first time remembers its
+    /// `existing` value; a field declared before and absent now gets that
+    /// value back, along with the side-table state its declaration
+    /// changed (`auto_*` membership, `declared_width`, `author_padding`).
+    ///
+    /// `min_size.width` counts as declared whenever this apply's
+    /// min-width chain can write it — an author `min_width`, a grid item's
+    /// reset, or the floor a definite `width` sets — so the floor goes
+    /// away with the width that set it.
+    fn revert_undeclared(
+        &mut self,
+        node: NodeId,
+        rules: &StyleRules,
+        existing: &Style,
+        style: &mut Style,
+        auto_before: AutoAxes,
+    ) {
+        let mut d = self.declared.remove(&node).unwrap_or_default();
+        let mut released = 0u32;
+        // `track!(BIT, declared_now, field.path)`: remember or restore one
+        // Taffy field.
+        macro_rules! track {
+            ($bit:expr, $on:expr, $($f:ident).+) => {
+                if $on {
+                    if d.mask & $bit == 0 {
+                        d.seed.$($f).+ = existing.$($f).+.clone();
+                        d.mask |= $bit;
+                    }
+                } else if d.mask & $bit != 0 {
+                    style.$($f).+ = d.seed.$($f).+.clone();
+                    d.mask &= !$bit;
+                    released |= $bit;
+                }
+            };
+        }
+        if rules.width.is_some() && d.mask & DECL_WIDTH == 0 {
+            d.auto.width = auto_before.width;
+        }
+        if rules.height.is_some() && d.mask & DECL_HEIGHT == 0 {
+            d.auto.height = auto_before.height;
+        }
+        if rules.max_width.is_some() && d.mask & DECL_MAX_WIDTH == 0 {
+            d.auto.max_width = auto_before.max_width;
+        }
+        track!(DECL_FLEX_DIRECTION, rules.flex_direction.is_some(), flex_direction);
+        track!(DECL_FLEX_WRAP, rules.flex_wrap.is_some(), flex_wrap);
+        track!(DECL_ALIGN_ITEMS, rules.align_items.is_some(), align_items);
+        track!(DECL_ALIGN_CONTENT, rules.align_content.is_some(), align_content);
+        track!(DECL_GAP_WIDTH, rules.gap.is_some() || rules.column_gap.is_some(), gap.width);
+        track!(DECL_GAP_HEIGHT, rules.gap.is_some() || rules.row_gap.is_some(), gap.height);
+        track!(DECL_FLEX_GROW, rules.flex_grow.is_some(), flex_grow);
+        track!(DECL_FLEX_SHRINK, rules.flex_shrink.is_some(), flex_shrink);
+        track!(DECL_FLEX_BASIS, rules.flex_basis.is_some(), flex_basis);
+        track!(DECL_ALIGN_SELF, rules.align_self.is_some(), align_self);
+        track!(DECL_WIDTH, rules.width.is_some(), size.width);
+        track!(DECL_HEIGHT, rules.height.is_some(), size.height);
+        track!(
+            DECL_MIN_WIDTH,
+            rules.min_width.is_some()
+                || self.grid_items.contains(&node)
+                || Self::definite_length_of(rules.width.as_ref()).is_some(),
+            min_size.width
+        );
+        track!(DECL_MIN_HEIGHT, rules.min_height.is_some(), min_size.height);
+        track!(DECL_MAX_WIDTH, rules.max_width.is_some(), max_size.width);
+        track!(DECL_MAX_HEIGHT, rules.max_height.is_some(), max_size.height);
+        track!(DECL_ASPECT_RATIO, rules.aspect_ratio.is_some(), aspect_ratio);
+        track!(DECL_PADDING_TOP, rules.padding_top.is_some(), padding.top);
+        track!(DECL_PADDING_RIGHT, rules.padding_right.is_some(), padding.right);
+        track!(DECL_PADDING_BOTTOM, rules.padding_bottom.is_some(), padding.bottom);
+        track!(DECL_PADDING_LEFT, rules.padding_left.is_some(), padding.left);
+        track!(DECL_MARGIN_TOP, rules.margin_top.is_some(), margin.top);
+        track!(DECL_MARGIN_RIGHT, rules.margin_right.is_some(), margin.right);
+        track!(DECL_MARGIN_BOTTOM, rules.margin_bottom.is_some(), margin.bottom);
+        track!(DECL_MARGIN_LEFT, rules.margin_left.is_some(), margin.left);
+        track!(DECL_INSET_TOP, rules.top.is_some(), inset.top);
+        track!(DECL_INSET_RIGHT, rules.right.is_some(), inset.right);
+        track!(DECL_INSET_BOTTOM, rules.bottom.is_some(), inset.bottom);
+        track!(DECL_INSET_LEFT, rules.left.is_some(), inset.left);
+
+        if released & DECL_WIDTH != 0 {
+            self.declared_width.remove(&node);
+            if d.auto.width {
+                // Not the remembered value: `compute` bakes a root's
+                // `Auto` width into a length, which this would restore.
+                self.auto_width.insert(node);
+                style.size.width = Dimension::auto();
+            }
+        }
+        if released & DECL_HEIGHT != 0 && d.auto.height {
+            self.auto_height.insert(node);
+            style.size.height = Dimension::auto();
+        }
+        if released & DECL_MAX_WIDTH != 0 && d.auto.max_width {
+            // `apply_default_max_width` re-derives the clamp's value.
+            self.auto_max_width.insert(node);
+        }
+        // A dropped padding side is no author padding plus the side's
+        // CURRENT safe-area / keyboard extra — the remembered value holds
+        // the extra as it was when the padding was declared.
+        let sides = [DECL_PADDING_TOP, DECL_PADDING_RIGHT, DECL_PADDING_BOTTOM, DECL_PADDING_LEFT];
+        for (i, bit) in sides.into_iter().enumerate() {
+            if released & bit == 0 {
+                continue;
+            }
+            if let Some(author) = self.author_padding.get_mut(&node) {
+                author[i] = 0.0;
+            }
+            let extra = if i == 2 {
+                self.bottom_extra_of(node)
+            } else {
+                self.safe_area_extra.get(&node).map(|e| e[i]).unwrap_or(0.0)
+            };
+            let value = LengthPercentage::length(extra);
+            match i {
+                0 => style.padding.top = value,
+                1 => style.padding.right = value,
+                2 => style.padding.bottom = value,
+                _ => style.padding.left = value,
+            }
+        }
+        if d.mask != 0 {
+            self.declared.insert(node, d);
+        }
     }
 
     /// Re-derive the framework's default `max-width: 100%` cross-axis
@@ -1655,8 +2020,9 @@ impl LayoutTree {
             // available main-axis space from the parent" rather than
             // "be as big as your content". Without this the ScrollView
             // would size itself to its content (and so have zero
-            // scrollable area). `set_style` is a partial merge, so an
-            // author can still pin the size — but NOT with a bare
+            // scrollable area). A style overrides only what it declares
+            // (and an author style restores this seed when the declaration
+            // goes away), so an author can still pin the size — but NOT with a bare
             // `height`: in a flex column `flex_basis` shadows `height`
             // for the base size (CSS rule), so `height: 200` on a seeded
             // viewport still fills. `max_height` bounds it; `flex_basis`
@@ -1714,9 +2080,10 @@ impl LayoutTree {
     /// info, so building a `StyleRules` per frame would be wasteful.
     /// More importantly, the Collapsible's chrome (padding / opacity /
     /// border) animates via a *concurrent* variant swap that goes
-    /// through `set_style` and does NOT declare `max_height`. Because
-    /// `set_style` preserves Taffy fields its `StyleRules` doesn't
-    /// mention, the cap written here survives that restyle — this setter
+    /// through `set_author_style` and does NOT declare `max_height`.
+    /// Because a restyle leaves a Taffy field alone when neither it nor
+    /// the previous author style declared it, the cap written here
+    /// survives that restyle — this setter
     /// is the single writer of `max_size.height` for an animated node.
     /// Taffy's own `set_style` marks the node dirty, so the next
     /// `compute()` reflows it (and its siblings).
@@ -1783,6 +2150,13 @@ impl LayoutTree {
     /// Authors are presumed to want the root to fill its host area
     /// unless they explicitly override.
     pub fn compute(&mut self, root: LayoutNode, width: f32, height: f32) {
+        self.compute_inner(root, width, height);
+        // The pass rebuilt the hoisted list of every block it laid out as
+        // a container: free what those lists no longer name.
+        self.release_held();
+    }
+
+    fn compute_inner(&mut self, root: LayoutNode, width: f32, height: f32) {
         if self.contents.contains(&root.0) {
             // Nothing to lay out: an unattached contents node's children
             // are roots of their own (see `is_root`).
@@ -2149,12 +2523,46 @@ impl LayoutTree {
             };
         }
         let layout = self.tree.layout(node.0).copied().unwrap_or_default();
+        let (dx, dy) = self.containing_block_offset(node.0);
         Frame {
-            x: layout.location.x,
-            y: layout.location.y,
+            x: layout.location.x - dx,
+            y: layout.location.y - dy,
             width: layout.size.width,
             height: layout.size.height,
         }
+    }
+
+    /// Where `node`'s layout parent's border box sits inside the box
+    /// Taffy positioned `node` against, when those differ; `(0, 0)`
+    /// otherwise.
+    ///
+    /// Taffy lays an out-of-flow box out from its containing block — the
+    /// nearest positioned ancestor, or the layout root when there is none
+    /// — and its `location` is relative to THAT box. Native backends nest
+    /// each view inside its parent's view, so [`Self::frame_of`] must be
+    /// parent-relative: subtracting this offset re-bases the location.
+    /// Every ancestor strictly between the parent and the containing block
+    /// is `static`, hence in flow, so each one's `location` is relative to
+    /// its own parent and the offsets simply add up.
+    fn containing_block_offset(&self, node: NodeId) -> (f32, f32) {
+        let out_of_flow = self.tree.style(node).is_ok_and(|s| s.position.is_out_of_flow());
+        if !out_of_flow {
+            return (0.0, 0.0);
+        }
+        let (mut dx, mut dy) = (0.0, 0.0);
+        let mut cur = self.tree.parent(node);
+        while let Some(p) = cur {
+            let parent = self.tree.parent(p);
+            let positioned = self.tree.style(p).is_ok_and(|s| s.position.is_positioned());
+            if positioned || parent.is_none() {
+                break;
+            }
+            let loc = self.tree.layout(p).map(|l| l.location).unwrap_or_default();
+            dx += loc.x;
+            dy += loc.y;
+            cur = parent;
+        }
+        (dx, dy)
     }
 
     /// Whether `node`'s current Taffy style is `position: absolute` —

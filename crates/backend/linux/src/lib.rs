@@ -2758,10 +2758,10 @@ impl LinuxBackend {
         match self.portal_placements.get(&id) {
             Some(placement) => {
                 let layered = placement.clone().merge(style);
-                self.layout.set_style(layout, &layered);
+                self.layout.set_author_style(layout, &layered);
             }
             None => {
-                self.layout.set_style(layout, style);
+                self.layout.set_author_style(layout, style);
             }
         }
 

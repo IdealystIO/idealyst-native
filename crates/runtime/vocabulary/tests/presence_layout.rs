@@ -21,13 +21,15 @@
 //! ```
 //!
 //! never appeared. `PresenceOps::create_presence_placeholder` defaulted to
-//! `create_view`, a real flex item. Taffy resolves an absolute child's
-//! insets against its DIRECT layout parent (every Taffy node is a
-//! containing block), so the alert was positioned against the placeholder
-//! — full width, ZERO height (its only child is out of flow) at the top of
-//! the viewfinder — and `bottom: md` put it above the viewfinder's top
-//! edge, off screen. Web never showed it: a static `<div>` is not a CSS
-//! containing block, so the same insets resolved against the viewfinder.
+//! `create_view`, a real flex item — full width, ZERO height (its only
+//! child is out of flow) at the top of the viewfinder. With every layout
+//! node a containing block, the alert resolved `bottom: md` against that
+//! box and landed above the viewfinder's top edge, off screen; web
+//! resolved it against the viewfinder, since a static `<div>` is not a CSS
+//! containing block. `runtime-layout` treats an unpositioned node as
+//! `static` too (`tests/containing_block.rs` there), and the placeholder
+//! is a contents node, so neither the box nor the zero-height native
+//! parent sits between the alert and the viewfinder.
 
 use std::cell::RefCell;
 use std::rc::Rc;

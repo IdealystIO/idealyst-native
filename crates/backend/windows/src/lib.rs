@@ -3843,17 +3843,17 @@ impl WindowsBackend {
 
     fn apply_style(&mut self, node: &WindowsNode, style: &Rc<StyleRules>) {
         // Box layout via the shared StyleRules→Taffy translator. A
-        // portal's style is layered over its container rules: `set_style`
-        // resets every field the style leaves unset, which would drop the
+        // portal's style is layered over its container rules: an author
+        // style reverts the fields it leaves unset, which would drop the
         // placement.
         if let Some(layout) = self.layout_for_id.get(&node.id).copied() {
             match self.portals.get(node.id) {
                 Some(entry) => {
                     let merged = entry.base.clone().merge(style);
-                    self.layout.set_style(layout, &merged);
+                    self.layout.set_author_style(layout, &merged);
                 }
                 None => {
-                    self.layout.set_style(layout, style);
+                    self.layout.set_author_style(layout, style);
                 }
             }
         }
