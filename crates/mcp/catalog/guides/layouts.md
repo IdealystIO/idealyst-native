@@ -447,8 +447,8 @@ Toolbar(
 - **`ToolbarSearch`** is a magnifier that opens its field, with a dot while
   a term is set. `inline = true` is the field itself, for the `start` slot.
   It writes your `value` signal. Ctrl-F (⌘F on a Mac) goes to it while it is
-  mounted, in place of the browser's find; pass `find_shortcut = false` on
-  all but one where two are mounted at once. Pass `open = Some(signal)` to
+  mounted, its term selected, in place of the browser's find; pass
+  `find_shortcut = false` on all but one where two are mounted at once. Pass `open = Some(signal)` to
   open the glyph's field from your own code.
 - **`ToolbarButton`** shows its label and count from 640 ("Filter · 2") and
   its glyph with a dot on a phone. `compact = true` is the glyph at every

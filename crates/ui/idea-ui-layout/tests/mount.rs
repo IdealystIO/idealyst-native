@@ -800,6 +800,79 @@ mod toolbar {
         assert!(!quiet.log().contains("text_input"));
     }
 
+    /// Ctrl-F goes to a search that already holds a term to replace it:
+    /// the term is selected, whether the field is inline, closed under its
+    /// glyph, or already open. Opening it by the glyph leaves the term be.
+    #[test]
+    fn the_find_chord_selects_the_term_already_there() {
+        let find = || {
+            let mut down = runtime_core::AppKeyEvent::down("f", "KeyF");
+            down.ctrl = true;
+            runtime_shared::key_input::deliver(&down);
+            let mut up = down.clone();
+            up.phase = runtime_core::KeyPhase::Up;
+            runtime_shared::key_input::deliver(&up);
+        };
+        // The calls the field's handle took, in order.
+        let calls = || -> Vec<&'static str> {
+            host_mock::take_handle_log()
+                .iter()
+                .filter_map(|l| ["select_all", "focus"].into_iter().find(|call| l.starts_with(&format!("{call} "))))
+                .collect()
+        };
+
+        let inline = mount_at(DESKTOP, || ui! { ToolbarSearch(value = signal("ramp".to_string()), inline = true) });
+        calls();
+        find();
+        inline.h.flush();
+        assert_eq!(calls(), ["focus", "select_all"]);
+        drop(inline);
+
+        let handle = Rc::new(Cell::new(None));
+        let out = handle.clone();
+        let m = mount_at(DESKTOP, move || {
+            let open = signal(false);
+            out.set(Some(open));
+            ui! { ToolbarSearch(value = signal("ramp".to_string()), open = Some(open)) }
+        });
+        let open: Signal<bool> = handle.get().expect("built");
+        calls();
+        find();
+        m.h.flush();
+        assert_eq!(calls(), ["focus"], "nothing to select until focus lands");
+        (m.h.text_input_focus_handler(0))(true);
+        assert_eq!(calls(), ["select_all"]);
+        (m.h.text_input_focus_handler(0))(true);
+        assert!(calls().is_empty(), "focus coming back on its own keeps the caret");
+
+        find();
+        m.h.flush();
+        assert_eq!(calls(), ["focus", "select_all"], "the open field");
+
+        m.h.world.enter(|| open.set(false));
+        m.h.flush();
+        m.h.world.enter(|| open.set(true));
+        m.h.flush();
+        calls();
+        (m.h.text_input_focus_handler(1))(true);
+        assert!(calls().is_empty(), "opened without the chord");
+
+        // By the chord, closed before focus landed, then by the glyph.
+        let close = || {
+            m.h.world.enter(|| open.set(false));
+            m.h.flush();
+        };
+        close();
+        find();
+        m.h.flush();
+        close();
+        m.h.world.enter(|| open.set(true));
+        m.h.flush();
+        calls();
+        (m.h.text_input_focus_handler(3))(true);
+        assert!(calls().is_empty(), "the chord's opening is over");
+    }
+
     /// A compact control is its glyph at every width, the count a number
     /// on its corner and nothing at zero.
     #[test]

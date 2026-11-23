@@ -266,11 +266,9 @@ pub(crate) fn make_virtualizer_handle(
 // Text input / text area handles
 // =========================================================================
 //
-// A field is a child `EDIT` window created already attached to the host,
-// so the attach-safe focus contract is met by focusing at once. The ops act
-// on the HWND alone and never borrow the backend: `EM_REPLACESEL` sends
-// `EN_CHANGE` synchronously, and its `on_change` must find the backend
-// free.
+// `focus()` is attach-safe (`pending_focus`). The ops act on the HWND alone
+// and never borrow the backend: `EM_REPLACESEL` sends `EN_CHANGE`
+// synchronously, and its `on_change` must find the backend free.
 
 struct Win32FieldOps;
 static WIN32_FIELD_OPS: Win32FieldOps = Win32FieldOps;
@@ -284,17 +282,17 @@ fn field_hwnd(node: &dyn Any) -> Option<windows::Win32::Foundation::HWND> {
 
 fn field_focus(node: &dyn Any) {
     if let Some(h) = field_hwnd(node) {
-        unsafe {
-            let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(h));
-        }
+        crate::pending_focus::request_focus(h);
     }
 }
 
-/// Hand focus back to the host window, if this field holds it.
+/// Hand focus back to the host window, if this field holds it, and drop a
+/// focus still waiting for it to be inserted.
 fn field_blur(node: &dyn Any) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
     use windows::Win32::UI::WindowsAndMessaging::GetParent;
     if let Some(h) = field_hwnd(node) {
+        crate::pending_focus::cancel(h);
         unsafe {
             if GetFocus() == h {
                 if let Ok(parent) = GetParent(h) {

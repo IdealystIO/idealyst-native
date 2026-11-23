@@ -574,13 +574,25 @@ fn resign_first_responder(node: &dyn Any) {
     }
 }
 
-/// Select the field's whole contents (`-[NSText selectAll:]`).
+/// Select the field's whole contents. A `text_area`'s `NSTextView` takes
+/// `selectAll:` itself. An `NSTextField` does not respond to it (sending it
+/// aborts): its selection belongs to the field editor, which exists only
+/// while the field is editing. A field that isn't editing has no selection
+/// to set, and gets the whole text selected by AppKit when it is focused.
 fn select_all_text(node: &dyn Any) {
     let Some(n) = node.downcast_ref::<MacosNode>() else { return };
     let target = crate::imp::editable_text_target(n.as_view());
     let nil: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
     unsafe {
-        let _: () = msg_send![&*target, selectAll: nil];
+        let is_field: bool = msg_send![&*target, isKindOfClass: objc2::class!(NSTextField)];
+        if !is_field {
+            let _: () = msg_send![&*target, selectAll: nil];
+            return;
+        }
+        let editor: *mut objc2::runtime::AnyObject = msg_send![&*target, currentEditor];
+        if !editor.is_null() {
+            let _: () = msg_send![editor, selectAll: nil];
+        }
     }
 }
 

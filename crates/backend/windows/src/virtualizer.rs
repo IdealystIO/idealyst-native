@@ -217,10 +217,12 @@ pub(crate) fn resync(weak: &Weak<RefCell<WindowsBackend>>, id: u64) {
 fn insert_row(b: &mut WindowsBackend, id: u64, idx: usize, row: Row) {
     let Some(st) = b.virtualizers.get_mut(&id) else { return };
     let next = st.mounted.range(idx + 1..).next().map(|(_, r)| r.id);
+    let row_id = row.id;
     st.mounted.insert(idx, row);
     let kids = b.children.entry(id).or_default();
     let at = next.and_then(|n| kids.iter().position(|k| *k == n)).unwrap_or(kids.len());
-    kids.insert(at, row.id);
+    kids.insert(at, row_id);
+    b.note_inserted(row_id);
 }
 
 /// Free a list's rows when it is released. The vocabulary drains the row

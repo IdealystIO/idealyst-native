@@ -374,10 +374,11 @@ the left, it is the field.**
   dot on the glyph says a term is in use while the field is closed.
   Enter and Escape close the field and keep the term.
 - Ctrl-F (⌘F on a Mac) goes to the search while it is mounted: the
-  glyph's field opens, the inline field takes focus. It replaces the
-  browser's find, which cannot see the rows a paged or virtualized list
-  has not drawn. Where two searches are mounted at once, all but one
-  pass `find_shortcut = false`.
+  glyph's field opens, the inline field takes focus, and the term in it
+  is selected, so typing replaces it. It replaces the browser's find,
+  which cannot see the rows a paged or virtualized list has not drawn.
+  Where two searches are mounted at once, all but one pass
+  `find_shortcut = false`.
 - An app opens the glyph's field itself by passing it an `open` signal.
 - A screen with no tabs puts the field itself at the left
   (`inline = true`). On a phone it takes the row.
@@ -582,8 +583,6 @@ wraps.**
   it a seat (`Table` page) and its states (`ListStates`).
 - **What a filter panel holds**: the app's rows, in the
   `AdaptivePopover` or `DrillSheet` a `ToolbarButton` opens.
-- **A keyboard shortcut for search**: the app binds its own and writes
-  the search signal.
 
 ## What a layout must hold to
 

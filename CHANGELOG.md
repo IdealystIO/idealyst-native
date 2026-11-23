@@ -3875,6 +3875,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **Ctrl-F selects the term already in a `ToolbarSearch`** (`idea-ui-layout`). The find chord went
+  to the field and left the caret in the old term, so typing added to it. The term is selected,
+  inline, under the glyph or already open; a press on the glyph leaves it be.
+
+- **`select_all()` on a text input no longer aborts the app on macOS** (`backend-macos`). It sent
+  `selectAll:` to the `NSTextField`, which does not respond to it. It goes to the field editor; on
+  a field that is not being edited it does nothing.
+
+- **An `autofocus` field's `on_focus` runs after its `Ref` is filled on Windows**
+  (`backend-windows`). The field took focus inside its own mount, so a handler reaching for the
+  handle found none. Focus asked of a field that is still mounting lands once it is inserted, as
+  on every other backend.
+
 - **A `virtual_grid` scrolled as it opens lands where it was asked on iOS, macOS and Android**
   (`runtime-shared` minor, `backend-ios-mobile`, `backend-macos`, `backend-android-mobile`). A
   scroll issued in the flush that gave the grid its data (a schedule seeking to today) was clamped

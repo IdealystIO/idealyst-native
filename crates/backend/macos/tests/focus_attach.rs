@@ -219,6 +219,47 @@ mod imp {
         }
     }
 
+    /// REGRESSION (`ToolbarSearch`, ⌘F): `select_all()` sent `selectAll:` to
+    /// the `NSTextField`, which does not respond to it, and the app aborted.
+    /// It selects the whole text of a focused field, and on a field that
+    /// isn't editing it neither aborts nor takes focus.
+    fn regression_select_all_on_a_text_field(mtm: MainThreadMarker, backend: &mut MacosBackend) {
+        for (what, node) in [
+            ("text_input", text_input(backend, false)),
+            ("secure text_input", text_input(backend, true)),
+            ("text_area", text_area(backend)),
+        ] {
+            let view = view_of(&node);
+            let (window, content) = window(mtm);
+            unsafe { content.addSubview(&view) };
+            let call = |backend: &mut MacosBackend, focus: bool| match what {
+                "text_area" => {
+                    let h = backend.make_text_area_handle(&node);
+                    if focus { h.focus() } else { h.select_all() }
+                }
+                _ => {
+                    let h = backend.make_text_input_handle(&node);
+                    if focus { h.focus() } else { h.select_all() }
+                }
+            };
+            call(backend, false);
+            assert!(!focused_in(&window, &view), "{what}: select_all() alone does not focus");
+            call(backend, true);
+            let editor = editor_of(&window, &view);
+            assert!(!editor.is_null(), "{what}: precondition — an editor");
+            let text = NSString::from_str("ramp");
+            unsafe {
+                let _: () = msg_send![editor, setString: &*text];
+                let _: () = msg_send![editor, setSelectedRange: NSRange { location: 2, length: 0 }];
+            }
+            call(backend, false);
+            let range: NSRange = unsafe { msg_send![editor, selectedRange] };
+            assert_eq!((range.location, range.length), (0, 4), "{what}: the whole text is selected");
+            unsafe { view.removeFromSuperview() };
+            window.close();
+        }
+    }
+
     fn accepts_first_responder(view: &NSView) -> bool {
         unsafe { msg_send![view, acceptsFirstResponder] }
     }
@@ -399,11 +440,12 @@ mod imp {
         // The main-queue microtask the pending focus is applied on.
         backend_macos::install_scheduler();
         let mut backend = MacosBackend::new(mtm);
-        let tests: [(&str, fn(MainThreadMarker, &mut MacosBackend)); 9] = [
+        let tests: [(&str, fn(MainThreadMarker, &mut MacosBackend)); 10] = [
             ("regression_focus_before_window_lands_once_attached", focus_before_window_lands_once_attached),
             ("blur_before_window_cancels", blur_before_window_cancels),
             ("focus_when_attached_is_immediate", focus_when_attached_is_immediate),
             ("regression_focus_on_a_focused_field_keeps_the_caret", regression_focus_on_a_focused_field_keeps_the_caret),
+            ("regression_select_all_on_a_text_field", regression_select_all_on_a_text_field),
             ("regression_disabled_text_controls_refuse_focus", regression_disabled_text_controls_refuse_focus),
             ("regression_disabled_pressable_leaves_key_view_loop", regression_disabled_pressable_leaves_key_view_loop),
             ("disabled_toggle_and_slider_are_not_enabled", disabled_toggle_and_slider_are_not_enabled),

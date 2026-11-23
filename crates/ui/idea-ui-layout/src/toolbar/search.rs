@@ -1,13 +1,14 @@
 //! [`ToolbarSearch`] — a list's search: a glyph that opens its field,
 //! or the field itself where it has the row's left end.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use icons_lucide::{SEARCH, X};
 use idea_ui::{tone, variant, Adornment, ElementAlign, ElementSide, Field, IconButton, Popover, PopoverSlotStyles};
 use runtime_core::primitives::text_input::TextInputHandle;
 use runtime_core::{
-    component, on_key, rx, signal, stylesheet, ui, AnchorTarget, AppKeyEvent, Color, Element, FlexDirection,
+    component, effect, on_key, rx, signal, stylesheet, ui, AnchorTarget, AppKeyEvent, Color, Element, FlexDirection,
     IdealystSchema, KeyEvent, KeyOutcome, Length, Position, PressableHandle, Ref, Signal, StyleRules, Tokenized,
 };
 
@@ -44,8 +45,8 @@ pub struct ToolbarSearchProps {
     #[prop(static)]
     pub open: Option<Signal<bool>>,
     /// Ctrl-F (⌘F on a Mac) goes to the search while the control is
-    /// mounted, in place of the browser's find. Turn it off for all but
-    /// one where two searches are mounted at once.
+    /// mounted, its term selected, in place of the browser's find. Turn
+    /// it off for all but one where two searches are mounted at once.
     #[prop(static)]
     pub find_shortcut: bool,
     /// The field's robot/E2E id.
@@ -78,8 +79,9 @@ impl Default for ToolbarSearchProps {
 ///
 /// Either way the field has a ✕ that clears the term while there is
 /// one, and Ctrl-F (⌘F on a Mac) goes to it: the glyph's field opens,
-/// the inline field takes focus. The browser's own find cannot see the
-/// rows a paged or virtualized list has not drawn.
+/// the inline field takes focus, and the term in it is selected, so
+/// typing replaces it. The browser's own find cannot see the rows a
+/// paged or virtualized list has not drawn.
 ///
 /// ```ignore
 /// Toolbar(end = Some(ui! { ToolbarSearch(value = search, placeholder = "Search workers".to_string()) }))
@@ -110,9 +112,7 @@ pub fn ToolbarSearch(props: &ToolbarSearchProps) -> Element {
                 if !is_find(ev) {
                     return KeyOutcome::Default;
                 }
-                if let Some(input) = field.get() {
-                    input.focus();
-                }
+                focus_and_select(field);
                 KeyOutcome::PreventDefault
             });
         }
@@ -132,15 +132,43 @@ pub fn ToolbarSearch(props: &ToolbarSearchProps) -> Element {
         };
     }
     let open = props.open.unwrap_or_else(|| signal(false));
+    let field: Ref<TextInputHandle> = Ref::new();
+    // The chord opened the field, which selects its term when focus lands
+    // in it: until then it is not in the document and has no text to
+    // select.
+    let select_on_focus = Rc::new(Cell::new(false));
     if find_shortcut {
+        let select_on_focus = select_on_focus.clone();
         on_key(move |ev| {
             if !is_find(ev) {
                 return KeyOutcome::Default;
             }
-            open.set(true);
+            if open.peek() {
+                focus_and_select(field);
+            } else {
+                select_on_focus.set(true);
+                open.set(true);
+            }
             KeyOutcome::PreventDefault
         });
     }
+    // A field closed before focus reached it leaves nothing to the next
+    // opening, which may be by the glyph.
+    {
+        let select_on_focus = select_on_focus.clone();
+        effect!({
+            if !open.get() {
+                select_on_focus.set(false);
+            }
+        });
+    }
+    let on_focus: Rc<dyn Fn(bool)> = Rc::new(move |focused| {
+        if focused && select_on_focus.take() {
+            if let Some(input) = field.get() {
+                input.select_all();
+            }
+        }
+    });
     let anchor: Ref<PressableHandle> = Ref::new();
     let toggle: Rc<dyn Fn()> = Rc::new(move || open.set(!open.peek()));
     let close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
@@ -179,6 +207,7 @@ pub fn ToolbarSearch(props: &ToolbarSearchProps) -> Element {
                 ) {
                     view(style = SearchPopoverBody()) {
                         Field(
+                            field_ref = Some(field),
                             value = value,
                             on_change = write.clone(),
                             placeholder = Some(placeholder.clone()),
@@ -186,6 +215,7 @@ pub fn ToolbarSearch(props: &ToolbarSearchProps) -> Element {
                             trailing = Adornment::Button { icon: X, label: Some(crate::layout_labels().clear_search.clone()), on_press: clear.clone() },
                             trailing_when = Some(has_term.clone()),
                             autofocus = true,
+                            on_focus_change = Some(on_focus.clone()),
                             on_key_down = Some(on_key.clone()),
                             test_id = Some(test_id),
                         )
@@ -200,6 +230,14 @@ pub fn ToolbarSearch(props: &ToolbarSearchProps) -> Element {
 /// released). With Alt it is some other chord.
 fn is_find(ev: &AppKeyEvent) -> bool {
     ev.is_press() && (ev.ctrl || ev.meta) && !ev.alt && ev.key.eq_ignore_ascii_case("f")
+}
+
+/// Focus a field that is on screen and select its text.
+fn focus_and_select(field: Ref<TextInputHandle>) {
+    if let Some(input) = field.get() {
+        input.focus();
+        input.select_all();
+    }
 }
 
 /// The popover's surface with its padding, border and fill taken away,

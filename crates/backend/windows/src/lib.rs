@@ -134,6 +134,7 @@ mod gradient_raster;
 mod graphics;
 mod layers;
 mod overlay;
+mod pending_focus;
 mod layout_subs;
 mod handles;
 mod icon;
@@ -1861,6 +1862,7 @@ impl WindowsBackend {
                 self.slider_handlers.remove(&(hwnd.0 as isize));
                 self.field_keys.remove(&(hwnd.0 as isize));
                 self.hwnd_regions.remove(&(hwnd.0 as isize));
+                pending_focus::field_destroyed(hwnd);
                 if !hwnd.is_invalid() {
                     unsafe {
                         let _ = DestroyWindow(hwnd);
@@ -2634,6 +2636,7 @@ impl Drop for WindowsBackend {
         // ours to destroy).
         for (_, meta) in self.nodes.drain() {
             if let Some(hwnd) = meta.hwnd() {
+                pending_focus::field_destroyed(hwnd);
                 if !hwnd.is_invalid() {
                     let _ = unsafe { DestroyWindow(hwnd) };
                 }
@@ -2926,6 +2929,7 @@ impl WindowsBackend {
         }
         self.layout.add_child(parent_layout, child_layout);
         self.children.entry(parent.id).or_default().push(child.id);
+        self.note_inserted(child.id);
         // A subtree coming back after `clear_children` detached it (a
         // stack screen on pop): its native controls show again.
         if self.detached.remove(&child.id) {
@@ -3024,8 +3028,17 @@ impl WindowsBackend {
         self.set_intrinsic(node, tw + 24, th + 8);
     }
 
+    /// `id` has a place in the tree now: a field focused while it was
+    /// mounting can take that focus (`pending_focus`).
+    pub(crate) fn note_inserted(&self, id: u64) {
+        if let Some(hwnd) = self.nodes.get(&id).and_then(|m| m.hwnd()) {
+            pending_focus::field_inserted(hwnd);
+        }
+    }
+
     fn finish(&mut self, root: WindowsNode) {
         self.root_id = Some(root.id);
+        self.note_inserted(root.id);
         self.layout_pass();
         self.invalidate();
     }
@@ -3116,6 +3129,7 @@ impl WindowsBackend {
             style |= ES_PASSWORD;
         }
         let hwnd = self.create_control_hwnd(class_edit(), initial_value, style, Some(control_id));
+        pending_focus::field_created(hwnd);
         let node = self.add_node(NodeKind::Control { hwnd });
         self.edits.insert(control_id, EditEntry { node: node.id, hwnd, on_change, on_focus: None, on_blur });
         if let Some(f) = on_key_down {
@@ -3152,6 +3166,7 @@ impl WindowsBackend {
         }
         // The edit wants CRLF; the framework's text uses LF.
         let hwnd = self.create_control_hwnd(class_edit(), &to_crlf(initial_value), style, Some(control_id));
+        pending_focus::field_created(hwnd);
         let node = self.add_node(NodeKind::Control { hwnd });
         let id = node.id;
         let weak = self.self_ref.clone();
@@ -4049,6 +4064,7 @@ impl WindowsBackend {
         // The next layout pass cuts the new window's region.
         self.hwnd_regions.remove(&(old.0 as isize));
         self.layout_dirty = true;
+        pending_focus::field_destroyed(old);
         unsafe {
             let _ = DestroyWindow(old);
         }
@@ -5251,6 +5267,68 @@ mod capability_tests {
         blur_to(other.hwnd);
         assert_eq!(calls.get(), 3);
         assert_eq!(unsafe { GetFocus() }, other.hwnd, "Keep never blocks a move to another field");
+        unsafe {
+            let _ = DestroyWindow(host);
+        }
+    }
+
+    /// REGRESSION (`ToolbarSearch`, Ctrl-F with the field closed): an
+    /// `autofocus` field took focus inside its own mount, so `on_focus(true)`
+    /// ran before the field's `Ref` was filled and a handler reaching for the
+    /// handle found none. Focus asked of a field nothing has inserted yet
+    /// lands once it is inserted, as on every other backend; with no
+    /// scheduler installed the deferring microtask runs inline.
+    #[test]
+    fn regression_focus_while_mounting_lands_after_the_insert() {
+        use runtime_vocabulary::caps::ViewOps;
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        use windows::Win32::UI::WindowsAndMessaging::{WS_OVERLAPPEDWINDOW, WS_VISIBLE};
+        let title = to_pcwstr("pending-focus-test");
+        let host = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(windows::core::w!("STATIC").as_ptr()),
+                title.as_pcwstr(),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                0,
+                0,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("host window");
+        let mut b = WindowsBackend::new(host);
+        let a11y = AccessibilityProps::default();
+        let mut root = ViewOps::create_view(&mut b, &a11y);
+        let focused = || unsafe { GetFocus() };
+
+        let (field, _) = input(&mut b, &Rc::default());
+        let handle = TextInputOps::make_text_input_handle(&b, &field);
+        handle.focus();
+        assert_ne!(focused(), field.hwnd, "still mounting");
+        b.insert(&mut root, field.clone());
+        assert_eq!(focused(), field.hwnd, "inserted");
+
+        let area = TextInputOps::create_text_area(&mut b, "", None, true, None, None, Rc::new(|_| {}), None, &a11y);
+        let area_handle = TextInputOps::make_text_area_handle(&b, &area);
+        area_handle.focus();
+        assert_eq!(focused(), field.hwnd, "still mounting");
+        b.insert(&mut root, area.clone());
+        assert_eq!(focused(), area.hwnd, "inserted");
+
+        handle.focus();
+        assert_eq!(focused(), field.hwnd, "an inserted field focuses at once");
+
+        let (blurred, _) = input(&mut b, &Rc::default());
+        let blurred_handle = TextInputOps::make_text_input_handle(&b, &blurred);
+        blurred_handle.focus();
+        blurred_handle.blur();
+        b.insert(&mut root, blurred.clone());
+        assert_eq!(focused(), field.hwnd, "a blur before the insert cancels");
         unsafe {
             let _ = DestroyWindow(host);
         }
