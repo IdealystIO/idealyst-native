@@ -20,6 +20,7 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 runtime-vocabulary = { workspace = true }
 runtime-scene = { workspace = true }
 device-admin = { workspace = true }
+keep-awake = { workspace = true }
 
 [package.metadata.idealyst.app]
 name      = "Kiosk"

@@ -785,7 +785,7 @@ pub enum SdkCategory {
     /// Device / platform-integration capabilities that don't fit the
     /// above: `biometrics`, `permissions`, `notifications`, `clipboard`,
     /// `location`, `share`, `deep-link`, `connectivity`, `haptics`,
-    /// `nfc`, `datetime`, plus
+    /// `keep-awake`, `nfc`, `datetime`, plus
     /// the gesture handles `pan` / `zoom`.
     Device,
     /// Server-tier crates that run ONLY in the server binary (never the

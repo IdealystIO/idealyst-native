@@ -7126,6 +7126,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "keep-awake"
+version = "0.1.0"
+dependencies = [
+ "host-mock",
+ "jni 0.21.1",
+ "ndk-context",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "runtime-core",
+ "runtime-shared",
+ "runtime-tls",
+ "runtime-vocabulary",
+ "wasm-bindgen-test",
+ "web-glue",
+ "windows 0.62.2",
+ "zbus",
+]
+
+[[package]]
+name = "keep-awake-demo"
+version = "0.1.0"
+dependencies = [
+ "dev-server",
+ "idea-ui",
+ "idealyst",
+ "keep-awake",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
 name = "keyboard-avoid"
 version = "1.5.2"
 dependencies = [
@@ -7184,6 +7216,7 @@ version = "0.1.0"
 dependencies = [
  "device-admin",
  "idealyst",
+ "keep-awake",
  "runtime-core",
  "runtime-scene",
  "runtime-vocabulary",

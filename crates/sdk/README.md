@@ -89,6 +89,7 @@ an OS grant flow.
 | `connectivity` | [`connectivity/`](./client/connectivity) | Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport. |
 | `random` | [`random/`](./client/random) | OS entropy for secrets (`secure_bytes`) plus a seedable xoshiro256++ `Rng` and `range` / `shuffle` / `choose` that produce the same sequence on every platform. |
 | `nfc` | [`nfc/`](./client/nfc) | Read and write NFC tags — a reader session yields `Tag`s to read/write NDEF on or send raw commands to. Core NFC (iOS), reader mode (Android), Web NFC (Chrome Android), PC/SC USB readers (macOS / Windows / Linux behind `linux-pcsc`). |
+| `keep-awake` | [`keep-awake/`](./client/keep-awake) | Keep the display on while the app needs it — `keep_screen_on` guard / `use_keep_screen_on` for a component's scope. Counted; only while the app is on screen. |
 | `haptics` | [`haptics/`](./client/haptics) | Tactile feedback — `impact` / `notify` / `selection`. Best-effort, fire-and-forget. |
 | `datetime` | [`datetime/`](./client/datetime) | The current date and time — `now_utc()`, `local_offset_at(t)` (DST-correct), `local_timezone()`; `chrono` feature replaces `Utc::now()` / `Local::now()` without chrono's `wasmbind`. |
 | `audio` | [`audio/`](./client/audio) | Sound playback — `load(AudioSource)` → a `Sound` you `play()`. The playback peer of the capture SDKs. |

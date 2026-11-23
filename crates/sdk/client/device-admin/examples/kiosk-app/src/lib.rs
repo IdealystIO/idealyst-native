@@ -22,6 +22,8 @@ fn version_label() -> String {
 
 pub fn app() -> Element {
     let status: Signal<String> = signal("Locking…".to_string());
+    // A kiosk is read without being touched; the power button still works.
+    keep_awake::use_keep_screen_on(true);
     spawn_detached(async move {
         status.set(match device_admin::start_lock_task().await {
             Ok(true) => "Locked in by the device owner".to_string(),

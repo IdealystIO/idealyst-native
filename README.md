@@ -276,6 +276,7 @@ most apps need, with more specialized SDKs maintained separately.
 - `nfc`: read and write NFC tags (phones, Web NFC, USB readers on desktop)
 - `camera`, `microphone`, `screen-recorder`: live capture
 - `clipboard`, `share`, `haptics`, `deep-link`, `connectivity`
+- `keep-awake`: keep the display on while a screen needs it
 - `datetime`: current time and local time zone on every target
 - `random`: secure randomness and a seeded generator that matches across platforms
 - `auto-update`: self-update for directly distributed desktop apps

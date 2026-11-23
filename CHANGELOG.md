@@ -1442,6 +1442,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`keep-awake`: keep the display on while the app needs it** (`keep-awake` new, `mcp-catalog`
+  patch). An app had no way to stop the screen dimming and sleeping. `keep_screen_on()` is a
+  counted guard; `use_keep_screen_on(on)` holds while `on` is true and the calling component is
+  mounted. A hold applies only while the app is on screen, outlives an Android Activity
+  recreation, and needs no permission. Android, iOS, macOS, Windows, Linux and web;
+  `is_supported()` is `false` elsewhere.
+
 - **The words components and SDKs draw themselves can be translated** (`idea-ui` minor,
   `idea-ui-layout` minor, `camera` minor, `microphone` minor, `file-picker` minor). A `Dialog`'s ✕
   was always "Close" and a `ToolbarSearch` always said "Search", with no way to change either from

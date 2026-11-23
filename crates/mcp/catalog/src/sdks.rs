@@ -542,6 +542,12 @@ sdk!(
     "Network reachability — `current()` snapshot + `watch()` of online/offline and coarse transport (wifi/cellular/ethernet). NWPathMonitor / ConnectivityManager / `navigator.onLine`. Robot tests: `connectivity::register_robot_controls()` adds `connectivity.set {online, transport?}` / `connectivity.clear` (see the `testing` guide)."
 );
 sdk!(
+    "keep-awake",
+    SdkCategory::Device,
+    SdkKind::Api,
+    "Keep the display on at its normal brightness (no dimming, no sleep) while the app needs it — `keep_screen_on()` returns a counted guard that releases on drop; `use_keep_screen_on(on)` (a bool, signal or `rx!`) holds while `on` is true and the calling component is mounted. Only while the app is on screen; the power button still works. No permission. Survives Android Activity recreation and works under lock task. FLAG_KEEP_SCREEN_ON / isIdleTimerDisabled / Screen Wake Lock / IOKit assertion / power request / Inhibit portal. `is_supported()`. Display only: not the CPU or network, not the brightness. `install_keep_awake_labels` translates the reason a desktop may show."
+);
+sdk!(
     "haptics",
     SdkCategory::Device,
     SdkKind::Api,

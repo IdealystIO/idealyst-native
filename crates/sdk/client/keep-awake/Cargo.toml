@@ -1,0 +1,73 @@
+[package]
+name = "keep-awake"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# Keep the display on, at its normal brightness, while the app holds it.
+#
+#   - Android: FLAG_KEEP_SCREEN_ON on the app's Activity windows, through a
+#              small Kotlin helper (an Activity can be recreated under a
+#              hold, so the flag follows ActivityLifecycleCallbacks).
+#   - iOS:     UIApplication.isIdleTimerDisabled.
+#   - macOS:   an IOKit PreventUserIdleDisplaySleep assertion.
+#   - Windows: a PowerRequestDisplayRequired power request.
+#   - Linux:   the Inhibit portal, else org.freedesktop.ScreenSaver.
+#   - web:     the Screen Wake Lock API.
+#   - others:  nothing; `is_supported()` is false.
+#
+# Display only: the CPU, the network and the brightness are out of scope.
+
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/keepawake/RustKeepAwake.kt"]
+
+[features]
+# Compile-checked usage recipes for the catalog / MCP / docs surface. Off in
+# production builds, so recipes cost nothing there.
+catalog = ["runtime-core/catalog"]
+
+[dependencies]
+# `thread_local!` that costs Android one pthread key per process
+# instead of one per static (bionic allows 128).
+runtime-tls = { workspace = true }
+# App visibility (`app_state`) and the platform identity.
+runtime-shared = { workspace = true }
+# The reactive, scope-owned form. `runtime-vocabulary` is direct because
+# `effect!` and the recipes' `ui!` spell absolute `::runtime_vocabulary::…`
+# paths.
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The scope-owned form, mounted and torn down through a real registry.
+host-mock = { path = "../../../dev/host-mock" }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.2", features = ["NSString"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Power",
+    "Win32_System_Threading",
+] }
+
+# Pure-Rust D-Bus, as `connectivity` and `credentials`.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "4.4", default-features = false, features = ["async-io"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-glue = { workspace = true }
+
+# Browser tests (`tests/web_wake_lock.rs`) — run with
+# `cargo test -p keep-awake --target wasm32-unknown-unknown` (the workspace
+# runner supplies web-glue's JS; `wasm-pack test` cannot load it).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
