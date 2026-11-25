@@ -108,6 +108,14 @@ pub struct Args {
     #[arg(long, alias = "aas")]
     pub runtime_server: bool,
 
+    /// macOS, Linux, Windows, terminal: build the app with the Robot, so
+    /// the MCP's Robot tools (and anything else that speaks to the bridge)
+    /// can drive it. It registers in `~/.idealyst/apps` as it starts, like
+    /// an `idealyst dev` app. For an app whose server already runs
+    /// elsewhere: `idealyst dev` would start the project's own.
+    #[arg(long)]
+    pub robot: bool,
+
     /// Roku only: device IP address (shown on the dev-mode-enable
     /// screen).
     #[arg(long)]
@@ -168,6 +176,31 @@ fn simulator_target(simulator: Option<&str>, udid: Option<&str>) -> anyhow::Resu
     }
 }
 
+/// The wrapper features a one-shot run builds with. `--robot` is the
+/// wrapper's own `dev` feature (see `cmd::dev::dev_user_features_native`),
+/// on the platforms whose app runs on this machine and is reached on
+/// loopback, rendering its own tree.
+fn run_features(args: &Args) -> anyhow::Result<Vec<String>> {
+    if !args.robot {
+        return Ok(Vec::new());
+    }
+    if args.runtime_server {
+        anyhow::bail!(
+            "`--robot` drives an app that renders its own tree; drop `--runtime-server` \
+             (the dev-host it connects to has its own Robot)"
+        );
+    }
+    match args.platform {
+        Platform::Macos | Platform::Linux | Platform::Windows | Platform::Terminal => {
+            Ok(vec!["dev".to_string()])
+        }
+        other => anyhow::bail!(
+            "`--robot` is for macos, linux, windows and terminal; for {other} use `idealyst dev`, \
+             which also sets up the route to the device or page"
+        ),
+    }
+}
+
 fn loopback_endpoint(args: &Args) -> anyhow::Result<String> {
     let port = args.runtime_server_port.ok_or_else(|| {
         anyhow::anyhow!(
@@ -187,6 +220,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
     args.dir = crate::framework_source::abs_project_dir(&args.dir)?;
     // One core: `--new-core` is a no-op, `--old-core` is a hard error.
     crate::core_mode::validate_flags(args.new_core, args.old_core)?;
+    let features = run_features(&args)?;
     match args.platform {
         Platform::Ios if args.device => {
             // Physical-device path: build a signed .app via xcodebuild and
@@ -447,7 +481,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     // session — block on the app so Ctrl-C in the
                     // terminal still tears it down cleanly.
                     background: false,
-                    user_features: Vec::new(),
+                    user_features: features,
                     env_vars,
                 },
             )?;
@@ -476,7 +510,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     release: args.release,
                     mode,
                     source,
-                    user_features: Vec::new(),
+                    user_features: features,
                     env_vars,
                 },
             )?;
@@ -502,7 +536,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     // One-shot `idealyst run linux` is a foreground
                     // session — block on the window so Ctrl-C tears it down.
                     background: false,
-                    user_features: Vec::new(),
+                    user_features: features,
                     env_vars: Vec::new(),
                 },
             )?;
@@ -528,7 +562,7 @@ pub fn run(mut args: Args) -> anyhow::Result<()> {
                     // session — block on the window so Ctrl-C / close
                     // tears it down.
                     background: false,
-                    user_features: Vec::new(),
+                    user_features: features,
                     env_vars: Vec::new(),
                 },
             )?;
@@ -725,6 +759,25 @@ mod tests {
         match TestCli::parse_from(argv).cmd {
             TestCmd::Run(a) => a,
         }
+    }
+
+    /// `--robot` builds the wrapper's `dev` feature, and is refused where it
+    /// could not be driven rather than ignored.
+    #[test]
+    fn robot_builds_the_dev_feature_where_it_can_be_driven() {
+        for p in ["macos", "linux", "windows", "terminal"] {
+            let args = parse(&["idealyst", "run", p, "--robot"]);
+            assert_eq!(run_features(&args).unwrap(), vec!["dev"], "{p}");
+            assert!(run_features(&parse(&["idealyst", "run", p])).unwrap().is_empty(), "{p}");
+        }
+        for p in ["ios", "android", "sim", "roku", "server"] {
+            let err = run_features(&parse(&["idealyst", "run", p, "--robot"])).unwrap_err();
+            assert!(err.to_string().contains("idealyst dev"), "{p}: {err}");
+        }
+        let args = parse(&[
+            "idealyst", "run", "macos", "--robot", "--runtime-server", "--runtime-server-port", "1",
+        ]);
+        assert!(run_features(&args).is_err(), "the dev-host has the Robot there");
     }
 
     #[test]

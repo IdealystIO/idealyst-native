@@ -5,6 +5,10 @@ MCP server or the Inspector finds elements in a running app, acts on them and
 reads them back — with the same verbs on every backend. It is compiled into
 dev builds only (`robot` features); release builds carry none of it.
 
+An app gets it from `idealyst dev`, or from `idealyst run <platform> --robot`
+(macOS, Linux, Windows, terminal) when only the app is wanted: no watcher, and
+not the project's own server. Either way it registers in `~/.idealyst/apps`.
+
 The goal is Playwright-style tests that run unchanged on web, iOS, Android,
 macOS, Linux and Windows: one suite, every platform, and any difference in
 the results is a real difference between the backends. A behavior a test
