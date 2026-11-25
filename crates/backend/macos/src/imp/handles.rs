@@ -517,12 +517,13 @@ pub(crate) fn absolute_rect_of_node(node: &dyn Any) -> Option<ViewportRect> {
         msg_send![view, convertRect: bounds, toView: to_view]
     };
     // `convertRect:` is frame-based and ignores the CALayer transform — so a
-    // view positioned by an animated `TranslateX/Y` reports its untransformed
-    // frame, not where it visually sits. Add the translate so the rect is the
-    // VISUAL window rect, matching the touch `window_position` the SDK
-    // hit-tests it against (without this, drag-and-drop drops land offset by
-    // the transform — more the further the target sits from the origin).
-    let (tx, ty) = super::animated::view_layer_translate(view);
+    // view positioned by a translate (its own or an ancestor's, px or percent,
+    // static or animated) reports its untransformed frame, not where it
+    // visually sits. Add the translates so the rect is the VISUAL window rect,
+    // matching the touch `window_position` the SDK hit-tests it against
+    // (without this, drag-and-drop drops land offset by the transform — more
+    // the further the target sits from the origin).
+    let (tx, ty) = super::animated::visual_translate_in_window(view);
     Some(ViewportRect {
         x: frame_in_window.origin.x as f32 + tx as f32,
         y: frame_in_window.origin.y as f32 + ty as f32,

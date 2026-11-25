@@ -108,10 +108,12 @@
 //! 2. **Post-dispatch hook (`backend_apple_core::dispatch_hook`).**
 //!    Author code also runs from non-event surfaces: `after_ms` timers,
 //!    `after_animation_frame` one-shots, `raf_loop` iterations (the
-//!    animation clock's common-modes NSTimer on macOS), and
-//!    async-executor future polls. The apple-core scheduler and executor
-//!    fire a thread-local hook after each such callback; [`start`]
-//!    installs [`schedule_flush`] into that slot.
+//!    animation clock: on macOS a common-modes `CADisplayLink` from the
+//!    host root view, with an NSTimer backstop), and async-executor future
+//!    polls. The apple-core scheduler and executor fire a thread-local hook
+//!    after such callbacks (the macOS frame clock once per frame, after all
+//!    of that frame's subscribers); [`start`] installs [`schedule_flush`]
+//!    into that slot.
 //!
 //! **Why no NSEvent monitor / frame-tick timer — the tracking-loop
 //! question.** AppKit control **tracking loops** (NSButton/NSSlider

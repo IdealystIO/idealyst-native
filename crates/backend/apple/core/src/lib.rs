@@ -3,8 +3,10 @@
 //! Holds the pieces that don't care about the UI toolkit:
 //!
 //! - [`log`] — NSLog shim. Pure Foundation.
-//! - [`scheduler`] — NSTimer + main-DispatchQueue scheduler. No
-//!   UIKit or AppKit dependency.
+//! - [`scheduler`] — NSTimer + main-DispatchQueue scheduler, with a
+//!   display-synced animation clock (`CADisplayLink`). No UIKit or AppKit
+//!   link dependency: the macOS display link is vended by a view the
+//!   backend hands over at runtime.
 //! - [`font`] — CoreText/CoreGraphics font registration + face
 //!   matching. Returns PostScript names; UIFont/NSFont construction
 //!   stays in the leaf crates.
@@ -34,6 +36,19 @@ pub mod crash;
 
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "macos"))]
 pub mod scheduler;
+
+/// The fan-out frame clock behind the macOS `raf_loop` /
+/// `after_animation_frame`: one display-synced source shared by every
+/// subscriber, started on demand and stopped when idle. NOT OS-gated (pure
+/// logic, unit-tested with a fake source).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) mod frame_clock;
+
+/// The macOS source for [`frame_clock`]: a view-vended `CADisplayLink`
+/// (macOS 14+) with an NSTimer backstop / fallback. See the module docs for
+/// why it is built this way.
+#[cfg(target_os = "macos")]
+pub(crate) mod mac_frame_clock;
 
 /// Debug-only frame-pacing trace for diagnosing animation stutter. iOS/tvOS
 /// use `CADisplayLink.displayLinkWithTarget:selector:` (UIKit); macOS uses

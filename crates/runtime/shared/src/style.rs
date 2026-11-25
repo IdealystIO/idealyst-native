@@ -997,9 +997,10 @@ pub enum Overflow {
 ///   the edge). `Contain` keeps the bounce; UIScrollView does not
 ///   chain to an ancestor scroller in the first place, so containment
 ///   is already its behavior.
-/// - **macOS** — `None` sets both `NSScrollView` elasticities to
-///   `NSScrollElasticityNone`. `Contain` is the AppKit default (no
-///   chaining).
+/// - **macOS** — the backend chains: a scroller that cannot scroll the
+///   axis a gesture starts along passes it to the enclosing scroller.
+///   `Contain` and `None` stop that; `None` also sets both
+///   `NSScrollView` elasticities to `NSScrollElasticityNone`.
 /// - **Android** — `None` sets `View.OVER_SCROLL_NEVER` (no glow / no
 ///   stretch). `Contain` leaves the edge effect but is otherwise the
 ///   default for a plain `ScrollView`, which doesn't participate in
@@ -1010,11 +1011,11 @@ pub enum Overflow {
 ///   effect for `None` to remove.
 /// - **Terminal / Roku / CPU** — no gesture model; ignored.
 ///
-/// Because `Contain` and `Auto` coincide on every native backend, the
-/// property is effectively "web: full; native: `None` disables the
-/// edge effect". That's stated rather than hidden: the declarative
-/// spelling is the point, so an app doesn't need a web-only escape
-/// hatch in its HTML shell.
+/// Because `Contain` and `Auto` coincide on the other native backends,
+/// the property there is effectively "`None` disables the edge
+/// effect"; web and macOS honor all three. That's stated rather than
+/// hidden: the declarative spelling is the point, so an app doesn't
+/// need a web-only escape hatch in its HTML shell.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OverscrollBehavior {

@@ -62,11 +62,13 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, NSObjectProtocol};
 use objc2::{declare_class, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSCollectionViewFlowLayout, NSCollectionViewItem, NSScrollView, NSView,
+    NSCollectionViewFlowLayout, NSCollectionViewItem, NSEvent, NSScrollView, NSView,
 };
 use objc2_foundation::{
     CGFloat, CGRect, CGSize, MainThreadMarker, NSEdgeInsets, NSInteger, NSObject, NSString,
 };
+use runtime_shared::primitives::virtualizer::ItemKey;
+use runtime_shared::primitives::virtualizer_diff::{diff_keys, KeyedUpdate, MAX_BATCH_OPS};
 use runtime_shared::{StyleRules, VirtualizerCallbacks, VirtualLayout};
 
 use super::MacosNode;
@@ -78,6 +80,10 @@ use super::MacosNode;
 #[derive(Clone)]
 struct ItemMount {
     scope_id: u64,
+    /// The item key the row was mounted for. A batched data change
+    /// moves the row without remounting it, so the row's index is
+    /// re-derived from this key afterwards ([`VirtualizerDataSource::reindex_mounts`]).
+    key: ItemKey,
     /// The framework-produced view we attached as a subview of
     /// the NSCollectionViewItem's `view`. Retained here so we can
     /// removeFromSuperview on reuse / teardown.
@@ -307,6 +313,20 @@ pub(crate) struct VirtualizerDataSourceIvars {
     /// Measuring state for an `ItemSize::Measured` list; `None` for a
     /// Known list, which never measures. See the module docs.
     measure: Option<Rc<RowMeasure>>,
+    /// The item keys the collection view was last given, in order —
+    /// `None` until it first asks for its item count. This, not the live
+    /// `item_count`, is what `numberOfItemsInSection` answers: a batch
+    /// update is checked against the count the collection view had
+    /// before it (old count − deletes + inserts must equal the count
+    /// after, or AppKit raises), so the data source must not show a
+    /// change before the batch that applies it. See [`data_changed`].
+    known_keys: Rc<RefCell<Option<Vec<ItemKey>>>>,
+    /// A data change is waiting for its deferred apply.
+    pending: Cell<bool>,
+    /// A row was mounted while a change was pending. Its index path is
+    /// the collection view's old one but its content came from the new
+    /// data, so a keyed batch would keep a wrong row: the apply reloads.
+    mounted_while_pending: Cell<bool>,
 }
 
 declare_class!(
@@ -336,11 +356,16 @@ declare_class!(
             if !*self.ivars().alive.borrow() {
                 return 0;
             }
-            let cb_opt = self.ivars().callbacks.borrow();
-            cb_opt
-                .as_ref()
-                .map(|c| (c.item_count)() as NSInteger)
-                .unwrap_or(0)
+            let mut known = self.ivars().known_keys.borrow_mut();
+            if known.is_none() {
+                // First load: the collection view starts from the live data.
+                let cb_opt = self.ivars().callbacks.borrow();
+                let Some(cb) = cb_opt.as_ref() else {
+                    return 0;
+                };
+                *known = Some(live_keys(cb));
+            }
+            known.as_ref().map_or(0, |k| k.len() as NSInteger)
         }
 
         #[method_id(collectionView:itemForRepresentedObjectAtIndexPath:)]
@@ -409,7 +434,7 @@ declare_class!(
             };
             let item: NSInteger = unsafe { msg_send![index_path, item] };
             let idx = if item < 0 { 0usize } else { item as usize };
-            // Between a data change and its deferred reload AppKit still
+            // Between a data change and its deferred apply AppKit still
             // has the old count, and a layout in that gap asks about rows
             // the data no longer has.
             if idx >= (cb.item_count)() {
@@ -440,6 +465,14 @@ declare_class!(
             } else {
                 CGSize::new(lane_cross, size_f)
             }
+        }
+    }
+
+    // ---- Deferred data-change apply (see [`data_changed`]) ----
+    unsafe impl VirtualizerDataSource {
+        #[method(idealystApplyDataChange:)]
+        fn apply_data_change_sel(&self, cv: &NSView) {
+            self.apply_data_change(cv);
         }
     }
 );
@@ -488,16 +521,22 @@ impl VirtualizerDataSource {
 
         let mount_fn = {
             let cb_opt = self.ivars().callbacks.borrow();
-            cb_opt.as_ref().map(|c| (c.mount_item.clone(), (c.item_count)()))
+            cb_opt
+                .as_ref()
+                .map(|c| (c.mount_item.clone(), c.item_key.clone(), (c.item_count)()))
         };
-        let Some((mount, count)) = mount_fn else {
+        let Some((mount, key_fn, count)) = mount_fn else {
             return item;
         };
-        // A stale row of a change not reloaded yet (see
-        // `size_for_item_at`): an empty item, gone with the reload.
+        // A stale row of a change not applied yet (see
+        // `size_for_item_at`): an empty item, gone with the apply.
         if idx >= count {
             return item;
         }
+        if self.ivars().pending.get() {
+            self.ivars().mounted_while_pending.set(true);
+        }
+        let key = key_fn(idx);
         let (node, scope_id) = (mount)(idx);
         let child_view = node.as_view();
 
@@ -539,7 +578,7 @@ impl VirtualizerDataSource {
         };
         self.ivars().mounts.borrow_mut().insert(
             item_ptr,
-            ItemMount { scope_id, child: child_retained },
+            ItemMount { scope_id, key, child: child_retained },
         );
 
         item
@@ -570,8 +609,144 @@ impl VirtualizerDataSource {
             alive,
             layout,
             measure,
+            known_keys: Rc::new(RefCell::new(None)),
+            pending: Cell::new(false),
+            mounted_while_pending: Cell::new(false),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Bring the collection view from the keys it knows to the live data:
+    /// one `performBatchUpdates` of the keyed diff ([`diff_keys`]), or a
+    /// `reloadData` when the diff is unusable. Runs on a run-loop turn of
+    /// its own ([`data_changed`]), never under the backend's borrow: both
+    /// paths end displaying rows and mount new ones.
+    ///
+    /// Survivors keep their item, view and row scope: AppKit moves a
+    /// batch's untouched items without asking the data source again. A
+    /// survivor whose item changed (`item_changed`) is deleted and
+    /// inserted, which releases its row and mounts it from the new item.
+    ///
+    /// The scroll offset is kept across both paths, clamped to the new
+    /// content: a reload otherwise lands the clip back at the origin, so a
+    /// `scroll_to` made before the apply ran was lost.
+    fn apply_data_change(&self, cv: &NSView) {
+        self.ivars().pending.set(false);
+        let mounted_in_gap = self.ivars().mounted_while_pending.replace(false);
+        if !*self.ivars().alive.borrow() {
+            return;
+        }
+        let (new_keys, changed) = {
+            let cb_opt = self.ivars().callbacks.borrow();
+            let Some(cb) = cb_opt.as_ref() else {
+                return;
+            };
+            (live_keys(cb), cb.item_changed.clone())
+        };
+        let old_keys = self.ivars().known_keys.borrow().clone();
+        // Never loaded: the collection view reads the live data when it
+        // first asks.
+        let Some(old_keys) = old_keys else {
+            return;
+        };
+        let update = if mounted_in_gap {
+            None
+        } else {
+            diff_keys(
+                &old_keys,
+                &new_keys,
+                |i| changed.as_ref().is_some_and(|f| f(i)),
+                MAX_BATCH_OPS,
+            )
+        };
+        if update.as_ref().is_some_and(KeyedUpdate::is_empty) {
+            // Same keys, same order, no stale row: nothing to tell AppKit.
+            *self.ivars().known_keys.borrow_mut() = Some(new_keys);
+            return;
+        }
+        let offset = ScrollOffset::save(cv);
+        match update {
+            Some(update) => self.perform_batch(cv, new_keys.clone(), update),
+            None => {
+                *self.ivars().known_keys.borrow_mut() = Some(new_keys.clone());
+                let _: () = unsafe { msg_send![cv, reloadData] };
+            }
+        }
+        self.reindex_mounts(&new_keys);
+        if let Some(offset) = offset {
+            offset.restore(cv);
+        }
+    }
+
+    /// Apply `update` as one non-animated batch. The known keys switch to
+    /// `new_keys` INSIDE the updates block, which AppKit runs
+    /// synchronously: it reads the item count before the block (old) and
+    /// after it (new) and checks the ops against both.
+    fn perform_batch(&self, cv: &NSView, new_keys: Vec<ItemKey>, update: KeyedUpdate) {
+        let paths = |idxs: &mut dyn Iterator<Item = usize>| -> Retained<AnyObject> {
+            unsafe {
+                let set: Retained<AnyObject> = msg_send_id![objc2::class!(NSMutableSet), set];
+                for i in idxs {
+                    let path = index_path(i);
+                    let _: () = msg_send![&set, addObject: &*path];
+                }
+                set
+            }
+        };
+        let deletes = paths(&mut update.deletes.iter().copied());
+        let inserts = paths(&mut update.inserts.iter().copied());
+        let moves: Vec<(Retained<AnyObject>, Retained<AnyObject>)> =
+            update.moves.iter().map(|&(o, n)| (index_path(o), index_path(n))).collect();
+        let pending_keys = RefCell::new(Some(new_keys));
+        let known = self.ivars().known_keys.clone();
+        // SAFETY: `cv` is a live collection view borrowed by this frame.
+        let cv_owned: Retained<NSView> =
+            unsafe { Retained::retain(cv as *const NSView as *mut NSView) }.expect("collection view");
+        let block = block2::RcBlock::new(move || {
+            let cv = &*cv_owned;
+            if let Some(keys) = pending_keys.borrow_mut().take() {
+                *known.borrow_mut() = Some(keys);
+            }
+            unsafe {
+                let _: () = msg_send![cv, deleteItemsAtIndexPaths: &*deletes];
+                let _: () = msg_send![cv, insertItemsAtIndexPaths: &*inserts];
+                for (from, to) in &moves {
+                    let _: () = msg_send![cv, moveItemAtIndexPath: &**from, toIndexPath: &**to];
+                }
+            }
+        });
+        // Not through `animator`: a direct call applies without
+        // animation, as `reloadData` does and as web does.
+        let _: () = unsafe {
+            msg_send![
+                cv,
+                performBatchUpdates: &*block,
+                completionHandler: Option::<&block2::Block<dyn Fn(objc2::runtime::Bool)>>::None
+            ]
+        };
+    }
+
+    /// Point every mounted row's measuring slot at its key's index in
+    /// `keys`. A batch moves rows without remounting them, and a slot's
+    /// index is what the measure drain compares sizes against.
+    fn reindex_mounts(&self, keys: &[ItemKey]) {
+        if self.ivars().measure.is_none() {
+            return;
+        }
+        let index: HashMap<ItemKey, usize> = keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+        for mount in self.ivars().mounts.borrow().values() {
+            let Some(&idx) = index.get(&mount.key) else {
+                continue;
+            };
+            let Some(cell) = (unsafe { mount.child.superview() }) else {
+                continue;
+            };
+            if let Some(host) = VirtualizerItemView::from_container(&cell) {
+                if let Some(slot) = host.ivars().measure.borrow_mut().as_mut() {
+                    slot.idx = idx;
+                }
+            }
+        }
     }
 
     /// Tear down — flip `alive`, drain mounts, drop callbacks. After
@@ -795,6 +970,11 @@ impl VirtualizerFlowLayout {
 pub(crate) struct VirtualizerScrollViewIvars {
     /// Main-axis orientation, decides which axis gets pinned.
     horizontal: Cell<bool>,
+    /// Scroll chaining to the enclosing scroll view (`scroll_chain`).
+    chain: Cell<crate::imp::scroll_chain::ScrollChain>,
+    /// The clip's cross-axis extent the item sizes were last queried at
+    /// (see `tile`); `-1` before the first.
+    sized_cross: Cell<f64>,
 }
 
 declare_class!(
@@ -832,8 +1012,20 @@ declare_class!(
             } else {
                 (doc_frame.size.width - new_size.width).abs() > 0.5
             };
-            if differs && new_size.width > 0.0 && new_size.height >= 0.0 {
-                let _: () = unsafe { msg_send![doc, setFrameSize: new_size] };
+            // The cross extent the items must be sized to. Compared with the
+            // one they WERE sized to, not only with the document's frame: the
+            // document can reach the clip's size by another path (AppKit
+            // resizing it with the clip on a window resize) that never
+            // re-queries the item sizes, and the flow layout then centres
+            // the old, shorter items in the taller document (a horizontal
+            // list's lanes sat 117pt down after the window grew).
+            let cross = if horizontal { clip_bounds.size.height } else { clip_bounds.size.width };
+            let stale = (self.ivars().sized_cross.get() - cross).abs() > 0.5;
+            if (differs || stale) && new_size.width > 0.0 && new_size.height >= 0.0 {
+                self.ivars().sized_cross.set(cross);
+                if differs {
+                    let _: () = unsafe { msg_send![doc, setFrameSize: new_size] };
+                }
                 // A direct `setFrameSize:` BYPASSES the layout's
                 // bounds-change hooks (`shouldInvalidateLayoutForBounds
                 // Change:` only fires for clip-driven visible-rect
@@ -843,6 +1035,23 @@ declare_class!(
                 invalidate_item_sizes(unsafe { &*doc });
             }
         }
+
+        // A gesture along the axis the list cannot scroll (a horizontal pan
+        // over a vertical list) goes to the enclosing scroll view — see
+        // `scroll_chain`.
+        #[method(scrollWheel:)]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            if !crate::imp::scroll_chain::scroll_wheel(self, &self.ivars().chain, event) {
+                let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
+            }
+        }
+
+        // Opt back into responsive scrolling, which AppKit otherwise turns
+        // off for a scroll view overriding `scrollWheel:` (`scroll_chain`).
+        #[method(isCompatibleWithResponsiveScrolling)]
+        fn is_compatible_with_responsive_scrolling() -> bool {
+            true
+        }
     }
 );
 
@@ -851,8 +1060,20 @@ impl VirtualizerScrollView {
         let this = mtm.alloc::<Self>();
         let this = this.set_ivars(VirtualizerScrollViewIvars {
             horizontal: Cell::new(horizontal),
+            chain: Cell::default(),
+            sized_cross: Cell::new(-1.0),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// `view`'s chaining state, when `view` is a `VirtualizerScrollView`.
+    pub(crate) fn chain_of(view: &NSView) -> Option<&Cell<crate::imp::scroll_chain::ScrollChain>> {
+        let is: bool = unsafe { msg_send![view, isKindOfClass: Self::class()] };
+        if !is {
+            return None;
+        }
+        let typed = unsafe { &*(view as *const NSView as *const VirtualizerScrollView) };
+        Some(&typed.ivars().chain)
     }
 }
 
@@ -971,6 +1192,60 @@ pub(crate) fn sync_item_z_for_child(view: &NSView) {
 // Public entry points.
 // =========================================================================
 
+/// The live data's keys, in order.
+fn live_keys(cb: &VirtualizerCallbacks<MacosNode>) -> Vec<ItemKey> {
+    (0..(cb.item_count)()).map(|i| (cb.item_key)(i)).collect()
+}
+
+/// `NSIndexPath` for item `i` of the list's one section.
+fn index_path(i: usize) -> Retained<AnyObject> {
+    unsafe {
+        msg_send_id![
+            objc2::class!(NSIndexPath),
+            indexPathForItem: i as NSInteger,
+            inSection: 0 as NSInteger
+        ]
+    }
+}
+
+/// A collection view's scroll offset (its clip view's bounds origin),
+/// saved across a data-change apply.
+struct ScrollOffset {
+    scroll: Retained<NSView>,
+    clip: Retained<NSView>,
+    origin: objc2_foundation::CGPoint,
+}
+
+impl ScrollOffset {
+    fn save(cv: &NSView) -> Option<Self> {
+        let scroll: Option<Retained<NSView>> = unsafe { msg_send_id![cv, enclosingScrollView] };
+        let scroll = scroll?;
+        let clip: Retained<NSView> = unsafe { msg_send_id![&scroll, contentView] };
+        let bounds: CGRect = unsafe { msg_send![&clip, bounds] };
+        Some(Self { scroll, clip, origin: bounds.origin })
+    }
+
+    /// Lay the collection view out at its new content, then put the clip
+    /// back at the saved origin, clamped to the new scroll range.
+    fn restore(self, cv: &NSView) {
+        let _: () = unsafe { msg_send![&self.scroll, layoutSubtreeIfNeeded] };
+        let _: () = unsafe { msg_send![cv, layoutSubtreeIfNeeded] };
+        let doc: CGRect = unsafe { msg_send![cv, frame] };
+        let bounds: CGRect = unsafe { msg_send![&self.clip, bounds] };
+        let max_x = (doc.size.width - bounds.size.width).max(0.0);
+        let max_y = (doc.size.height - bounds.size.height).max(0.0);
+        let target = objc2_foundation::CGPoint {
+            x: self.origin.x.clamp(0.0, max_x),
+            y: self.origin.y.clamp(0.0, max_y),
+        };
+        if (target.x - bounds.origin.x).abs() < 0.5 && (target.y - bounds.origin.y).abs() < 0.5 {
+            return;
+        }
+        let _: () = unsafe { msg_send![&self.clip, scrollToPoint: target] };
+        let _: () = unsafe { msg_send![&self.scroll, reflectScrolledClipView: &*self.clip] };
+    }
+}
+
 pub(crate) struct VirtualizerInstance {
     pub(crate) data_source: Retained<VirtualizerDataSource>,
     /// The flow layout; its `sectionInset` carries the list's padding.
@@ -1074,6 +1349,12 @@ pub(crate) fn create(
         msg_send![&scroll, setHasHorizontalScroller: horizontal]
     };
     let _: () = unsafe { msg_send![&scroll, setAutohidesScrollers: true] };
+    // Overlay scrollers (`NSScrollerStyleOverlay` = 1), as `create_scroll_view`
+    // sets: the legacy style the user's "Show scroll bars" setting can pick
+    // reserves a ~15pt gutter in the clip, so a horizontal list lost that much
+    // height to its scroller, and its items' cross size no longer matched the
+    // laid-out box.
+    let _: () = unsafe { msg_send![&scroll, setScrollerStyle: 1isize] };
     // Transparent, like a web scroller: the author's style paints any
     // fill. AppKit's defaults are opaque on all three layers (the
     // scroll view and its clip draw the window background, the
@@ -1115,43 +1396,54 @@ pub(crate) fn create(
     scroll
 }
 
-/// Tell the collection view to fully reload. Mirrors iOS's
-/// `reloadData()` shape — every visible item gets the data-source
-/// protocol re-run, and our `item_for_index_path_impl` re-mounts
-/// fresh content. Future optimization: `performBatchUpdates` so
-/// surviving items animate in place.
+/// Schedule the collection view's update to the list's new data. The
+/// update itself is [`VirtualizerDataSource::apply_data_change`]: a keyed
+/// `performBatchUpdates` that keeps every unchanged surviving row mounted,
+/// or a `reloadData` when the diff is unusable.
 pub(crate) fn data_changed(scroll_view: &NSView) {
-    // Walk: scroll_view → documentView → reloadData
     let doc_view: *mut NSView = unsafe { msg_send![scroll_view, documentView] };
     if doc_view.is_null() {
         return;
     }
-    // On the next run-loop turn, not now: this runs under the backend's
-    // `borrow_mut()` (the data effect), and `reloadData` ends displaying
-    // the old rows synchronously, whose release tears down styles that
+    let ds: *mut AnyObject = unsafe { msg_send![doc_view, dataSource] };
+    if ds.is_null() {
+        return;
+    }
+    // SAFETY: non-null, checked just above.
+    let is_ours = unsafe { (*ds).class() } == VirtualizerDataSource::class();
+    if !is_ours {
+        return;
+    }
+    // SAFETY: the class check above.
+    let data_source: &VirtualizerDataSource = unsafe { &*(ds as *const VirtualizerDataSource) };
+    data_source.ivars().pending.set(true);
+    // On a later run-loop turn, not now: this runs under the backend's
+    // `borrow_mut()` (the data effect), and applying the change ends
+    // displaying rows synchronously and mounts new ones, both of which
     // borrow the backend again ("RefCell already borrowed", an abort).
     // The `virtualizer_data_changed` contract asks for the deferral; a
-    // pending reload is replaced, so a burst of changes reloads once.
-    // Released before it runs, the data source is detached and the
-    // reload is a no-op. In the common modes: the default mode alone does
-    // not run while the user scrolls or resizes the window.
+    // pending apply is replaced, so a burst of changes applies once,
+    // against the data as it stands then. Released before it runs, the
+    // data source is dead and the apply is a no-op. In the common modes:
+    // the default mode alone does not run while the user scrolls or
+    // resizes the window.
     extern "C" {
         static NSRunLoopCommonModes: &'static NSString;
     }
-    let reload = objc2::sel!(reloadData);
+    let apply = objc2::sel!(idealystApplyDataChange:);
     unsafe {
         let modes: Retained<AnyObject> =
             msg_send_id![objc2::class!(NSArray), arrayWithObject: NSRunLoopCommonModes];
         let _: () = msg_send![
             objc2::class!(NSObject),
-            cancelPreviousPerformRequestsWithTarget: doc_view,
-            selector: reload,
-            object: std::ptr::null_mut::<AnyObject>()
+            cancelPreviousPerformRequestsWithTarget: ds,
+            selector: apply,
+            object: doc_view
         ];
         let _: () = msg_send![
-            doc_view,
-            performSelector: reload,
-            withObject: std::ptr::null_mut::<AnyObject>(),
+            ds,
+            performSelector: apply,
+            withObject: doc_view,
             afterDelay: 0.0 as CGFloat,
             inModes: &*modes
         ];
@@ -1284,6 +1576,84 @@ mod tests {
             on_scroll: None,
             item_changed: None,
         }
+    }
+
+    /// Callbacks over a shared key list (`item_key(i) == keys[i]`), no rows.
+    fn keyed_callbacks(keys: Rc<RefCell<Vec<u64>>>) -> VirtualizerCallbacks<MacosNode> {
+        let count_keys = keys.clone();
+        VirtualizerCallbacks::<MacosNode> {
+            item_count: Rc::new(move || count_keys.borrow().len()),
+            item_key: Rc::new(move |i| keys.borrow()[i]),
+            ..empty_callbacks()
+        }
+    }
+
+    fn data_source_of(scroll: &NSView) -> Retained<VirtualizerDataSource> {
+        let cv: *mut NSView = unsafe { msg_send![scroll, documentView] };
+        let ds: *mut AnyObject = unsafe { msg_send![cv, dataSource] };
+        unsafe { Retained::retain(ds as *mut VirtualizerDataSource) }.expect("data source")
+    }
+
+    fn known(ds: &VirtualizerDataSource) -> Option<Vec<u64>> {
+        ds.ivars().known_keys.borrow().clone()
+    }
+
+    /// The batch-update count rule: between a data change and its apply
+    /// the collection view must keep answering the count it was last
+    /// given (AppKit checks old count − deletes + inserts against the
+    /// count after the batch and raises on a mismatch — an abort across
+    /// the ObjC frame). The apply then moves it to the new keys, through
+    /// a keyed batch here (one key moved, one deleted, one inserted).
+    #[test]
+    fn regression_item_count_holds_until_the_keyed_apply() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut instances = HashMap::new();
+        let keys = Rc::new(RefCell::new(vec![10u64, 11, 12]));
+        let scroll = create(mtm, &mut instances, keyed_callbacks(keys.clone()), 1.0, vlist());
+        let cv: Retained<NSView> = unsafe { msg_send_id![&scroll, documentView] };
+        let ds = data_source_of(&scroll);
+        let count = |ds: &VirtualizerDataSource| -> NSInteger {
+            unsafe { msg_send![ds, collectionView: &*cv, numberOfItemsInSection: 0 as NSInteger] }
+        };
+
+        assert_eq!(known(&ds), None, "nothing known before the first load");
+        assert_eq!(count(&ds), 3, "the first load reads the live data");
+        assert_eq!(known(&ds), Some(vec![10, 11, 12]));
+
+        *keys.borrow_mut() = vec![12, 10, 13, 14];
+        data_changed(&scroll);
+        assert!(ds.ivars().pending.get(), "the apply is deferred");
+        assert_eq!(count(&ds), 3, "the old count holds until the apply");
+
+        ds.apply_data_change(&cv);
+        assert!(!ds.ivars().pending.get());
+        assert_eq!(known(&ds), Some(vec![12, 10, 13, 14]), "the batch moved the known keys");
+        assert_eq!(count(&ds), 4);
+        let cv_count: NSInteger = unsafe { msg_send![&cv, numberOfItemsInSection: 0 as NSInteger] };
+        assert_eq!(cv_count, 4, "the collection view took the batch");
+
+        // A full replacement has no survivor: the reload path.
+        *keys.borrow_mut() = vec![1, 2];
+        ds.apply_data_change(&cv);
+        assert_eq!(known(&ds), Some(vec![1, 2]), "the reload moved the known keys");
+        release(&mut instances, &scroll);
+    }
+
+    /// A change applied after the data source was released is a no-op.
+    #[test]
+    fn an_apply_after_release_is_a_no_op() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut instances = HashMap::new();
+        let keys = Rc::new(RefCell::new(vec![1u64, 2]));
+        let scroll = create(mtm, &mut instances, keyed_callbacks(keys.clone()), 1.0, vlist());
+        let cv: Retained<NSView> = unsafe { msg_send_id![&scroll, documentView] };
+        let ds = data_source_of(&scroll);
+        let _: NSInteger = unsafe { msg_send![&*ds, collectionView: &*cv, numberOfItemsInSection: 0 as NSInteger] };
+        data_changed(&scroll);
+        release(&mut instances, &scroll);
+        *keys.borrow_mut() = vec![2, 1];
+        ds.apply_data_change(&cv);
+        assert_eq!(known(&ds), Some(vec![1, 2]), "a dead list applies nothing");
     }
 
     /// The item class MUST be a real `NSCollectionViewItem` subclass.

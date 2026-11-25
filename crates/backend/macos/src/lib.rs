@@ -74,7 +74,9 @@ pub mod newcore;
 #[cfg(all(target_os = "macos", feature = "runtime-server"))]
 pub mod runtime_server;
 
-/// Install the macOS scheduler (NSTimer-backed). Must be called once
+/// Install the macOS scheduler (NSTimer timers, main-queue microtasks, and
+/// a display-synced animation clock once [`MacosBackend::set_host_root`]
+/// hands it the host view). Must be called once
 /// before `runtime_shared::render(...)` so timer-driven features
 /// (presence animations, anything calling `after_ms` /
 /// `schedule_microtask`) delay correctly instead of firing

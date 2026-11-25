@@ -1860,12 +1860,18 @@ pub fn mount_swap_navigator<H: NavCaps + 'static>(
                 // iteration — the commit is synchronous).
                 let _link = link.map(inbound::LinkPathGuard::set);
                 match cmd {
-                    NavCommand::Select { name, url, params, query } => {
+                    // `Replace` shows a screen as `Select` does; the two
+                    // differ only in history, which the URL-sync service
+                    // decides from the command (replace, not push). Dropping
+                    // it left the route mirror on the new screen over the old
+                    // one (a redirect from an alias screen showed nothing).
+                    NavCommand::Select { name, url, params, query }
+                    | NavCommand::Replace { name, url, params, query } => {
                         shared.select(name, &url, params, query);
                     }
-                    // Swap navigators have no stack; stray stack verbs
-                    // are ignored, never a panic (a tab handler sending
-                    // one must not crash the app).
+                    // Swap navigators have no stack; the other stack verbs
+                    // are ignored, never a panic (a tab handler sending one
+                    // must not crash the app).
                     _ => {}
                 }
                 if !suppress_sync {

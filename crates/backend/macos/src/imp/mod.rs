@@ -26,6 +26,7 @@ pub(crate) mod pointer;
 pub(crate) mod portal;
 pub(crate) mod presence;
 pub(crate) mod screenshot;
+pub(crate) mod scroll_chain;
 /// Box shadow (`StyleRules.shadow`). Mirrors the iOS shadow path so an
 /// `Elevated` Card casts the same shadow on both Apple backends (Rule #7).
 /// Owns the flipped-vs-not Y-sign
@@ -90,8 +91,8 @@ pub struct MacosBackend {
     /// host (e.g. mid-build) survive the layout walk.
     pub(crate) view_to_layout:
         HashMap<usize, (Retained<NSView>, runtime_layout::LayoutNode)>,
-    /// Last frame (origin + size, including baked static-translate offset)
-    /// applied to each view by the apply-frames pass, keyed by view pointer.
+    /// Last frame (origin + size) applied to each view by the apply-frames
+    /// pass, keyed by view pointer.
     /// The pass skips `setFrame:` + `sync_view_after_frame` for any view whose
     /// computed frame is unchanged since the previous pass — so a reactive event
     /// that reflows one subtree re-frames only that subtree, not all N views on
@@ -885,6 +886,10 @@ impl MacosBackend {
             Retained::retain(ptr).unwrap()
         };
         self.callback_targets.push(obj);
+        // Drive the animation clock (`raf_loop`, `after_animation_frame`) from
+        // this view's display: on macOS 14+ its `CADisplayLink` follows the
+        // window between screens, so ticks match each display's refresh rate.
+        backend_apple_core::scheduler::set_frame_clock_view(&view);
         self.host_root = Some(view);
     }
 
@@ -2554,6 +2559,14 @@ impl MacosBackend {
             // dirties the layout). The engine sizes its document to the
             // content in every sync.
             .filter(|(v, _)| !self.virtual_grid_registry.contains_key(&(&**v as *const NSView as usize)))
+            // Skip a `virtualizer` for the same reason: its rows are the
+            // collection view's items, not Taffy children, so this pass set
+            // the collection view (its documentView) to the viewport and
+            // AppKit clamped the scroll offset to 0. A horizontal list
+            // scrolled far in (a calendar parked at Today) snapped back to its
+            // first item on the next layout pass. The flow layout sizes the
+            // collection view to its content itself.
+            .filter(|(v, _)| !self.virtualizer_instances.contains_key(&(&**v as *const NSView as usize)))
             .map(|(v, n)| (v.clone(), *n))
             .collect();
         for (scroll_view, scroll_layout) in scrolls {
@@ -2786,22 +2799,15 @@ impl MacosBackend {
             let Some((view, _)) = self.view_to_layout.get(&key) else {
                 continue;
             };
-            // Static percent translates (`transform: translate(50%, -50%)`
-            // from style rules) are applied as frame-origin offsets
-            // here rather than via layer.transform. Layer-backed
-            // NSViews don't honor pure-static transform translates
-            // reliably; baking them into the frame is unambiguous.
-            // See `animated::static_translate_offset` for details.
-            let (static_tx, static_ty) = animated::static_translate_offset(
-                view,
-                &self.animated_states,
-                frame.width,
-                frame.height,
-            );
+            // The frame is the layout box alone. Translates, percent ones
+            // included, live in the layer transform, which
+            // `sync_view_after_frame` resolves against this frame's size,
+            // so a `transitions { transform }` animates them; a frame
+            // write here would snap (implicit actions are off).
             let rect = CGRect {
                 origin: objc2_foundation::CGPoint {
-                    x: frame.x as f64 + static_tx,
-                    y: frame.y as f64 + static_ty,
+                    x: frame.x as f64,
+                    y: frame.y as f64,
                 },
                 size: CGSize {
                     width: frame.width as f64,
@@ -4392,20 +4398,13 @@ impl MacosBackend {
         let document_view: Retained<NSView> =
             Retained::into_super(view::ScrollDocumentView::new(self.mtm));
 
-        // Build NSScrollView via alloc/initWithFrame:CGRect.zero.
+        // The scroll view is a `ChainedScrollView`: a stock NSScrollView whose
+        // `scrollWheel:` hands a gesture it cannot scroll (a vertical pan over
+        // a horizontal strip) to the enclosing scroll view, as the web chains.
+        // It overrides `scrollWheel:` on the SCROLL VIEW, not the documentView,
+        // and opts back into responsive scrolling — see `scroll_chain`.
         // Frame is set by the layout pass in `finish()`.
-        let scroll_view: Retained<NSView> = unsafe {
-            let allocated: *mut objc2::runtime::AnyObject =
-                msg_send![objc2::class!(NSScrollView), alloc];
-            let zero_rect = CGRect {
-                origin: objc2_foundation::CGPoint { x: 0.0, y: 0.0 },
-                size: CGSize { width: 0.0, height: 0.0 },
-            };
-            let inited: *mut objc2::runtime::AnyObject =
-                msg_send![allocated, initWithFrame: zero_rect];
-            Retained::from_raw(inited.cast::<NSView>())
-                .expect("NSScrollView init returned nil")
-        };
+        let scroll_view: Retained<NSView> = scroll_chain::ChainedScrollView::new_view(self.mtm);
 
         // Configure scrollers per axis. Vertical-default matches
         // iOS's default ScrollView; a two-axis scroller gets both. The
@@ -5176,25 +5175,31 @@ impl MacosBackend {
             }
         }
 
-        // `overscroll-behavior` → NSScrollView elasticity. AppKit has
-        // no scroll *chaining* to suppress (a nested scroll view keeps
-        // its own gesture), so `Contain` and `Auto` coincide and only
-        // `None` is observable: it disables the rubber-band on both
-        // axes. Applied unconditionally on every style pass so a
-        // reactive flip back to `Auto` restores elasticity rather than
-        // latching.
+        // `overscroll-behavior` on an NSScrollView. Scroll *chaining* is
+        // the backend's own (`scroll_chain`): a `scroll_view` / list /
+        // grid passes a gesture it cannot scroll to the enclosing scroll
+        // view, and `Contain` / `None` stop that, as in CSS. `None` also
+        // disables the rubber-band on both axes. Applied unconditionally
+        // on every style pass so a reactive flip back to `Auto` restores
+        // chaining and elasticity rather than latching.
         //
         // NSScrollElasticity: 0 = Automatic, 1 = None, 2 = Allowed.
         {
             let is_scroll: bool =
                 unsafe { msg_send![view, isKindOfClass: objc2::class!(NSScrollView)] };
             if is_scroll {
+                use runtime_shared::OverscrollBehavior;
                 let elasticity: isize = match style.overscroll_behavior {
-                    Some(runtime_shared::OverscrollBehavior::None) => 1,
+                    Some(OverscrollBehavior::None) => 1,
                     _ => 0,
                 };
                 let _: () = unsafe { msg_send![view, setHorizontalScrollElasticity: elasticity] };
                 let _: () = unsafe { msg_send![view, setVerticalScrollElasticity: elasticity] };
+                let contain = matches!(
+                    style.overscroll_behavior,
+                    Some(OverscrollBehavior::Contain | OverscrollBehavior::None)
+                );
+                scroll_chain::set_contain(view, contain);
             }
         }
 
@@ -5258,11 +5263,10 @@ impl MacosBackend {
             virtualizer::sync_item_z_for_child(view);
         }
 
-        // Static `transform: [...]` from the style. Px translates,
-        // scale, and rotate go straight into the CALayer transform;
-        // percent translates are stashed for resolution after layout
-        // (bounds not known here). `sync_transform_after_layout` in
-        // the layout pass re-applies once frames are computed.
+        // Static `transform: [...]` from the style, into the CALayer
+        // transform. Percent translates resolve against the current
+        // bounds (0×0 before the first layout); `sync_transform_after_layout`
+        // in the layout pass re-resolves them once frames are computed.
         animated::apply_static_transform(node, style, &mut self.animated_states);
 
         // Push the framework's style into Taffy so flex props
@@ -6054,10 +6058,9 @@ impl MacosBackend {
     }
 
     pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &MacosNode) {
-        // Tell the NSCollectionView to `reloadData`. Future
-        // performBatchUpdates optimisation lands when the iOS
-        // counterpart does — same shape (key-keyed diff, batched
-        // insert/remove ops).
+        // Schedules the keyed batch update (or a reload when the diff
+        // is unusable) for a later run-loop turn; see
+        // `virtualizer::data_changed`.
         let view = node.as_view();
         virtualizer::data_changed(view);
     }

@@ -16,14 +16,16 @@
 //!   16.7 ms means the main thread stalled for that frame. The link is vended
 //!   from the `CADisplayLink` class on iOS/tvOS and from `+[NSScreen
 //!   mainScreen]` on macOS.
-//! - The framework's **`raf_loop` animation tick**, counted via [`on_raf_tick`]
-//!   (see [`scheduler`](crate::scheduler)). On iOS/tvOS the raf loop is itself a
-//!   `CADisplayLink`, so a low `anim` count just means "nothing was animating".
-//!   On **macOS the raf loop is a common-mode `NSTimer`** — and the open
-//!   question is whether AppKit's event-tracking run-loop mode *starves* that
-//!   timer during a trackpad scroll even though it nominally runs in common
-//!   modes. If `frames` (the display link) holds ~60 while `anim` collapses
-//!   during a scroll, the timer is being starved.
+//! - The framework's **animation clock tick**, counted via [`on_raf_tick`]
+//!   (see [`scheduler`](crate::scheduler)). On iOS/tvOS that is one count per
+//!   `raf_loop` display-link fire; on macOS one count per frame of the shared
+//!   frame clock (`mac_frame_clock`) in which any `raf_loop` or
+//!   `after_animation_frame` ran. Both are display-link driven, so a low `anim`
+//!   count just means "nothing was animating". On macOS `anim` above `frames`
+//!   would mean the clock's NSTimer backstop is ticking beside the link, and
+//!   `anim` well below `frames` while animating would mean the clock's link is
+//!   not on the display this probe follows (the probe uses the main screen;
+//!   the clock follows the host window's screen).
 //!
 //! Holding the two side by side is the whole point: during a drag/scroll, if the
 //! display link keeps ticking (~60/s) but the raf tick count collapses, the

@@ -852,7 +852,7 @@ Three concepts to understand:
    signals inside the item. The default key is the index: content stays
    correct, but an insert or reorder re-renders every visible row. The
    raw `virtualizer()` builder has no item to compare and keeps every
-   survivor unless given `.item_diff(..)`. (iOS, macOS, GTK and wgpu
+   survivor unless given `.item_diff(..)`. (iOS, GTK and wgpu
    currently rebuild every visible row on each data change, so row
    state does not survive there even for unchanged items — a known
    divergence.)

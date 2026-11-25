@@ -28,3 +28,4 @@ pub mod text_input;
 pub mod toggle;
 pub mod virtual_grid;
 pub mod virtualizer;
+pub mod virtualizer_diff;

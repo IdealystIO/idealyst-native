@@ -134,16 +134,9 @@ pub(crate) fn create(
     let document_view: Retained<NSView> =
         Retained::into_super(crate::imp::view::ScrollDocumentView::new(mtm));
 
-    let scroll: Retained<NSView> = unsafe {
-        let allocated: *mut objc2::runtime::AnyObject =
-            msg_send![objc2::class!(NSScrollView), alloc];
-        let zero = CGRect {
-            origin: CGPoint { x: 0.0, y: 0.0 },
-            size: CGSize::new(0.0, 0.0),
-        };
-        let inited: *mut objc2::runtime::AnyObject = msg_send![allocated, initWithFrame: zero];
-        Retained::from_raw(inited.cast::<NSView>()).expect("NSScrollView init returned nil")
-    };
+    // Chains a gesture along an axis with no room to the enclosing scroll
+    // view, like every other scroller (`scroll_chain`).
+    let scroll: Retained<NSView> = crate::imp::scroll_chain::ChainedScrollView::new_view(mtm);
     // Both axes scroll here, so both scrollers exist — unlike
     // `create_scroll_view`, which enables exactly one.
     let _: () = unsafe { msg_send![&scroll, setHasVerticalScroller: true] };

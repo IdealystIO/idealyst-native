@@ -34,10 +34,17 @@ use runtime_shared::{Easing, Transition};
 use crate::imp::CGColorRef;
 
 /// Which color setter a transition drives.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum ColorProp {
     Background,
     TextColor,
+}
+
+impl ColorProp {
+    /// Every prop, so a view's state is removed by key (see [`forget_view`]).
+    /// `lists_every_prop` fails to compile when a variant is added here and
+    /// not there.
+    const ALL: [ColorProp; 2] = [ColorProp::Background, ColorProp::TextColor];
 }
 
 struct Active {
@@ -129,10 +136,28 @@ pub(crate) fn has_color(view: &NSView, prop: ColorProp) -> bool {
 
 /// Forget a view's transition state when it's torn down (`clear_children` /
 /// `release`), so a recycled NSView pointer can't inherit a stale `from`.
+///
+/// By key, one per [`ColorProp`]: this runs for every view a teardown
+/// releases, and `LAST` holds an entry for nearly every styled view alive,
+/// so scanning it here made removing N views cost N × (views alive). On a
+/// board switching layouts that was seconds of main thread.
 pub(crate) fn forget_view(view: &NSView) {
-    let ptr = view as *const NSView as usize;
-    LAST.with(|l| l.borrow_mut().retain(|k, _| k.0 != ptr));
-    ACTIVE.with(|a| a.borrow_mut().retain(|k, _| k.0 != ptr));
+    forget(view as *const NSView as usize);
+}
+
+fn forget(ptr: usize) {
+    LAST.with(|l| {
+        let mut l = l.borrow_mut();
+        for prop in ColorProp::ALL {
+            l.remove(&(ptr, prop));
+        }
+    });
+    ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        for prop in ColorProp::ALL {
+            a.remove(&(ptr, prop));
+        }
+    });
 }
 
 fn retain(view: &NSView) -> Retained<NSView> {
@@ -195,6 +220,43 @@ fn lerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
     } else {
         [p[0] / alpha, p[1] / alpha, p[2] / alpha, alpha]
+    }
+}
+
+#[cfg(test)]
+mod forget_tests {
+    use super::{forget, ColorProp, LAST};
+
+    #[test]
+    fn lists_every_prop() {
+        // Exhaustive: a new variant fails to compile until it's matched here,
+        // a reminder to add it to `ALL`, which this then checks.
+        for prop in ColorProp::ALL {
+            match prop {
+                ColorProp::Background | ColorProp::TextColor => {}
+            }
+        }
+        assert_eq!(ColorProp::ALL.len(), 2);
+    }
+
+    #[test]
+    fn forgetting_a_view_drops_its_colours_and_keeps_the_others() {
+        let (gone, kept) = (0x1000, 0x2000);
+        LAST.with(|l| {
+            let mut l = l.borrow_mut();
+            l.clear();
+            for view in [gone, kept] {
+                for prop in ColorProp::ALL {
+                    l.insert((view, prop), [0.0, 0.0, 0.0, 1.0]);
+                }
+            }
+        });
+        forget(gone);
+        LAST.with(|l| {
+            let l = l.borrow();
+            assert!(ColorProp::ALL.iter().all(|p| !l.contains_key(&(gone, *p))), "every prop of the forgotten view goes");
+            assert!(ColorProp::ALL.iter().all(|p| l.contains_key(&(kept, *p))), "another view's stay");
+        });
     }
 }
 
