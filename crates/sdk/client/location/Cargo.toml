@@ -16,16 +16,18 @@ license.workspace = true
 #
 #   - web (wasm32):        navigator.geolocation getCurrentPosition / watchPosition
 #   - iOS / macOS / tvOS:  CLLocationManager + a CLLocationManagerDelegate (objc2)
-#   - Android:             framework LocationManager via JNI (getLastKnownLocation;
-#                          requestLocationUpdates needs a Java LocationListener shim)
+#   - Android:             framework LocationManager through a Kotlin shim
+#                          (runtime/kotlin) reached over JNI
 #
 # The permission GRANT goes through the `permissions` SDK (the shared runtime
 # substrate); only the position-DATA APIs are called here directly.
 #
 # Required platform permissions (the app must declare these — see README):
-#   - iOS:     NSLocationWhenInUseUsageDescription (+ …AlwaysAndWhenInUse… for always)
+#   - iOS:     NSLocationWhenInUseUsageDescription
 #   - macOS:   NSLocationUsageDescription
 #   - Android: ACCESS_FINE_LOCATION + ACCESS_COARSE_LOCATION
+# Background location is the app's own opt-in: `location_background` in the
+# app's `[package.metadata.idealyst] capabilities`.
 
 # Declares the platform capability this SDK needs. The CLI walks the app's
 # dependency graph, finds this, and injects the right artifacts per platform
@@ -34,6 +36,11 @@ license.workspace = true
 # [package.metadata.idealyst.app.permissions] location = "…".
 [package.metadata.idealyst]
 capabilities = ["location"]
+
+# The `LocationListener` half: a fresh fix and a stream of them both arrive
+# through one, and pure JNI cannot implement a Java interface.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/location/RustLocation.kt"]
 
 [dependencies]
 # `thread_local!` that costs Android one pthread key per process
@@ -73,10 +80,12 @@ wasm-bindgen-test = "0.3"
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSString", "NSArray"] }
 
-# Android: framework LocationManager via JNI on the host Activity context.
+# Android: the Kotlin shim over JNI. `log` reaches logcat through the
+# backend's logger (stderr is not captured on Android).
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"
+log = "0.4"
 
 # Linux (desktop): GeoClue2 over the D-Bus SYSTEM bus, via the pure-Rust async
 # `zbus` (same 4.x already in the tree through `credentials`). `async-io`

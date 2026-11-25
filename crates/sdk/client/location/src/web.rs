@@ -118,6 +118,11 @@ fn geolocation() -> Result<JsValue, LocationError> {
     }
 }
 
+/// Never told apart here: a browser does not say.
+pub(crate) fn services_off() -> bool {
+    false
+}
+
 pub(crate) async fn current_fix() -> Result<Position, LocationError> {
     let geo = geolocation()?;
 

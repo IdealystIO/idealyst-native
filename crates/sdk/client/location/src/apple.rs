@@ -246,6 +246,14 @@ fn new_manager() -> Retained<NSObject> {
 // Public-to-the-crate entry points.
 // ===========================================================================
 
+/// Whether Location is off for the device, which reads as a denial of the
+/// app's permission. Asked only once that has been denied: the call can block
+/// (it asks `locationd`), so it is not made on the way to a fix.
+pub(crate) fn services_off() -> bool {
+    let on: bool = unsafe { msg_send![class!(CLLocationManager), locationServicesEnabled] };
+    !on
+}
+
 pub(crate) async fn current_fix() -> Result<Position, LocationError> {
     // `requestLocation` and the delegate are main-thread-bound. Off the main
     // thread we can't safely build the manager; report unavailable rather than

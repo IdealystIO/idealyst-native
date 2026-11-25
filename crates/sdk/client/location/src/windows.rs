@@ -33,6 +33,11 @@ fn unavailable(e: windows::core::Error) -> LocationError {
     LocationError::Unavailable(format!("{e}"))
 }
 
+/// Never told apart here: Windows answers the same `Denied` for the device and the app.
+pub(crate) fn services_off() -> bool {
+    false
+}
+
 pub(crate) async fn current_fix() -> Result<Position, LocationError> {
     let access = Geolocator::RequestAccessAsync().map_err(unavailable)?.await.map_err(unavailable)?;
     if access == GeolocationAccessStatus::Denied {

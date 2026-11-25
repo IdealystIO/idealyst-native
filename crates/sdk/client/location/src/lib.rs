@@ -38,9 +38,8 @@
 //!   `watchPosition` / `clearWatch`).
 //! - **iOS / macOS / tvOS** — `CLLocationManager` with a
 //!   `CLLocationManagerDelegate` (objc2).
-//! - **Android** — the framework `LocationManager` via JNI
-//!   (`getLastKnownLocation`; `requestLocationUpdates` needs a Java
-//!   `LocationListener` shim — see [`watch`]).
+//! - **Android** — the framework `LocationManager` through a Kotlin
+//!   `LocationListener` shim; works with no Activity.
 //! - **Linux (desktop)** — GeoClue2 over D-Bus (`org.freedesktop.GeoClue2`)
 //!   via `zbus`: `Manager.GetClient` → set `DesktopId` → `Start` → the
 //!   client's `LocationUpdated` signal.
@@ -72,6 +71,10 @@ use permissions::{request, Permission};
 // ---------------------------------------------------------------------------
 mod oneshot;
 
+// What the Android shim's answers mean. Platform-free, so host tests cover it.
+#[cfg(any(test, all(not(target_arch = "wasm32"), target_os = "android")))]
+mod android_fix;
+
 // ---------------------------------------------------------------------------
 // Public types.
 // ---------------------------------------------------------------------------
@@ -96,19 +99,28 @@ pub struct Position {
     pub heading: Option<f64>,
     /// Ground speed in metres per second, if available.
     pub speed: Option<f64>,
-    /// Fix timestamp in milliseconds since the Unix epoch.
+    /// When the fix was made, in milliseconds since the Unix epoch. Compare it
+    /// with the current time to tell a fresh fix from a remembered one, which
+    /// [`current`] falls back to on Android.
     pub timestamp_ms: f64,
 }
 
 /// Why a location request failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LocationError {
     /// The user denied (or hasn't granted) the location permission. Re-prompt
     /// or send the user to OS settings; the position isn't readable until
     /// granted.
     NotAuthorized,
-    /// Location services produced no fix — services off, no signal, a timeout,
-    /// or a transient hardware error. The string carries the platform detail.
+    /// Location is switched off for the whole device. Nothing the app does
+    /// helps until it is on again (Settings; on a managed Android device,
+    /// `device_admin::set_location_enabled`). Told apart on Android, iOS and
+    /// macOS; elsewhere it reads as [`NotAuthorized`](Self::NotAuthorized) or
+    /// [`Unavailable`](Self::Unavailable).
+    ServicesOff,
+    /// Location services produced no fix — no signal, a timeout, or a
+    /// transient hardware error. The string carries the platform detail.
     Unavailable(String),
     /// This target has no geolocation backend (desktop host, the test runner).
     NotSupported,
@@ -118,6 +130,7 @@ impl std::fmt::Display for LocationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LocationError::NotAuthorized => write!(f, "location permission not granted"),
+            LocationError::ServicesOff => write!(f, "location is off"),
             LocationError::Unavailable(msg) => write!(f, "location unavailable: {msg}"),
             LocationError::NotSupported => {
                 write!(f, "location not supported on this platform")
@@ -166,7 +179,8 @@ pub(crate) type BoxedCallback = Box<dyn Fn(Position) + 'static>;
 
 // ---------------------------------------------------------------------------
 // Backend selector. Exactly one `imp` compiles per target; each supplies
-// `current_fix()`, `start_watch()`, and a `WatchHandle` whose `Drop` stops
+// `current_fix()`, `services_off()` (whether the platform says Location is
+// off for the device), `start_watch()`, and a `WatchHandle` whose `Drop` stops
 // updates. The fallback stub (any other target) reports `NotSupported`.
 // ---------------------------------------------------------------------------
 
@@ -214,6 +228,10 @@ mod imp {
     /// A no-op handle; there are no updates to stop on an unsupported target.
     pub(crate) struct WatchHandle;
 
+    pub(crate) fn services_off() -> bool {
+        false
+    }
+
     /// `watch` is best-effort: on an unsupported target it installs nothing
     /// and the callback simply never fires.
     pub(crate) fn start_watch(_callback: BoxedCallback) -> WatchHandle {
@@ -244,9 +262,16 @@ runtime_vocabulary::robot_select! {
 /// [`LocationError::NotAuthorized`] if the user denies it. With permission in
 /// hand it reads one fix from the platform's location stack.
 ///
-/// Resolves [`LocationError::Unavailable`] when services are off / there's no
-/// signal / the platform times out, and [`LocationError::NotSupported`] on a
-/// target with no geolocation backend.
+/// Resolves [`LocationError::ServicesOff`] when Location is off for the
+/// device, [`LocationError::Unavailable`] when there's no signal or the
+/// platform times out, and [`LocationError::NotSupported`] on a target with no
+/// geolocation backend.
+///
+/// On Android the fix is one made after the call, from the best provider that
+/// is on (the fused one where the device has it), within 30 s; failing that it
+/// is the newest the device knows, so check its `timestamp_ms` where age
+/// matters. It needs no Activity: with `ACCESS_BACKGROUND_LOCATION` granted it
+/// works from a background process (see the README).
 pub async fn current() -> Result<Position, LocationError> {
     runtime_vocabulary::robot_only! {
         if let Some(fake) = robot_controls::fake() {
@@ -271,7 +296,12 @@ pub async fn current() -> Result<Position, LocationError> {
     // aligns the code with this fn's own doc contract that a backend-less
     // target resolves `NotSupported`, not `NotAuthorized`.
     if !request(Permission::LocationWhenInUse).await.is_usable() {
-        return Err(LocationError::NotAuthorized);
+        // Apple reports a device with Location off as a denial.
+        return Err(if imp::services_off() {
+            LocationError::ServicesOff
+        } else {
+            LocationError::NotAuthorized
+        });
     }
     imp::current_fix().await
 }
@@ -378,6 +408,7 @@ mod tests {
             LocationError::NotAuthorized.to_string(),
             "location permission not granted"
         );
+        assert_eq!(LocationError::ServicesOff.to_string(), "location is off");
         assert!(LocationError::Unavailable("no fix".into())
             .to_string()
             .contains("no fix"));

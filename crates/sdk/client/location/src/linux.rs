@@ -304,6 +304,11 @@ async fn read_location(
 // One-shot fix.
 // ---------------------------------------------------------------------------
 
+/// Never told apart here: GeoClue does not say: off reads as a refusal.
+pub(crate) fn services_off() -> bool {
+    false
+}
+
 pub(crate) async fn current_fix() -> Result<Position, LocationError> {
     let conn = Connection::system().await.map_err(map_zbus_error)?;
     let client = make_client(&conn).await?;

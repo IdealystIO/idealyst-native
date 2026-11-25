@@ -1,213 +1,303 @@
 //! Android geolocation via the framework `android.location.LocationManager`.
 //!
-//! We use the framework `LocationManager` (`Context.getSystemService(
-//! LOCATION_SERVICE)`) rather than Google Play Services' `FusedLocation
-//! ProviderClient`, so this SDK pulls in **no Play Services dependency** and
-//! works on de-Googled devices.
+//! The framework `LocationManager` rather than Google Play Services'
+//! `FusedLocationProviderClient`, so this SDK pulls in **no Play Services
+//! dependency** and works on de-Googled devices.
 //!
-//! - [`current_fix`] reads `getLastKnownLocation(provider)` — a synchronous,
-//!   cached position that's a fast, dependency-free one-shot. This path is
-//!   implemented fully over JNI: pick the best available provider, read the
-//!   `Location`, and map its getters into a [`Position`].
-//! - [`start_watch`] needs `requestLocationUpdates(provider, minTime,
-//!   minDist, listener)`, and the `listener` is an `android.location.
-//!   LocationListener` — a Java **interface** the framework calls back. Pure
-//!   JNI cannot subclass / implement a Java interface at runtime without a
-//!   compiled stub `.dex` or a `Proxy`, so the listener is a **host-shim
-//!   seam**: the app's Android host must supply a small `LocationListener`
-//!   that forwards `onLocationChanged(Location)` back to this crate. Until
-//!   that shim lands, `start_watch` installs nothing and the callback never
-//!   fires — documented honestly, not faked. (`getLastKnownLocation`, the
-//!   common "where am I now" case, is fully functional.)
+//! The work is in the Kotlin shim (`runtime/kotlin/io/idealyst/location/`):
+//! both a fresh fix and a stream of them arrive through a `LocationListener`,
+//! a Java interface pure JNI cannot implement. This file is the transport:
+//! a call parks a sender under a token, and the shim answers on the main
+//! thread through the exports below.
+//!
+//! - [`current_fix`] asks the best provider that is on for a fix newer than
+//!   the call, and after [`FIX_TIMEOUT_MS`] settles for the newest one the
+//!   device already has. Dropping the future stops the request.
+//! - [`start_watch`] streams updates (one a second at most) until its handle
+//!   is dropped.
+//!
+//! Everything runs on the application context, so neither needs an Activity:
+//! an agent kept alive in the background by a foreground service reads its
+//! position this way (it needs `ACCESS_BACKGROUND_LOCATION`, see the README).
 //!
 //! The permission GRANT is the `permissions` SDK's job — `crate::current`
-//! awaited `permissions::request(LocationWhenInUse)` (→ `ACCESS_FINE_LOCATION`
-//! `checkSelfPermission`) before reaching here. We only read position data.
-//!
-//! VERIFICATION: compile-checked only — exercising it needs a device/emulator
-//! with the `ACCESS_FINE_LOCATION` / `ACCESS_COARSE_LOCATION` manifest entries
-//! and a granted runtime permission. The JNI structure mirrors the verified
-//! `net` / `microphone` Android backends.
+//! awaited it before reaching here. We only read position data.
 
-use jni::objects::{JObject, JValue};
-use jni::JavaVM;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
+use jni::sys::{jdouble, jlong};
+use jni::{JNIEnv, JavaVM};
+
+use crate::android_fix::{self, RawFix};
+use crate::oneshot;
 use crate::{BoxedCallback, LocationError, Position};
 
-/// `Context.LOCATION_SERVICE`.
-const LOCATION_SERVICE: &str = "location";
-/// `LocationManager.GPS_PROVIDER` — most accurate when a fix is fresh.
-const GPS_PROVIDER: &str = "gps";
-/// `LocationManager.NETWORK_PROVIDER` — coarse, but usually has a cached fix.
-const NETWORK_PROVIDER: &str = "network";
+const HELPER: &str = "io.idealyst.location.RustLocation";
 
-/// Attach to the host `JavaVM`. A bad pointer is a bootstrap bug surfaced as
-/// [`LocationError::Unavailable`].
+/// How long [`current_fix`] waits for a fresh fix: 30 s, like the other
+/// backends.
+const FIX_TIMEOUT_MS: i64 = 30_000;
+
+type FixSender = oneshot::Sender<Result<Position, LocationError>>;
+
+/// Requests waiting for their fix, by token.
+static PENDING: Mutex<Option<HashMap<u64, FixSender>>> = Mutex::new(None);
+/// Live watches, by id.
+static WATCHES: Mutex<Option<HashMap<u64, Arc<Mutex<BoxedCallback>>>>> = Mutex::new(None);
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn unavailable(what: &str, e: impl std::fmt::Display) -> LocationError {
+    LocationError::Unavailable(format!("{what}: {e}"))
+}
+
 fn java_vm() -> Result<JavaVM, LocationError> {
     let ctx = ndk_context::android_context();
-    let vm_ptr = ctx.vm() as *mut jni::sys::JavaVM;
-    unsafe { JavaVM::from_raw(vm_ptr) }
-        .map_err(|e| LocationError::Unavailable(format!("invalid JavaVM pointer: {e}")))
+    unsafe { JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| unavailable("no JavaVM", e))
 }
 
-pub(crate) async fn current_fix() -> Result<Position, LocationError> {
-    // All JNI work happens on the calling thread, attached to the VM. Reads
-    // are synchronous (`getLastKnownLocation` returns immediately), so no
-    // worker thread is needed — unlike the microphone's blocking read loop.
+/// `RustLocation`, resolved through the Context's class loader and cached:
+/// `find_class` on a thread the JVM did not start resolves against the system
+/// class loader, which cannot see app classes.
+static HELPER_CLASS: OnceLock<GlobalRef> = OnceLock::new();
+
+fn helper_class(env: &mut JNIEnv<'_>, ctx: &JObject<'_>) -> Result<&'static GlobalRef, LocationError> {
+    if let Some(c) = HELPER_CLASS.get() {
+        return Ok(c);
+    }
+    let class = (|| -> jni::errors::Result<GlobalRef> {
+        let loader = env.call_method(ctx, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+        let name = env.new_string(HELPER)?;
+        let class = env
+            .call_method(
+                &loader,
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&name)],
+            )?
+            .l()?;
+        env.new_global_ref(class)
+    })();
+    let class = class.map_err(|e| {
+        let _ = env.exception_clear();
+        unavailable(&format!("{HELPER} is not in the APK; was the app built by the idealyst CLI?"), e)
+    })?;
+    Ok(HELPER_CLASS.get_or_init(|| class))
+}
+
+/// Call one of the shim's static methods.
+fn call<R>(
+    f: impl FnOnce(&mut JNIEnv<'_>, &JClass<'_>, &JObject<'_>) -> jni::errors::Result<R>,
+) -> Result<R, LocationError> {
     let vm = java_vm()?;
-    let mut env = vm
-        .attach_current_thread()
-        .map_err(|e| LocationError::Unavailable(format!("JNI attach failed: {e}")))?;
-
-    // The host Activity/Context, from ndk_context.
-    let ctx = ndk_context::android_context();
-    let context = unsafe { JObject::from_raw(ctx.context() as jni::sys::jobject) };
-
-    // LocationManager lm = (LocationManager) context.getSystemService("location");
-    let service_name = env
-        .new_string(LOCATION_SERVICE)
-        .map_err(|e| LocationError::Unavailable(format!("new_string: {e}")))?;
-    let manager = env
-        .call_method(
-            &context,
-            "getSystemService",
-            "(Ljava/lang/String;)Ljava/lang/Object;",
-            &[JValue::Object(&service_name)],
-        )
-        .and_then(|v| v.l())
-        .map_err(|e| LocationError::Unavailable(format!("getSystemService: {e}")))?;
-    if manager.is_null() {
-        return Err(LocationError::Unavailable(
-            "LOCATION_SERVICE unavailable".into(),
-        ));
+    let mut env = vm.attach_current_thread().map_err(|e| unavailable("JNI attach", e))?;
+    let ptr = ndk_context::android_context().context();
+    if ptr.is_null() {
+        return Err(LocationError::Unavailable("no Android context (the app has not attached yet)".into()));
     }
-
-    // Try GPS first (most accurate), then network (most likely to have a
-    // cached fix). The first provider with a non-null last-known location wins.
-    for provider in [GPS_PROVIDER, NETWORK_PROVIDER] {
-        let provider_str = env
-            .new_string(provider)
-            .map_err(|e| LocationError::Unavailable(format!("new_string: {e}")))?;
-        // `getLastKnownLocation` throws SecurityException without permission;
-        // the grant is the caller's responsibility (via `permissions`), so a
-        // thrown exception here means "not authorized".
-        let location = match env.call_method(
-            &manager,
-            "getLastKnownLocation",
-            "(Ljava/lang/String;)Landroid/location/Location;",
-            &[JValue::Object(&provider_str)],
-        ) {
-            Ok(v) => v.l().unwrap_or(JObject::null()),
-            Err(_) => {
-                // Clear the pending Java exception so the next call is clean.
-                let _ = env.exception_clear();
-                return Err(LocationError::NotAuthorized);
-            }
-        };
-        if location.is_null() {
-            continue;
-        }
-        return read_location(&mut env, &location);
-    }
-
-    Err(LocationError::Unavailable(
-        "no last-known location from any provider".into(),
-    ))
-}
-
-/// Map an `android.location.Location` to a [`Position`] via its getters.
-///
-/// `getAltitude` / `getBearing` / `getSpeed` always return a value, but a
-/// `has*()` companion reports whether it's meaningful — we gate on those so an
-/// absent field maps to `None` rather than a spurious `0.0`.
-fn read_location(env: &mut jni::JNIEnv, location: &JObject) -> Result<Position, LocationError> {
-    let f64_getter = |env: &mut jni::JNIEnv, name: &str| -> Result<f64, LocationError> {
-        env.call_method(location, name, "()D", &[])
-            .and_then(|v| v.d())
-            .map_err(|e| LocationError::Unavailable(format!("{name}: {e}")))
-    };
-    let f32_getter = |env: &mut jni::JNIEnv, name: &str| -> Result<f32, LocationError> {
-        env.call_method(location, name, "()F", &[])
-            .and_then(|v| v.f())
-            .map_err(|e| LocationError::Unavailable(format!("{name}: {e}")))
-    };
-    let bool_has = |env: &mut jni::JNIEnv, name: &str| -> bool {
-        env.call_method(location, name, "()Z", &[])
-            .and_then(|v| v.z())
-            .unwrap_or(false)
-    };
-    let i64_getter = |env: &mut jni::JNIEnv, name: &str| -> i64 {
-        env.call_method(location, name, "()J", &[])
-            .and_then(|v| v.j())
-            .unwrap_or(0)
-    };
-
-    let latitude = f64_getter(env, "getLatitude")?;
-    let longitude = f64_getter(env, "getLongitude")?;
-    // `getAccuracy` is a float (metres). `hasAccuracy` gates validity; absent
-    // → a large sentinel so callers treat the fix as low-confidence rather
-    // than perfectly precise.
-    let accuracy_m = if bool_has(env, "hasAccuracy") {
-        f32_getter(env, "getAccuracy")? as f64
-    } else {
-        f64::INFINITY
-    };
-    let altitude = if bool_has(env, "hasAltitude") {
-        Some(f64_getter(env, "getAltitude")?)
-    } else {
-        None
-    };
-    let heading = if bool_has(env, "hasBearing") {
-        Some(f32_getter(env, "getBearing")? as f64)
-    } else {
-        None
-    };
-    let speed = if bool_has(env, "hasSpeed") {
-        Some(f32_getter(env, "getSpeed")? as f64)
-    } else {
-        None
-    };
-    // `getTime()` → ms since the Unix epoch (UTC).
-    let timestamp_ms = i64_getter(env, "getTime") as f64;
-
-    Ok(Position {
-        latitude,
-        longitude,
-        accuracy_m,
-        altitude,
-        heading,
-        speed,
-        timestamp_ms,
+    // SAFETY: `ndk_context` holds a process-lifetime global ref to the
+    // Context; this is a non-owning wrapper that never deletes it.
+    let ctx = unsafe { JObject::from_raw(ptr.cast()) };
+    let class = helper_class(&mut env, &ctx)?;
+    let class: &JClass = class.as_obj().into();
+    f(&mut env, class, &ctx).map_err(|e| {
+        // Left pending, the exception would surface in whatever runs next.
+        let _ = env.exception_clear();
+        unavailable("RustLocation", e)
     })
 }
 
-/// Stops updates on drop. Today this is inert (see the module docs) — the
-/// continuous-update path needs a Java `LocationListener` shim supplied by the
-/// host. The handle still implements the RAII contract so swapping in the shim
-/// later is source-compatible: its `Drop` will call `removeUpdates(listener)`.
+/// A parked request. Dropped (answered, or its future was), it stops.
+struct Request(u64);
+
+impl Drop for Request {
+    fn drop(&mut self) {
+        if PENDING.lock().unwrap().as_mut().and_then(|p| p.remove(&self.0)).is_none() {
+            return; // answered
+        }
+        let token = self.0 as jlong;
+        let _ = call(|env, class, _| {
+            env.call_static_method(class, "cancel", "(J)V", &[JValue::Long(token)]).map(drop)
+        });
+    }
+}
+
+/// Whether Location is off for the device.
+pub(crate) fn services_off() -> bool {
+    call(|env, class, ctx| {
+        env.call_static_method(
+            class,
+            "servicesEnabled",
+            "(Landroid/content/Context;)Z",
+            &[JValue::Object(ctx)],
+        )?
+        .z()
+    })
+    .is_ok_and(|on| !on)
+}
+
+pub(crate) async fn current_fix() -> Result<Position, LocationError> {
+    let token = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = oneshot::channel(Err(LocationError::Unavailable("the location request was dropped".into())));
+    PENDING.lock().unwrap().get_or_insert_with(HashMap::new).insert(token, tx);
+    let _request = Request(token);
+    let code = call(|env, class, ctx| {
+        env.call_static_method(
+            class,
+            "current",
+            "(Landroid/content/Context;JJ)I",
+            &[JValue::Object(ctx), JValue::Long(token as jlong), JValue::Long(FIX_TIMEOUT_MS)],
+        )?
+        .i()
+    })?;
+    android_fix::started(code)?;
+    rx.await
+}
+
+/// Stops updates on drop.
 pub(crate) struct WatchHandle {
-    // Reserved for the listener global-ref the host shim will register; kept
-    // as a field so the public type and Drop shape don't change when the seam
-    // is filled.
-    _seam: (),
+    /// `None` when the watch could not start.
+    id: Option<u64>,
 }
 
 impl Drop for WatchHandle {
     fn drop(&mut self) {
-        // No-op until the LocationListener seam is wired (see module docs).
-        // Once it is: `locationManager.removeUpdates(listener)` here.
+        let Some(id) = self.id else { return };
+        if let Some(watches) = WATCHES.lock().unwrap().as_mut() {
+            watches.remove(&id);
+        }
+        let _ = call(|env, class, _| {
+            env.call_static_method(class, "stopWatch", "(J)V", &[JValue::Long(id as jlong)]).map(drop)
+        });
     }
 }
 
-pub(crate) fn start_watch(_callback: BoxedCallback) -> WatchHandle {
-    // SEAM: continuous updates require `requestLocationUpdates(provider,
-    // minTimeMs, minDistanceM, LocationListener)`. `LocationListener` is a
-    // Java interface; pure JNI can't implement it at runtime without a host
-    // stub `.dex`. The Android host must supply a `LocationListener` that
-    // forwards `onLocationChanged` into `_callback`. Until then this installs
-    // nothing and the callback never fires (documented, not faked).
-    //
-    // The one-shot `current()` path (`getLastKnownLocation`) is fully
-    // functional and covers the common "where am I now" case.
-    WatchHandle { _seam: () }
+pub(crate) fn start_watch(callback: BoxedCallback) -> WatchHandle {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    // Before the shim starts: its first update must find the callback.
+    WATCHES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(id, Arc::new(Mutex::new(callback)));
+    let started = call(|env, class, ctx| {
+        env.call_static_method(
+            class,
+            "startWatch",
+            "(Landroid/content/Context;J)I",
+            &[JValue::Object(ctx), JValue::Long(id as jlong)],
+        )?
+        .i()
+    })
+    .and_then(android_fix::started);
+    match started {
+        Ok(()) => WatchHandle { id: Some(id) },
+        Err(e) => {
+            // `watch` is synchronous and has no error to return.
+            log::warn!("location::watch: {e}");
+            if let Some(watches) = WATCHES.lock().unwrap().as_mut() {
+                watches.remove(&id);
+            }
+            WatchHandle { id: None }
+        }
+    }
 }
+
+/// Run an export's body: never unwind into the JVM.
+fn guard(what: &str, f: impl FnOnce()) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err() {
+        log::error!("location: panic in {what}; aborting");
+        std::process::abort();
+    }
+}
+
+fn answer(token: jlong, result: Result<Position, LocationError>) {
+    // Taken out first: waking the future may run it here.
+    let tx = PENDING.lock().unwrap().as_mut().and_then(|p| p.remove(&(token as u64)));
+    if let Some(tx) = tx {
+        tx.send(result);
+    }
+}
+
+/// `RustLocation.nativeOnFix`, on the main thread.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_location_RustLocation_nativeOnFix(
+    _env: JNIEnv,
+    _class: JClass,
+    token: jlong,
+    latitude: jdouble,
+    longitude: jdouble,
+    accuracy: jdouble,
+    altitude: jdouble,
+    heading: jdouble,
+    speed: jdouble,
+    time_ms: jlong,
+) {
+    guard("nativeOnFix", || {
+        let fix = RawFix { latitude, longitude, accuracy, altitude, heading, speed, time_ms };
+        answer(token, Ok(fix.into()));
+    });
+}
+
+/// `RustLocation.nativeOnNoFix`, on the main thread.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_location_RustLocation_nativeOnNoFix(
+    mut env: JNIEnv,
+    _class: JClass,
+    token: jlong,
+    reason: JString,
+) {
+    guard("nativeOnNoFix", || {
+        let reason = env.get_string(&reason).map(String::from).unwrap_or_default();
+        answer(token, Err(LocationError::Unavailable(reason)));
+    });
+}
+
+/// `RustLocation.nativeOnUpdate`, on the main thread.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_location_RustLocation_nativeOnUpdate(
+    _env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    latitude: jdouble,
+    longitude: jdouble,
+    accuracy: jdouble,
+    altitude: jdouble,
+    heading: jdouble,
+    speed: jdouble,
+    time_ms: jlong,
+) {
+    guard("nativeOnUpdate", || {
+        // Cloned out: the callback may drop its own watch.
+        let callback = WATCHES.lock().unwrap().as_ref().and_then(|w| w.get(&(id as u64)).cloned());
+        let Some(callback) = callback else { return };
+        let fix = RawFix { latitude, longitude, accuracy, altitude, heading, speed, time_ms };
+        (callback.lock().unwrap())(fix.into());
+    });
+}
+
+type FixExport = extern "system" fn(
+    JNIEnv,
+    JClass,
+    jlong,
+    jdouble,
+    jdouble,
+    jdouble,
+    jdouble,
+    jdouble,
+    jdouble,
+    jlong,
+);
+
+/// Pin the exports in the app `cdylib`'s dynamic symbol table: the JVM
+/// resolves them by `dlsym`, and a dependency rlib's `#[no_mangle]` export
+/// that nothing in Rust references can be dropped by the linker.
+#[used]
+static KEEP_ON_FIX: FixExport = Java_io_idealyst_location_RustLocation_nativeOnFix;
+#[used]
+static KEEP_ON_UPDATE: FixExport = Java_io_idealyst_location_RustLocation_nativeOnUpdate;
+#[used]
+static KEEP_ON_NO_FIX: extern "system" fn(JNIEnv, JClass, jlong, JString) =
+    Java_io_idealyst_location_RustLocation_nativeOnNoFix;

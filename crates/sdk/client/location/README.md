@@ -45,7 +45,11 @@ Two functions and one value type:
   degrees and `accuracy_m` (68 % confidence radius) is always present;
   `altitude`/`heading`/`speed` are `Option` (present only when the hardware
   supplied them on that fix).
-- `LocationError::{ NotAuthorized, Unavailable(String), NotSupported }`.
+  `timestamp_ms` is when the fix was made, which tells a fresh one from a
+  remembered one.
+- `LocationError::{ NotAuthorized, ServicesOff, Unavailable(String),
+  NotSupported }`. `ServicesOff` is Location switched off for the whole
+  device, told apart from "no fix yet" on Android, iOS and macOS.
 
 The permission **grant** flows through the shared `permissions` SDK rather than
 being re-implemented here; only the position-**data** APIs are called directly.
@@ -58,26 +62,15 @@ not in the functions you call.
 | --- | --- |
 | web (wasm32) | `navigator.geolocation` `getCurrentPosition` / `watchPosition` / `clearWatch` |
 | iOS / macOS / tvOS | `CLLocationManager` + a `CLLocationManagerDelegate` (objc2): `requestLocation` for `current`, `startUpdatingLocation` for `watch`, `stopUpdatingLocation` on drop |
-| Android | framework `LocationManager` via JNI: `getLastKnownLocation` for `current`; `requestLocationUpdates` for `watch` needs a Java `LocationListener` host shim (see below) |
+| Android | framework `LocationManager` (no Play Services) through a Kotlin `LocationListener` shim. `current` asks the fused provider (API 31+), or GPS and network together, for a fix made after the call; the rest are asked too after 10 s, and after 30 s the newest fix the device knows is the answer. `watch` streams at most one a second |
 | Linux | GeoClue2 over the D-Bus system bus |
 | Windows | WinRT `Geolocator`: `GetGeopositionAsync` (30 s bound) for `current`, `PositionChanged` for `watch` (thread-pool thread); authorization through `permissions` (Windows' location prompt) |
 | other native | unsupported — `current` returns `NotSupported`; `watch` installs nothing |
 
-**Verification status.** The **web** path is genuinely runnable and is treated
-as exercised. The **iOS / macOS / Android** native paths are **compile-checked
-only** — exercising them needs a real device / simulator with the matching
-usage-description / manifest entries and a granted runtime permission. Their
-delegate-class / JNI structure mirrors the verified `permissions` /
-`microphone` SDKs, with the lifetime and platform invariants documented inline.
-
-**Android `watch` seam.** The one-shot `current()` (`getLastKnownLocation`) is
-fully implemented over JNI. Continuous `watch()` needs
-`requestLocationUpdates(provider, minTime, minDist, LocationListener)`, and
-`LocationListener` is a Java *interface* — pure JNI can't implement it at
-runtime without a host stub. So the Android host must supply a small
-`LocationListener` that forwards `onLocationChanged` back into the SDK. Until
-that shim lands, `watch` installs nothing and the callback never fires
-(documented, not faked).
+**Verification status.** The **web** path is exercised by browser tests. The
+Apple paths are **compile-checked only**. Android is exercised on an API 34
+emulator with test providers (its GPS gave no reports): the checklist has the
+cases. Below API 31, and real Wi-Fi location on a tablet without GPS, are not.
 
 ## Permissions
 
@@ -86,8 +79,7 @@ This crate declares the `location` capability
 app's dependency graph, finds it, and injects the right artifacts per platform.
 The app must declare the platform usage strings / manifest entries:
 
-- **iOS** — `NSLocationWhenInUseUsageDescription` (and
-  `NSLocationAlwaysAndWhenInUseUsageDescription` for always-on background).
+- **iOS** — `NSLocationWhenInUseUsageDescription`.
 - **macOS** — `NSLocationUsageDescription`.
 - **Android** — `android.permission.ACCESS_FINE_LOCATION` +
   `android.permission.ACCESS_COARSE_LOCATION`.
@@ -99,10 +91,51 @@ SDK (`Permission::LocationWhenInUse`); you can also call
 `permissions::request(Permission::LocationWhenInUse)` yourself before `watch()`,
 which doesn't await a grant of its own.
 
+The user may grant approximate location only, on Android and iOS; `current()`
+then returns a fix with a large `accuracy_m`.
+
+### In the background
+
+`location` declares foreground location only. An app that reads its position
+in the background opts in, in its **own** `Cargo.toml`:
+
+```toml
+[package.metadata.idealyst]
+capabilities = ["location_background"]
+
+[package.metadata.idealyst.app.permissions]
+location_background = "Find a lost tablet"
+```
+
+That adds Android's `ACCESS_BACKGROUND_LOCATION` and iOS's
+`NSLocationAlwaysAndWhenInUseUsageDescription`, and
+`permissions::request(Permission::LocationAlways)` asks for the grant.
+
+On Android `current()` and `watch()` need no Activity. An Android device owner
+(the `device-admin` SDK) needs nobody at the device either:
+
+```rust,ignore
+use device_admin::{permission, set_permission_grant_state, PermissionGrantState};
+
+device_admin::set_location_enabled(true)?;
+for p in [
+    permission::ACCESS_FINE_LOCATION,
+    permission::ACCESS_COARSE_LOCATION,
+    permission::ACCESS_BACKGROUND_LOCATION,
+] {
+    set_permission_grant_state(MY_PACKAGE, p, PermissionGrantState::Granted)?;
+}
+// Keeps the process running. It carries no location access of its own: a fix
+// in the background comes from the background grant above.
+device_admin::start_keep_alive("Device management", "Connected")?;
+
+let here = location::current().await?;
+```
+
 ## Scope
 
-Raw position + updates — the unopinionated capability. Background location,
-geofencing, geocoding, distance/region math, map rendering (`maps`), and
+Raw position + updates — the unopinionated capability. Background tracking
+(schedules, batching), geofencing, geocoding, distance/region math, map rendering (`maps`), and
 reactive `Signal` bindings are deliberately left to higher-level SDKs built on
 top of this one rather than baked in here.
 
@@ -141,7 +174,8 @@ verification note above). Tick each item as you exercise it.
 - [ ] **Web** — `current()` prompts the browser; returns a plausible lat/long; the demo updates as `watchPosition` fires; deny → `NotAuthorized` with no crash.
 - [ ] **iOS** — the permission prompt shows the app's `NSLocationWhenInUseUsageDescription`; `current()` returns a plausible fix (`accuracy_m` set, optional fields where supplied); `watch()` streams updates and drops the `CLLocationManager` cleanly; deny → `NotAuthorized`.
 - [ ] **macOS** — same flow against `CLLocationManager` with `NSLocationUsageDescription`.
-- [ ] **Android** — `current()` (`getLastKnownLocation`) returns a fix after `ACCESS_FINE_LOCATION` is granted. `watch()` requires the host `LocationListener` shim forwarding `onLocationChanged` — currently inert (callback never fires); verify once that shim is wired.
+- [x] **Android** (API 34 emulator, test providers) — `current()` returns a fix dated after the call; with the fused provider silent, one from the network provider after 10 s; with nothing fresh, the remembered one after 30 s; with Location off, `ServicesOff`. `watch()` streams and stops on drop. In the background (`kiosk-agent`'s **Locate** in `device-admin/examples`: device owner, another app in lock task, screen asleep): the same, with the agent's Activity destroyed too; with only the foreground grant, no fix.
+- [ ] **Android hardware** — the background case on a tablet without GPS, on Wi-Fi.
 
 **Permissions**
 - [ ] `current()` requests `LocationWhenInUse` via the `permissions` SDK — confirm the prompt text matches the app's declared usage string, and a deny yields `NotAuthorized` (not a fake fix). For `watch()`, grant the permission first (it doesn't await its own grant).
