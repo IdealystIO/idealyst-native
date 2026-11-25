@@ -95,7 +95,7 @@ pub type MeasureFn =
 
 /// Lay out a leaf the way Taffy's own leaf algorithm does — its size,
 /// min/max and padding around the measured content — with the node's
-/// [`MeasureFn`], if any, as the content measure. Taffy 0.15 hands the
+/// [`MeasureFn`], if any, as the content measure. Taffy hands the
 /// whole leaf to the closure passed to `compute_layout_with_measure`
 /// (0.7 applied the style itself and only asked the closure for the
 /// content), so every call site routes through here.

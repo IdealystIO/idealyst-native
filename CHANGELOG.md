@@ -3940,6 +3940,9 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   stack in the window and a lone one fills it. Backends call the new
   `LayoutTree::blockify_root` as they mount.
 
+- **A `wrap-reverse` box whose lines overflow keeps them at its start on native**
+  (`runtime-layout`, taffy 0.16). They overflowed the far edge; CSS and web overflow the near one.
+
 - **macOS nested scrollers chain a gesture they cannot scroll** (`backend-macos`). A horizontal
   trackpad pan over a vertical list inside a horizontal `scroll_view` (a Kanban board's column)
   stayed with the list, so the board never moved: AppKit gives a gesture to the innermost
