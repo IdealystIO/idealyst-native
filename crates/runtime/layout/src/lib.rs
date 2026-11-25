@@ -296,6 +296,15 @@ pub struct LayoutTree {
     /// weights proportional to it — uniform `auto`/`fr` tracks can only
     /// split evenly. See [`compute`](Self::compute).
     table_grids: HashMap<NodeId, usize>,
+    /// The space each root's tables were last resolved for, while nothing
+    /// under it has changed since ([`Self::layout_with_tables`]).
+    tables_settled: HashMap<NodeId, (f32, f32)>,
+    /// The width each table's columns were last resolved for.
+    table_widths: HashMap<NodeId, f32>,
+    /// The exact cells holding their track's width instead of the one they
+    /// declare (`declared_width`), with the `max_width` they had, which the
+    /// track may have outgrown. [`Self::unstretch`] puts both back.
+    stretched_cells: HashMap<NodeId, LengthPercentageAuto>,
     /// Each node's author-declared px `width`, when it has one. Read by
     /// the table-grid column sizing in [`compute`](Self::compute): a cell
     /// that declares a width holds its column at it (an "exact" column —
@@ -469,6 +478,9 @@ impl LayoutTree {
             keyboard_padding: HashMap::new(),
             grid_items: HashSet::new(),
             table_grids: HashMap::new(),
+            tables_settled: HashMap::new(),
+            table_widths: HashMap::new(),
+            stretched_cells: HashMap::new(),
             declared_width: HashMap::new(),
             contents: HashSet::new(),
             logical_children: HashMap::new(),
@@ -851,6 +863,7 @@ impl LayoutTree {
             self.note_stale_hoists(ancestor);
             for n in self.flat_nodes(node) {
                 let _ = self.tree.remove_child(ancestor, n);
+                self.unstretch(n);
                 if self.hscroll_content.contains(&n) {
                     self.unexempt_hscroll_content(n);
                 }
@@ -1008,6 +1021,9 @@ impl LayoutTree {
         self.keyboard_padding.remove(&node.0);
         self.grid_items.remove(&node.0);
         self.table_grids.remove(&node.0);
+        self.tables_settled.remove(&node.0);
+        self.table_widths.remove(&node.0);
+        self.stretched_cells.remove(&node.0);
         self.declared_width.remove(&node.0);
         self.declared.remove(&node.0);
         self.dropped.insert(node.0);
@@ -1318,7 +1334,11 @@ impl LayoutTree {
              BEFORE the backend frees the Taffy slot.",
             node.0
         );
-        let existing = self.tree.style(node.0).cloned().unwrap_or_default();
+        let mut existing = self.tree.style(node.0).cloned().unwrap_or_default();
+        // The author's own width and max, not its table's track.
+        if self.unstretch(node.0) {
+            existing = self.tree.style(node.0).cloned().unwrap_or_default();
+        }
         let mut style = existing.clone();
         let auto_before = AutoAxes {
             width: self.auto_width.contains(&node.0),
@@ -1726,10 +1746,11 @@ impl LayoutTree {
                 Some(cols) if !cols.is_empty() && cols.iter().all(|t| matches!(t, FwTrackSize::Auto)) => {
                     self.table_grids.insert(node.0, cols.len());
                 }
-                _ => {
-                    self.table_grids.remove(&node.0);
-                }
+                _ => self.forget_table(node.0),
             }
+        } else {
+            // No longer a grid: an unstated `display` is flex.
+            self.forget_table(node.0);
         }
         changed || remeasure
     }
@@ -2267,6 +2288,9 @@ impl LayoutTree {
         // so checking the style itself would falsely conclude that
         // the author had set them explicitly and skip refilling on
         // the next viewport change (orientation flip, etc.).
+        // Read before the root's own style is written below, which marks it.
+        let settled = self.tables_settled.get(&root.0) == Some(&(width, height))
+            && !self.tree.dirty(root.0).unwrap_or(true);
         let mut style = self
             .tree
             .style(root.0)
@@ -2290,198 +2314,8 @@ impl LayoutTree {
         // which holds a mutable borrow on the tree).
         let measure_fns = std::mem::take(&mut self.measure_fns);
 
-        self.tree
-            .compute_layout_with_measure(
-                root.0,
-                space,
-                |inputs, node_id, _ctx, style| measure_leaf(inputs, style, measure_fns.get(&node_id)),
-            )
-            .expect("taffy compute_layout");
-
-        // --- Table grids: `table-layout: auto` column sizing -----------
-        // Reproduce a browser's auto table. The pass above gives each grid
-        // its width `W` (a bounded stretch child reports its container's
-        // width regardless of column content). For each all-`Auto` grid we
-        // measure every column's max-content (per cell, IN ISOLATION:
-        // `compute_layout` on the cell with MaxContent available — during
-        // normal layout Taffy measures a grid item at the GRID's width and
-        // clamps to it) and size columns:
-        //   - fits (Σmax ≤ W): column = max-content + a share of the
-        //     leftover proportional to max-content.
-        //   - over-full: WATER-FILL. Short columns keep their content; the
-        //     largest columns shrink to a common cap C with Σ min(max,C)=W.
-        //     For the common one-wide-column table this is the browser
-        //     result — the text column gives back the overflow and wraps,
-        //     short columns stay hugged to their content.
-        // We deliberately do NOT use the exact CSS min/max formula: the GPU
-        // backend's text engine reports min-content ≈ 0 for long/unbreakable
-        // strings (its `measure_min_content` returns ~0), which would let
-        // short columns collapse below their content. Water-fill needs only
-        // the reliable max-content. The widths are pinned as fixed px tracks
-        // and the tree is laid out again.
-        if !self.table_grids.is_empty() {
-            let grids: Vec<(NodeId, usize)> =
-                self.table_grids.iter().map(|(k, v)| (*k, *v)).collect();
-            let mut repinned = false;
-            for (grid, n) in &grids {
-                let n = *n;
-                // ONLY grids under the root being computed.
-                //
-                // `table_grids` is global to the tree, but a host can have
-                // several Taffy ROOTS — iOS makes one per screen mounted
-                // into a `UIViewController`, and portals are orphan roots
-                // by construction — and drives them with one `compute` per
-                // root. The isolation measure below lays each CELL out as
-                // its own root, which overwrites that cell's location with
-                // (0, 0); only the final re-layout of `root` puts them
-                // back. A grid under a DIFFERENT root gets scrambled here
-                // and never repaired, so every one of its cells ends up
-                // stacked at the grid's origin — correct sizes, no
-                // positions. Whichever root happened to be computed last
-                // was the only one that looked right.
-                if !self.is_under(*grid, root.0) {
-                    continue;
-                }
-                let w = self.tree.layout(*grid).map(|l| l.size.width).unwrap_or(0.0);
-                let children = self.tree.children(*grid).unwrap_or_default();
-                if n == 0 || children.is_empty() || w <= 0.0 {
-                    continue;
-                }
-                // Measure ONLY each column's max-content (the unwrapped
-                // single-line width). It's measured per cell IN ISOLATION
-                // (`compute_layout` on the cell with MaxContent available),
-                // because during normal layout Taffy measures a grid item
-                // at the GRID's width and clamps to it. We do NOT use
-                // min-content: this backend's text engine reports ~0
-                // min-content for long/unbreakable strings, so the CSS
-                // min/max formula collapses short columns. max-content alone
-                // is reliable and drives the water-fill below.
-                let mut cols = vec![TableColumnInput::default(); n];
-                // Exact cells, with the column each one sits in — their
-                // Taffy width is rewritten to the final track below.
-                let mut exact_cells: Vec<(NodeId, usize)> = Vec::new();
-                // Column attribution. Auto-flow children map to columns
-                // in document order (`auto_idx % n` — one grid row per
-                // table row). An EXPLICITLY placed child (`grid_column:
-                // Line(l)`) belongs to the column its start line names —
-                // the table SDK places every cell explicitly the moment
-                // a row carries a proxy backdrop or a spanning cell, and
-                // index-order attribution would smear those cells across
-                // the wrong columns (the backdrops occupy child slots
-                // too). A child spanning multiple tracks (the `1 / -1`
-                // row backdrop, a `colspan` cell) belongs to no single
-                // column: it's skipped — both from attribution and from
-                // the isolation measure. A browser spreads a spanning
-                // cell's content over the columns it covers; the SDK
-                // documents that a native spanning cell wraps inside the
-                // width its columns already have instead.
-                let mut auto_idx = 0usize;
-                for c in children.iter() {
-                    use taffy::style::GridPlacement as Gp;
-                    let col: Option<usize> = match self.tree.style(*c).map(|s| s.grid_column.clone()) {
-                        Ok(gc) => match (gc.start, gc.end) {
-                            (Gp::Line(l), Gp::Auto) => {
-                                // 1-based CSS line → 0-based column;
-                                // negative lines count from the end
-                                // (line -1 is line n+1).
-                                let line = l.as_i16();
-                                let positive = if line > 0 {
-                                    line as i32
-                                } else {
-                                    n as i32 + 2 + line as i32
-                                };
-                                usize::try_from(positive - 1).ok().filter(|i| *i < n)
-                            }
-                            (Gp::Auto, Gp::Auto) => {
-                                let k = auto_idx % n;
-                                auto_idx += 1;
-                                Some(k)
-                            }
-                            // Any explicit end line or span: the item
-                            // covers more than one column (or an
-                            // unsupported shape) — never drives a
-                            // single column's width.
-                            _ => None,
-                        },
-                        Err(_) => None,
-                    };
-                    let Some(col) = col else { continue };
-                    // An author `min_width` floors its column (a browser
-                    // honours `min-width` on a cell the same way).
-                    if let Ok(ExpandedLengthPercentageAuto::Length(min)) =
-                        self.tree.style(*c).map(|s| s.min_size.width.expand())
-                    {
-                        cols[col].floor = cols[col].floor.max(min);
-                    }
-                    // A declared width is the column's content width, and
-                    // marks it exact. No isolation measure: the Taffy
-                    // width may hold last compute's stretch (see below).
-                    if let Some(dw) = self.declared_width.get(c).copied() {
-                        let e = cols[col].exact.get_or_insert(0.0);
-                        *e = e.max(dw);
-                        cols[col].max_content = cols[col].max_content.max(dw);
-                        exact_cells.push((*c, col));
-                        continue;
-                    }
-                    let _ = self.tree.compute_layout_with_measure(
-                        *c,
-                        Size {
-                            width: AvailableSpace::MaxContent,
-                            height: AvailableSpace::MaxContent,
-                        },
-                        |inputs, id, _c, style| measure_leaf(inputs, style, measure_fns.get(&id)),
-                    );
-                    cols[col].max_content = cols[col]
-                        .max_content
-                        .max(self.tree.layout(*c).map(|l| l.size.width).unwrap_or(0.0));
-                }
-                let widths = table_column_widths(w, &cols);
-                // Stretch exact cells to their final track. A column held
-                // at a declared width is wider than it only when EVERY
-                // column is exact and the table is wider than their sum —
-                // a browser then stretches the columns, and its `<td>`
-                // always fills its column. A native cell with a definite
-                // width would instead sit at that width inside a wider
-                // track (borders and background stopping short), so the
-                // cell's Taffy width follows the track. `declared_width`
-                // keeps the author value for the next compute.
-                for (cell, col) in exact_cells {
-                    if let Ok(mut cs) = self.tree.style(cell).cloned() {
-                        let track = widths[col];
-                        cs.size.width = Dimension::length(track);
-                        if let ExpandedLengthPercentageAuto::Length(m) = cs.max_size.width.expand() {
-                            if m < track {
-                                cs.max_size.width = LengthPercentageAuto::length(track);
-                            }
-                        }
-                        let _ = self.tree.set_style(cell, cs);
-                    }
-                }
-                if let Ok(mut s) = self.tree.style(*grid).cloned() {
-                    s.grid_template_columns = widths
-                        .iter()
-                        .map(|px| {
-                            GridTemplateComponent::Single(MinMax {
-                                min: MinTrackSizingFunction::length(*px),
-                                max: MaxTrackSizingFunction::length(*px),
-                            })
-                        })
-                        .collect();
-                    let _ = self.tree.set_style(*grid, s);
-                    repinned = true;
-                }
-            }
-            if repinned {
-                // The per-cell isolation computes above scrambled the
-                // tree's layout; lay it out once more from the root with
-                // the pinned px columns.
-                self.tree
-                    .compute_layout_with_measure(root.0, space, |inputs, id, _c, style| {
-                        measure_leaf(inputs, style, measure_fns.get(&id))
-                    })
-                    .expect("taffy compute_layout (table final pass)");
-            }
-        }
+        self.layout_with_tables(root.0, space, &measure_fns, settled);
+        self.tables_settled.insert(root.0, (width, height));
         self.measure_fns = measure_fns;
 
         // --- CSS-parity second pass for `width: %` + `max_width: <px>` ---
@@ -2541,6 +2375,398 @@ impl LayoutTree {
         }
     }
 
+    /// Lay `root` out in `space`, resolving the tables under it.
+    ///
+    /// A table grid (see `table_grids`) gets `table-layout: auto` columns,
+    /// as a browser sizes them. A pass gives each grid its width `W` (a
+    /// bounded stretch child reports its container's width regardless of
+    /// column content). For each all-`Auto` grid we measure every column's
+    /// max-content (per cell, IN ISOLATION: a layout of the cell with
+    /// MaxContent available — during normal layout Taffy measures a grid
+    /// item at the GRID's width and clamps to it) and size columns:
+    ///   - fits (Σmax ≤ W): column = max-content + a share of the
+    ///     leftover proportional to max-content.
+    ///   - over-full: WATER-FILL. Short columns keep their content; the
+    ///     largest columns shrink to a common cap C with Σ min(max,C)=W.
+    ///     For the common one-wide-column table this is the browser
+    ///     result — the text column gives back the overflow and wraps,
+    ///     short columns stay hugged to their content.
+    /// We deliberately do NOT use the exact CSS min/max formula: the GPU
+    /// backend's text engine reports min-content ≈ 0 for long/unbreakable
+    /// strings (its `measure_min_content` returns ~0), which would let
+    /// short columns collapse below their content. Water-fill needs only
+    /// the reliable max-content. The widths are pinned as fixed px tracks
+    /// and the tree is laid out again.
+    ///
+    /// The pins are this pass's answer, not the grid's style: left in place
+    /// they are the table's content width to whatever measures it next (a
+    /// shrink-to-fit table never left its first width, and an outer table
+    /// measured a nested one at its old columns). So a pass starts by taking
+    /// them all off. Not before it has to: when no table's content changed
+    /// and each one's width comes from outside it ([`Self::width_is_given`]),
+    /// a pass with the pins on shows whether any of those widths changed,
+    /// and usually none did.
+    ///
+    /// Tables nest outermost first, with a layout per level, because each
+    /// depends on the other one way: the outer's columns on the inner's
+    /// content, the inner's width on the outer's columns.
+    ///
+    /// `settled`: nothing under `root` has changed since its tables were
+    /// resolved for this `space`, so the pins still hold.
+    fn layout_with_tables(
+        &mut self,
+        root: NodeId,
+        space: Size<AvailableSpace>,
+        measure_fns: &HashMap<NodeId, MeasureFn>,
+        settled: bool,
+    ) {
+        let levels = if settled { Vec::new() } else { self.table_levels(root) };
+        let kept = levels.iter().enumerate().all(|(level, grids)| {
+            grids.iter().all(|&(grid, _)| {
+                self.table_widths.contains_key(&grid)
+                    && !self.tree.dirty(grid).unwrap_or(true)
+                    && if level == 0 {
+                        self.width_is_given(grid, root)
+                    } else {
+                        self.follows_its_outer_table(grid)
+                    }
+            })
+        });
+        if kept {
+            self.layout_pass(root, space, measure_fns);
+            let same = levels
+                .iter()
+                .flatten()
+                .all(|&(grid, _)| self.table_widths.get(&grid) == Some(&self.width_of(grid)));
+            if same {
+                return;
+            }
+        }
+        for &(grid, n) in levels.iter().flatten() {
+            self.unpin_table(grid, n);
+        }
+        self.layout_pass(root, space, measure_fns);
+        for level in levels {
+            let mut pinned = false;
+            for (grid, n) in level {
+                let w = self.width_of(grid);
+                self.table_widths.insert(grid, w);
+                pinned |= self.pin_table(grid, n, w, measure_fns);
+            }
+            if pinned {
+                // The per-cell isolation computes scrambled the tree's
+                // layout; lay it out once more from the root with the pinned
+                // px columns.
+                self.layout_pass(root, space, measure_fns);
+            }
+        }
+    }
+
+    fn width_of(&self, node: NodeId) -> f32 {
+        self.tree.layout(node).map(|l| l.size.width).unwrap_or(0.0)
+    }
+
+    /// Whether a nested table is in the flow of the one it is inside, whose
+    /// columns are then all that changes its width. An out-of-flow box on the
+    /// way is sized from its containing block instead.
+    fn follows_its_outer_table(&self, grid: NodeId) -> bool {
+        let mut cur = grid;
+        for _ in 0..512 {
+            let Ok(style) = self.tree.style(cur) else { return false };
+            if !matches!(style.position, Position::Relative | Position::Static) {
+                return false;
+            }
+            let Some(parent) = self.tree.parent(cur) else { return false };
+            if self.table_grids.contains_key(&parent) {
+                return true;
+            }
+            cur = parent;
+        }
+        false
+    }
+
+    /// Whether `node`'s width comes from outside it: no change to what is in
+    /// it can change the width it is laid out at. A table's own columns then
+    /// can't feed back into the width they are resolved for.
+    ///
+    /// Answers `true` only for the shapes it can be sure of (a chain of
+    /// stretched items of unwrapped columns, up to a definite width), which
+    /// is how a page holds a table; anything else is treated as measured.
+    fn width_is_given(&self, node: NodeId, root: NodeId) -> bool {
+        let mut cur = node;
+        // Bounded by the view tree; the guard is against a malformed cycle.
+        for _ in 0..512 {
+            let Ok(style) = self.tree.style(cur) else { return false };
+            if cur == root {
+                return matches!(style.size.width.expand(), ExpandedDimension::Length(_));
+            }
+            let Some(parent) = self.tree.parent(cur) else { return false };
+            let Ok(ps) = self.tree.style(parent) else { return false };
+            let in_flow = matches!(style.position, Position::Relative | Position::Static);
+            let width_of_its_own = style.aspect_ratio.is_some()
+                || style.margin.left.is_auto()
+                || style.margin.right.is_auto()
+                || self.hscroll_parents.contains(&parent)
+                || self.hscroll_content.contains(&cur);
+            if !in_flow || width_of_its_own {
+                return false;
+            }
+            let one_cell = self.blockified.contains(&parent) && ps.display == Display::Grid;
+            let column = ps.display == Display::Flex
+                && matches!(ps.flex_direction, FlexDirection::Column | FlexDirection::ColumnReverse)
+                && ps.flex_wrap == FlexWrap::NoWrap;
+            if !one_cell && !column {
+                return false;
+            }
+            match style.size.width.expand() {
+                // Never flexed on this axis: it is the column's cross axis.
+                ExpandedDimension::Length(_) => return true,
+                ExpandedDimension::Percent(_) => {}
+                ExpandedDimension::Auto => {
+                    let align = style.align_self.unwrap_or(ps.align_items);
+                    if !matches!(align, AlignItems::STRETCH | AlignItems::NORMAL) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+            cur = parent;
+        }
+        false
+    }
+
+    fn layout_pass(
+        &mut self,
+        root: NodeId,
+        space: Size<AvailableSpace>,
+        measure_fns: &HashMap<NodeId, MeasureFn>,
+    ) {
+        self.tree
+            .compute_layout_with_measure(root, space, |inputs, id, _ctx, style| {
+                measure_leaf(inputs, style, measure_fns.get(&id))
+            })
+            .expect("taffy compute_layout");
+    }
+
+    /// The table grids under `root` with their column counts, by how many
+    /// other tables each is inside. In a fixed order: `table_grids` iterates
+    /// differently in every tree.
+    ///
+    /// ONLY the grids under `root`: a host can have several Taffy ROOTS —
+    /// iOS makes one per screen mounted into a `UIViewController`, and
+    /// portals are orphan roots by construction — and drives them with one
+    /// `compute` per root. The isolation measure lays each CELL out as its
+    /// own root, which overwrites that cell's location with (0, 0); only the
+    /// re-layout of `root` puts them back. A grid under a DIFFERENT root
+    /// would be left scrambled: correct sizes, every cell stacked at the
+    /// grid's origin.
+    fn table_levels(&self, root: NodeId) -> Vec<Vec<(NodeId, usize)>> {
+        let mut levels: Vec<Vec<(NodeId, usize)>> = Vec::new();
+        for (&grid, &n) in &self.table_grids {
+            if n == 0 || !self.is_under(grid, root) {
+                continue;
+            }
+            let mut level = 0;
+            let mut cur = grid;
+            // Bounded like `is_under`, which just walked the same chain.
+            while cur != root {
+                let Some(parent) = self.tree.parent(cur) else { break };
+                level += usize::from(self.table_grids.contains_key(&parent));
+                cur = parent;
+            }
+            if levels.len() <= level {
+                levels.resize_with(level + 1, Vec::new);
+            }
+            levels[level].push((grid, n));
+        }
+        for level in &mut levels {
+            level.sort_unstable_by_key(|(grid, _)| u64::from(*grid));
+        }
+        levels
+    }
+
+    /// Give a table back its author's columns, and its exact cells the width
+    /// they declared.
+    fn unpin_table(&mut self, grid: NodeId, n: usize) {
+        if let Ok(style) = self.tree.style(grid) {
+            let auto: Vec<GridTemplateComponent<String>> =
+                (0..n).map(|_| track_sizing_function(&FwTrackSize::Auto)).collect();
+            if style.grid_template_columns != auto {
+                let style = Style { grid_template_columns: auto, ..style.clone() };
+                let _ = self.tree.set_style(grid, style);
+            }
+        }
+        for cell in self.tree.children(grid).unwrap_or_default() {
+            self.unstretch(cell);
+        }
+    }
+
+    /// `node` is not a table grid (any more): its cells are nothing's exact
+    /// columns.
+    fn forget_table(&mut self, node: NodeId) {
+        if self.table_grids.remove(&node).is_none() {
+            return;
+        }
+        self.table_widths.remove(&node);
+        for cell in self.tree.children(node).unwrap_or_default() {
+            self.unstretch(cell);
+        }
+    }
+
+    /// Give an exact cell back the width and max it declares. Whether it was
+    /// holding its track's.
+    fn unstretch(&mut self, cell: NodeId) -> bool {
+        let Some(max) = self.stretched_cells.remove(&cell) else { return false };
+        let declared = self.declared_width.get(&cell).copied();
+        if let Ok(mut style) = self.tree.style(cell).cloned() {
+            style.size.width = declared.map_or(Dimension::auto(), Dimension::length);
+            style.max_size.width = max;
+            let _ = self.tree.set_style(cell, style);
+        }
+        true
+    }
+
+    /// Size a table's columns from its cells' content and its width `w`, and
+    /// pin them. Whether it did.
+    fn pin_table(
+        &mut self,
+        grid: NodeId,
+        n: usize,
+        w: f32,
+        measure_fns: &HashMap<NodeId, MeasureFn>,
+    ) -> bool {
+        let children = self.tree.children(grid).unwrap_or_default();
+        if children.is_empty() || w <= 0.0 {
+            return false;
+        }
+        let mut pinned = false;
+        // Measure ONLY each column's max-content (the unwrapped
+        // single-line width). It's measured per cell IN ISOLATION
+        // (`compute_layout` on the cell with MaxContent available),
+        // because during normal layout Taffy measures a grid item
+        // at the GRID's width and clamps to it. We do NOT use
+        // min-content: this backend's text engine reports ~0
+        // min-content for long/unbreakable strings, so the CSS
+        // min/max formula collapses short columns. max-content alone
+        // is reliable and drives the water-fill below.
+        let mut cols = vec![TableColumnInput::default(); n];
+        // Exact cells, with the column each one sits in — their
+        // Taffy width is rewritten to the final track below.
+        let mut exact_cells: Vec<(NodeId, usize)> = Vec::new();
+        // Column attribution. Auto-flow children map to columns
+        // in document order (`auto_idx % n` — one grid row per
+        // table row). An EXPLICITLY placed child (`grid_column:
+        // Line(l)`) belongs to the column its start line names —
+        // the table SDK places every cell explicitly the moment
+        // a row carries a proxy backdrop or a spanning cell, and
+        // index-order attribution would smear those cells across
+        // the wrong columns (the backdrops occupy child slots
+        // too). A child spanning multiple tracks (the `1 / -1`
+        // row backdrop, a `colspan` cell) belongs to no single
+        // column: it's skipped — both from attribution and from
+        // the isolation measure. A browser spreads a spanning
+        // cell's content over the columns it covers; the SDK
+        // documents that a native spanning cell wraps inside the
+        // width its columns already have instead.
+        let mut auto_idx = 0usize;
+        for c in children.iter() {
+            use taffy::style::GridPlacement as Gp;
+            let col: Option<usize> = match self.tree.style(*c).map(|s| s.grid_column.clone()) {
+                Ok(gc) => match (gc.start, gc.end) {
+                    (Gp::Line(l), Gp::Auto) => {
+                        // 1-based CSS line → 0-based column;
+                        // negative lines count from the end
+                        // (line -1 is line n+1).
+                        let line = l.as_i16();
+                        let positive = if line > 0 {
+                            line as i32
+                        } else {
+                            n as i32 + 2 + line as i32
+                        };
+                        usize::try_from(positive - 1).ok().filter(|i| *i < n)
+                    }
+                    (Gp::Auto, Gp::Auto) => {
+                        let k = auto_idx % n;
+                        auto_idx += 1;
+                        Some(k)
+                    }
+                    // Any explicit end line or span: the item
+                    // covers more than one column (or an
+                    // unsupported shape) — never drives a
+                    // single column's width.
+                    _ => None,
+                },
+                Err(_) => None,
+            };
+            let Some(col) = col else { continue };
+            // An author `min_width` floors its column (a browser
+            // honours `min-width` on a cell the same way).
+            if let Ok(ExpandedLengthPercentageAuto::Length(min)) =
+                self.tree.style(*c).map(|s| s.min_size.width.expand())
+            {
+                cols[col].floor = cols[col].floor.max(min);
+            }
+            // A declared width is the column's content width, and
+            // marks it exact. No isolation measure: the Taffy
+            // width may hold last compute's stretch (see below).
+            if let Some(dw) = self.declared_width.get(c).copied() {
+                let e = cols[col].exact.get_or_insert(0.0);
+                *e = e.max(dw);
+                cols[col].max_content = cols[col].max_content.max(dw);
+                exact_cells.push((*c, col));
+                continue;
+            }
+            let _ = self.tree.compute_layout_with_measure(
+                *c,
+                Size {
+                    width: AvailableSpace::MaxContent,
+                    height: AvailableSpace::MaxContent,
+                },
+                |inputs, id, _c, style| measure_leaf(inputs, style, measure_fns.get(&id)),
+            );
+            cols[col].max_content = cols[col]
+                .max_content
+                .max(self.tree.layout(*c).map(|l| l.size.width).unwrap_or(0.0));
+        }
+        let widths = table_column_widths(w, &cols);
+        // Stretch exact cells to their final track. A column held
+        // at a declared width is wider than it only when EVERY
+        // column is exact and the table is wider than their sum —
+        // a browser then stretches the columns, and its `<td>`
+        // always fills its column. A native cell with a definite
+        // width would instead sit at that width inside a wider
+        // track (borders and background stopping short), so the
+        // cell's Taffy width follows the track. `declared_width`
+        // keeps the author value for the next compute.
+        for (cell, col) in exact_cells {
+            if let Ok(mut cs) = self.tree.style(cell).cloned() {
+                let track = widths[col];
+                self.stretched_cells.entry(cell).or_insert(cs.max_size.width);
+                cs.size.width = Dimension::length(track);
+                if let ExpandedLengthPercentageAuto::Length(m) = cs.max_size.width.expand() {
+                    if m < track {
+                        cs.max_size.width = LengthPercentageAuto::length(track);
+                    }
+                }
+                let _ = self.tree.set_style(cell, cs);
+            }
+        }
+        if let Ok(mut s) = self.tree.style(grid).cloned() {
+            s.grid_template_columns = widths
+                .iter()
+                .map(|px| {
+                    GridTemplateComponent::Single(MinMax {
+                        min: MinTrackSizingFunction::length(*px),
+                        max: MaxTrackSizingFunction::length(*px),
+                    })
+                })
+                .collect();
+            let _ = self.tree.set_style(grid, s);
+            pinned = true;
+        }
+        pinned
+    }
+
     /// The main-axis size `root` lays out to when its cross axis is
     /// `cross` and its main axis may grow to fit its content — a
     /// virtualized row's natural height in a vertical list (`horizontal =
@@ -2584,11 +2810,8 @@ impl LayoutTree {
             Size { width: AvailableSpace::Definite(cross), height: AvailableSpace::MaxContent }
         };
         let measure_fns = std::mem::take(&mut self.measure_fns);
-        self.tree
-            .compute_layout_with_measure(root.0, space, |inputs, node_id, _ctx, style| {
-                measure_leaf(inputs, style, measure_fns.get(&node_id))
-            })
-            .expect("taffy compute_layout");
+        self.layout_with_tables(root.0, space, &measure_fns, false);
+        self.tables_settled.remove(&root.0);
         self.measure_fns = measure_fns;
         let size = self.tree.layout(root.0).map(|l| l.size).unwrap_or_default();
         if horizontal { size.width } else { size.height }

@@ -3940,6 +3940,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   stack in the window and a lone one fills it. Backends call the new
   `LayoutTree::blockify_root` as they mount.
 
+- **Native tables resolve the same way every time** (`runtime-layout`). A table (a grid of `auto`
+  columns) inside another table's cell was laid out in a random order, wrong in about half of all
+  runs and different again on the next pass; a table sized by its content kept its first width
+  whatever its cells became; and a cell with a width kept its column's after leaving the table.
+  A pass in which no table changed no longer resolves them again (2.2 to 0.04 ms for 1600 cells);
+  one that changes a table costs up to about 1.9 times what it did.
+
 - **A `wrap-reverse` box whose lines overflow keeps them at its start on native**
   (`runtime-layout`, taffy 0.16). They overflowed the far edge; CSS and web overflow the near one.
 
