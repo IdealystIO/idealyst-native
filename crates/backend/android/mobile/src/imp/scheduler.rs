@@ -222,6 +222,10 @@ pub(crate) fn schedule_layout_pass_retry(retry_count: u32) {
             // call pair).
             viewport_ok = b.viewport_is_ready();
         };
+        // Cell mounts and releases a `virtual_grid` queued since the last
+        // pass (a data change arms one for this). They borrow the backend,
+        // so after the borrow above.
+        super::primitives::virtual_grid::drain_pending();
         if !viewport_ok && retry_count < 4 {
             schedule_layout_pass_retry(retry_count + 1);
         }

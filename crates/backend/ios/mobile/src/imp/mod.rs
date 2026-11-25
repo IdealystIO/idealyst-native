@@ -477,6 +477,13 @@ pub fn with_backend<R>(f: impl FnOnce(&mut IosBackend) -> R) -> Option<R> {
     Some(f(&mut b))
 }
 
+/// Whether the installed backend is borrowed: work that borrows it itself
+/// (mounting a `virtual_grid` cell) must wait.
+pub(crate) fn backend_is_borrowed() -> bool {
+    let rc = IOS_BACKEND_SELF.with(|s| s.borrow().clone()).and_then(|weak| weak.upgrade());
+    rc.is_some_and(|rc| rc.try_borrow_mut().is_err())
+}
+
 /// Push a scalar animation property update to `node` on the
 /// installed global backend. The cross-platform animation system's
 /// per-frame subscribers reach the iOS backend through this — same

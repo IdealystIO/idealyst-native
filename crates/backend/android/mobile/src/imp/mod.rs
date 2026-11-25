@@ -2653,6 +2653,13 @@ pub(crate) fn with_backend_mut(f: impl FnOnce(&mut AndroidBackend)) {
     }
 }
 
+/// Whether the installed backend is borrowed: work that borrows it itself
+/// (mounting a `virtual_grid` cell) must wait.
+pub(crate) fn backend_is_borrowed() -> bool {
+    let rc = ANDROID_BACKEND_SELF.with(|s| s.borrow().clone()).and_then(|weak| weak.upgrade());
+    rc.is_some_and(|rc| rc.try_borrow_mut().is_err())
+}
+
 /// Install the backend's self-reference. Called once by the host
 /// wrapper after wrapping the backend in `Rc<RefCell<>>`. Without it,
 /// `set_animated_f32` / `set_animated_color` quietly no-op.

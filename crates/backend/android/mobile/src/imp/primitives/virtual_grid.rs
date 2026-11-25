@@ -228,9 +228,8 @@ pub(crate) fn data_changed(backend: &mut AndroidBackend, node: &GlobalRef) {
     let layout = backend.layout_for_view(node);
     backend.layout.mark_dirty(layout);
     sync(backend, key);
-    // The one queueing path with no drain already behind it —
-    // `viewport_changed` and `on_scroll` are both drained by their JNI
-    // trampolines. Safe where `queue_sync` is not: this fires on a real
+    // Nothing drains the queue on the way out of here, as the JNI
+    // trampolines of `viewport_changed` and `on_scroll` do: the pass does. Safe where `queue_sync` is not: this fires on a real
     // data change, not once per pass.
     crate::schedule_layout_pass();
 }
@@ -352,10 +351,18 @@ fn queue_sync(key: usize, state: Rc<GridState>) {
 
 /// Run the queued mounts, releases and teardowns.
 ///
-/// **Call only where the backend borrow is provably released**, or this
-/// puts back the abort the queue exists to prevent. Loops because a
-/// teardown's scope cleanups can queue another grid's sync.
+/// Under a borrow of the backend it runs nothing and arms a pass. Loops
+/// because a teardown's scope cleanups can queue another grid's sync.
 pub(crate) fn drain_pending() {
+    // A scroll or viewport the view reports from inside our own layout pass
+    // arrives under the pass's borrow: leave the jobs to a pass
+    // of their own.
+    if crate::imp::backend_is_borrowed() {
+        if PENDING.with(|p| !p.borrow().is_empty()) {
+            crate::schedule_layout_pass();
+        }
+        return;
+    }
     for _ in 0..8 {
         let jobs: Vec<PendingJob> = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
         if jobs.is_empty() {

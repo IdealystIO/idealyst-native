@@ -355,6 +355,13 @@ pub(crate) fn with_backend(f: impl FnOnce(&mut MacosBackend)) {
     }
 }
 
+/// Whether the installed backend is borrowed: work that borrows it itself
+/// (mounting a `virtual_grid` cell) must wait.
+pub(crate) fn backend_is_borrowed() -> bool {
+    let rc = MACOS_BACKEND_SELF.with(|s| s.borrow().clone()).and_then(|weak| weak.upgrade());
+    rc.is_some_and(|rc| rc.try_borrow_mut().is_err())
+}
+
 /// Install the backend's self-reference. Hosts call this once after
 /// wrapping the backend in `Rc<RefCell<>>` so navigator-side closures
 /// can reach back into the backend without capturing it directly.
