@@ -72,3 +72,19 @@ backend-android-mobile = { workspace = true }
 # installed by `install_native_presenter`; author StackHeader chrome.
 android-navigator-helpers = { workspace = true }
 jni = "0.21"
+
+# `tests/ios_stack.rs`: the stack on a real `UINavigationController`, with
+# idea-ui's virtualized Table on a covered screen.
+[target.'cfg(target_os = "ios")'.dev-dependencies]
+backend-ios-mobile = { path = "../../../../backend/ios/mobile" }
+idea-ui = { path = "../../../../ui/idea-ui" }
+idea-theme = { path = "../../../../ui/idea-theme" }
+runtime-core = { path = "../../../../runtime/core" }
+dnd = { path = "../../dnd" }
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSArray", "NSGeometry"] }
+objc2-ui-kit = { version = "0.2", features = ["UIResponder", "UIView", "UIWindow", "UIViewController", "UINavigationController"] }
+
+[[test]]
+name = "ios_stack"
+harness = false
