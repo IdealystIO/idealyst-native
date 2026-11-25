@@ -1463,6 +1463,9 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`idealyst dev --no-server` / `--server-url <URL>`** (`idealyst-cli` minor). The project's server
+  already runs elsewhere: it is not built or started, and apps get its address. Native targets only.
+
 - **Location with nobody at the device** (`device-admin` minor, `build-ios` minor). `device_admin`
   has `set_location_enabled` / `is_location_enabled` (device owner, API 30) and
   `permission::ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` and `ACCESS_BACKGROUND_LOCATION`.
@@ -3973,6 +3976,29 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `LocationAlways` asks for the foreground grant first, as Android 11+ requires, and is that grant
   alone below Android 10, where it could never be granted. A request made when the Activity is gone
   resolves instead of hanging.
+
+- **An iOS stack shows the navigator's screen after back-to-back moves** (`ios-navigator-helpers`).
+  UIKit drops a move made in the turn of a `reset`, and one made during a slide, so a reset and two
+  pushes left the wrong screen on show. The presenter hands UIKit the whole stack, waits for a slide
+  in flight, and hands it over again when it was dropped; several moves in one turn land as one
+  transition.
+
+- **Swiping back from the left edge works on iOS** (`ios-navigator-helpers`). UIKit refuses the
+  gesture while its navigation bar is hidden, which it is in every stack.
+
+- **`svg` builds for iOS** (`svg`). A chained mask recursed through a new closure type each time, and
+  the compiler never finished instantiating it. `cargo check` did not show it.
+
+- **A table that changes while it grows no longer aborts** (`backend-ios-mobile`, `backend-macos`,
+  `backend-android-mobile`). The layout pass resized the grid, the platform reported a scroll from
+  inside it, and the grid mounted cells under the pass's borrow.
+
+- **Android: rows added to a table show without a scroll** (`backend-android-mobile`). The layout
+  pass did not run the cell mounts a data change queues, so a row added to a table that fits never
+  came, however it was added.
+
+- **A dev session outlives its server** (`idealyst-cli`). On a native-only session the server's exit
+  ended the session and the Robot relay with it; it is reported and the session goes on.
 
 - **macOS nested scrollers chain a gesture they cannot scroll** (`backend-macos`). A horizontal
   trackpad pan over a vertical list inside a horizontal `scroll_view` (a Kanban board's column)

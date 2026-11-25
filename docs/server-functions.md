@@ -183,6 +183,11 @@ server_bin = "server"    # → cargo run --bin server --features server
   the flag moves the whole session, including the `IDEALYST_SERVER_URL`
   handed to native clients and the jobs worker, so client and API never
   disagree about the address. Without the flag the manifest value stands.
+- A native-only session (no `--web`) builds and starts the server too. When it
+  already runs elsewhere, in a container or another terminal, say so with
+  `--no-server` (apps call `--port` / `server_port` on this machine) or
+  `--server-url <URL>`. A server that exits is reported, and the session, its
+  apps and the Robot relay go on without it.
 - For native targets the CLI hands `IDEALYST_SERVER_URL` to the app;
   read it with `server::dev_base_url()`. A desktop app inherits it; a
   simulator app gets it as `SIMCTL_CHILD_IDEALYST_SERVER_URL` on `simctl
