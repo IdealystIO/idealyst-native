@@ -196,7 +196,7 @@ fn walk_group<P: SvgPainter>(painter: &mut P, group: &usvg::Group) {
     let paint_children = |painter: &mut P| walk_group_children(painter, group);
     let paint_with_mask = |painter: &mut P| {
         if let Some(m) = mask {
-            apply_mask(painter, m, paint_children);
+            apply_mask(painter, m, &mut |painter: &mut P| paint_children(painter));
         } else {
             paint_children(painter);
         }
@@ -393,11 +393,13 @@ fn extend_clip_geometry<P: SvgPainter>(
     }
 }
 
-fn apply_mask<P: SvgPainter>(
-    painter: &mut P,
-    mask: &usvg::Mask,
-    f: impl FnOnce(&mut P),
-) {
+/// Paint `f` through `mask`.
+///
+/// `f` is a trait object because this recurses: a chained mask paints its
+/// content with a closure of its own, so a generic `f` would be a new type at
+/// every level and rustc would instantiate it forever. Only a build finds that
+/// (`cargo check` does not instantiate).
+fn apply_mask<P: SvgPainter>(painter: &mut P, mask: &usvg::Mask, f: &mut dyn FnMut(&mut P)) {
     let kind = MaskKind::from(mask.kind());
     let r = mask.rect();
     let rect = Rect {
@@ -415,7 +417,7 @@ fn apply_mask<P: SvgPainter>(
 
     let render_mask_content = move |painter: &mut P| {
         if let Some(inner) = inner_mask {
-            apply_mask(painter, inner, |painter| {
+            apply_mask(painter, inner, &mut |painter: &mut P| {
                 walk_group_children(painter, mask_root);
             });
         } else {
@@ -437,5 +439,69 @@ pub fn map_point(t: Transform, p: Point) -> Point {
     Point {
         x: t.sx * p.x + t.kx * p.y + t.tx,
         y: t.ky * p.x + t.sy * p.y + t.ty,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Records what the walker asks for, in order.
+    #[derive(Default)]
+    struct Recorder(Vec<String>);
+
+    impl SvgPainter for Recorder {
+        type Path = ();
+        fn build_path<I: Iterator<Item = PathSegment>>(&mut self, _: I) {}
+        fn extend_path<I: Iterator<Item = PathSegment>>(&mut self, _: &mut (), _: I, _: Transform) {}
+        fn fill_solid(&mut self, _: &(), c: Color, _: f32, _: FillRule) {
+            self.0.push(format!("fill #{:02x}{:02x}{:02x}", c.red, c.green, c.blue));
+        }
+        fn fill_linear_gradient(&mut self, _: &(), _: &usvg::LinearGradient, _: f32, _: FillRule) {}
+        fn fill_radial_gradient(&mut self, _: &(), _: &usvg::RadialGradient, _: f32, _: FillRule) {}
+        fn stroke_solid(&mut self, _: &(), _: Color, _: f32, _: StrokeParams) {}
+        fn draw_image(&mut self, _: &usvg::ImageKind, _: Rect) {}
+        fn with_transform<R>(&mut self, _: Transform, f: impl FnOnce(&mut Self) -> R) -> R {
+            f(self)
+        }
+        fn with_clip<R>(&mut self, _: &(), _: FillRule, f: impl FnOnce(&mut Self) -> R) -> R {
+            f(self)
+        }
+        fn with_opacity<R>(&mut self, _: f32, f: impl FnOnce(&mut Self) -> R) -> R {
+            f(self)
+        }
+        fn with_mask<R>(
+            &mut self,
+            _: MaskKind,
+            _: Rect,
+            render_mask: impl FnOnce(&mut Self),
+            f: impl FnOnce(&mut Self) -> R,
+        ) -> R {
+            self.0.push("mask(".into());
+            render_mask(self);
+            self.0.push(")".into());
+            f(self)
+        }
+    }
+
+    /// REGRESSION: `apply_mask` took its callback by type, so an app using
+    /// `svg` did not build for iOS ("reached the recursion limit while
+    /// instantiating `apply_mask`"). Building this test is the check; it also
+    /// pins the order a chained mask paints in.
+    #[test]
+    fn regression_a_chained_mask_builds_and_masks_the_mask() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+            <mask id="outer"><rect width="10" height="10" fill="#111111"/></mask>
+            <mask id="inner" mask="url(#outer)"><rect width="10" height="10" fill="#222222"/></mask>
+            <g mask="url(#inner)"><rect width="10" height="10" fill="#333333"/></g>
+        </svg>"##;
+        let tree = usvg::Tree::from_str(svg, &usvg::Options::default())
+            .expect("parses");
+        let mut painter = Recorder::default();
+        render_tree(&mut painter, &tree);
+        assert_eq!(
+            painter.0,
+            ["mask(", "mask(", "fill #111111", ")", "fill #222222", ")", "fill #333333"]
+        );
     }
 }

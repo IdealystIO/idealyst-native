@@ -71,6 +71,10 @@ runtime-shared = { workspace = true }
 # on the shared host-mock recording substrate.
 host-mock = { path = "../../../dev/host-mock" }
 
+# The walker's host tests parse real SVG.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+usvg = { version = "0.42", default-features = false, features = ["text", "system-fonts"] }
+
 # The wasm32 handler is `WebBackend`-concrete (`innerHTML` has no
 # caps-trait expression), so `Registry<WebBackend>` needs the backend's
 # `Host` impl. The DOM itself goes through web-glue, the framework-owned

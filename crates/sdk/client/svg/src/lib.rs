@@ -101,11 +101,12 @@ mod windows;
 
 // The walker translates a parsed `usvg::Tree` into trait-driven calls
 // against per-backend native vector primitives. Only the iOS and
-// Android painters consume it.
+// Android painters consume it; host tests run it on a recording painter.
 #[cfg(all(
-    any(target_os = "ios", target_os = "android"),
+    any(test, target_os = "ios", target_os = "android"),
     not(target_arch = "wasm32")
 ))]
+#[cfg_attr(not(any(target_os = "ios", target_os = "android")), allow(dead_code))]
 pub(crate) mod tree_walker;
 
 use std::any::Any;
