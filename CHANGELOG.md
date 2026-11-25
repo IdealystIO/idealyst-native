@@ -11,6 +11,10 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **`LocationError` has `ServicesOff` and is `#[non_exhaustive]`** (`location` major). Location
+  switched off for the whole device is told apart from "no fix yet" on Android, iOS and macOS. An
+  exhaustive `match` needs a `_` arm.
+
 - **On native, an unset `position` is CSS `static`** (`runtime-layout` minor, every Taffy backend
   patch). A `position: absolute` box resolved against its direct parent on native and against its
   nearest positioned ancestor on web. Native now does what web does: `relative`, `absolute`,
@@ -1458,6 +1462,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **Location with nobody at the device** (`device-admin` minor, `build-ios` minor). `device_admin`
+  has `set_location_enabled` / `is_location_enabled` (device owner, API 30) and
+  `permission::ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` and `ACCESS_BACKGROUND_LOCATION`.
+  The `location_background` capability, declared by the app in its own
+  `[package.metadata.idealyst]`, adds Android's background permission and iOS's "Always" usage
+  string; `location` alone adds neither.
+
+- **`location::watch` works on Android** (`location`). It never fired.
 
 - **Shortcuts can tell when keys are typing: `text_entry_focused()`** (`runtime-shared` minor,
   `runtime-vocabulary` minor). An app-wide `on_key` listener sees keys typed into fields too,
@@ -3949,6 +3962,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 - **A `wrap-reverse` box whose lines overflow keeps them at its start on native**
   (`runtime-layout`, taffy 0.16). They overflowed the far edge; CSS and web overflow the near one.
+
+- **`location::current` asks Android for a fix** (`location`). It only read the last known one, null
+  or old where no other app uses location. It now asks the best provider that is on (the fused one
+  from Android 12) for a fix made after the call, with the newest known one after 30 s, and needs no
+  Activity.
+
+- **Asking for location works on Android 12+** (`permissions`). Precise location was asked for alone,
+  which Android ignores without a dialog, and a user who chose approximate read as not granted.
+  `LocationAlways` asks for the foreground grant first, as Android 11+ requires, and is that grant
+  alone below Android 10, where it could never be granted. A request made when the Activity is gone
+  resolves instead of hanging.
 
 - **macOS nested scrollers chain a gesture they cannot scroll** (`backend-macos`). A horizontal
   trackpad pan over a vertical list inside a horizontal `scroll_view` (a Kanban board's column)
