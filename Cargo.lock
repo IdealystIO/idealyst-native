@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "9.3.1"
+version = "9.3.2"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1415,7 +1415,7 @@ dependencies = [
 
 [[package]]
 name = "backend-apple-core"
-version = "6.0.0"
+version = "6.1.0"
 dependencies = [
  "backend-image-source",
  "block2 0.5.1",
@@ -1426,7 +1426,7 @@ dependencies = [
 
 [[package]]
 name = "backend-cpu"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "parity-goldens",
  "pico-args",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "9.5.1"
+version = "9.5.2"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "backend-linux"
-version = "8.1.1"
+version = "8.1.2"
 dependencies = [
  "backend-image-source",
  "base64",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "9.4.1"
+version = "9.5.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "backend-windows"
-version = "9.1.1"
+version = "9.1.2"
 dependencies = [
  "backend-image-source",
  "image-webp",
@@ -5842,7 +5842,7 @@ dependencies = [
 
 [[package]]
 name = "host-appkit"
-version = "9.0.0"
+version = "9.0.1"
 dependencies = [
  "backend-apple-core",
  "backend-macos",
@@ -6009,7 +6009,7 @@ dependencies = [
 
 [[package]]
 name = "host-winit"
-version = "9.0.0"
+version = "9.0.1"
 dependencies = [
  "host-wgpu-accesskit",
  "log",
@@ -6605,7 +6605,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.6.3"
+version = "2.7.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -10682,7 +10682,7 @@ dependencies = [
 
 [[package]]
 name = "render-wgpu"
-version = "9.0.1"
+version = "9.0.2"
 dependencies = [
  "backend-image-source",
  "bytemuck",
@@ -11011,7 +11011,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "runtime-shared",
  "taffy",
@@ -11070,7 +11070,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "6.6.0"
+version = "6.7.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -11106,7 +11106,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "9.7.0"
+version = "9.7.1"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -11129,7 +11129,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-world"
-version = "1.10.1"
+version = "1.11.0"
 dependencies = [
  "runtime-tls",
  "rustc-hash 2.1.2",

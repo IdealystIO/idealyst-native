@@ -1,6 +1,6 @@
 [package]
 name = "backend-windows"
-version = "9.1.1"
+version = "9.1.2"
 edition.workspace = true
 license.workspace = true
 
