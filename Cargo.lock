@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "build-ios"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "anyhow",
  "semver",
@@ -3683,7 +3683,7 @@ dependencies = [
 
 [[package]]
 name = "device-admin"
-version = "7.2.0"
+version = "7.3.0"
 dependencies = [
  "block2 0.5.1",
  "futures-channel",
@@ -6605,7 +6605,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.7.0"
+version = "2.7.1"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7615,7 +7615,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "location"
-version = "8.0.0"
+version = "9.0.0"
 dependencies = [
  "async-io",
  "futures-channel",
@@ -7825,7 +7825,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.4.10"
+version = "2.4.11"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -9526,7 +9526,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "permissions"
-version = "8.0.0"
+version = "8.0.1"
 dependencies = [
  "backend-android-mobile",
  "backend-windows",
@@ -11013,7 +11013,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-layout"
-version = "6.2.0"
+version = "6.2.1"
 dependencies = [
  "runtime-shared",
  "taffy",
