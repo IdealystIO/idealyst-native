@@ -28,6 +28,14 @@
 //!   in front left there.
 //! - **Screen settings** reads the three system settings, changes each, reads
 //!   them back, tries a key Android refuses, and restores them.
+//! - **Locate** turns Location on, grants itself the location permissions,
+//!   keeps the process alive, and from then on logs its position (or why
+//!   there is none) every [`LOCATE_EVERY_MS`], with nobody at the tablet:
+//!
+//!   ```text
+//!   adb logcat -s idealyst | grep '\[agent\] locate'
+//!   ```
+//! - **Location off** turns Location off; `Locate` then logs that it is.
 //! - **Release** undoes the lock-down and relinquishes device owner.
 //!
 //! Every SDK event is appended to the log on screen.
@@ -42,6 +50,47 @@ const UPDATE_DIR: &str = "/data/data/io.idealyst.kioskagent/files";
 /// Long enough to see the screen go dark, and for the agent to be well
 /// in the background.
 const WAKE_AFTER_MS: i32 = 5_000;
+
+/// Between two reports of the position. Longer than `location::current`
+/// takes to give up.
+const LOCATE_EVERY_MS: i32 = 40_000;
+
+fn log_line(line: String) {
+    runtime_core::logging::log(runtime_core::logging::LogLevel::Info, &format!("[agent] {line}"));
+}
+
+/// Everything the agent needs to read its position from the background.
+fn allow_location() -> String {
+    use device_admin::*;
+    let grant = |p: &'static str| {
+        move || set_permission_grant_state(AGENT, p, PermissionGrantState::Granted)
+    };
+    run_steps(&[
+        ("set_location_enabled", &|| set_location_enabled(true)),
+        ("fine", &grant(permission::ACCESS_FINE_LOCATION)),
+        ("coarse", &grant(permission::ACCESS_COARSE_LOCATION)),
+        ("background", &grant(permission::ACCESS_BACKGROUND_LOCATION)),
+        ("start_keep_alive", &|| start_keep_alive("Kiosk agent", "Reports its position")),
+    ])
+}
+
+/// Log the position now, and again every [`LOCATE_EVERY_MS`].
+fn report_position() {
+    spawn_detached(async {
+        let asked = runtime_core::time::epoch_millis() as f64;
+        match location::current().await {
+            Ok(p) => log_line(format!(
+                "locate: {:.5}, {:.5} ±{:.0} m, dated {:+.1} s from the call",
+                p.latitude,
+                p.longitude,
+                p.accuracy_m,
+                (p.timestamp_ms - asked) / 1000.0
+            )),
+            Err(e) => log_line(format!("locate: {e} ({e:?})")),
+        }
+    });
+    runtime_core::after_ms_detached(LOCATE_EVERY_MS, report_position);
+}
 
 /// Change each system setting and put it back, describing what was read.
 fn screen_settings() -> String {
@@ -161,6 +210,19 @@ pub fn app() -> Element {
         runtime_core::logging::log(runtime_core::logging::LogLevel::Info, &format!("[agent] {report}"));
         status.set(report);
     };
+    let watching: Signal<bool> = signal(false);
+    let on_locate = move || {
+        let allowed = allow_location();
+        status.set(format!("Locate: {allowed}; on: {:?}", device_admin::is_location_enabled()));
+        if !watching.peek() {
+            watching.set(true);
+            report_position();
+        }
+    };
+    let on_location_off = move || {
+        let off = device_admin::set_location_enabled(false);
+        status.set(format!("Location off: {off:?}; on: {:?}", device_admin::is_location_enabled()));
+    };
     let on_release = move || status.set(format!("Release: {}; {}", release(), owner_label()));
 
     ui! {
@@ -170,6 +232,8 @@ pub fn app() -> Element {
             button(label = "Install update".to_string(), on_click = on_install)
             button(label = "Wake when off".to_string(), on_click = on_wake)
             button(label = "Screen settings".to_string(), on_click = on_settings)
+            button(label = "Locate".to_string(), on_click = on_locate)
+            button(label = "Location off".to_string(), on_click = on_location_off)
             button(label = "Release".to_string(), on_click = on_release)
             text(move || log.get().join("\n"))
         }

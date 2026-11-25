@@ -32,6 +32,8 @@ fn every_sync_call_is_unsupported_off_mobile() {
     unsupported(set_global_setting("stay_on_while_plugged_in", "7"));
     unsupported(set_system_setting(setting::SCREEN_OFF_TIMEOUT, "2147483647"));
     unsupported(system_setting(setting::SCREEN_OFF_TIMEOUT));
+    unsupported(set_location_enabled(true));
+    unsupported(is_location_enabled());
     unsupported(wake_screen());
     unsupported(is_screen_on());
     unsupported(installed_version("com.example.kiosk"));

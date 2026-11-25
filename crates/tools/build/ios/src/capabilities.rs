@@ -148,7 +148,7 @@ pub const REGISTRY: &[Capability] = &[
     // Device location (when-in-use). iOS/macOS show the reason string from the
     // plist usage key; Android gates fine+coarse location behind runtime
     // permissions. Background ("Always") location is a superset the app opts
-    // into separately. Declared by the `location` SDK.
+    // into separately (`location_background`). Declared by the `location` SDK.
     Capability {
         name: "location",
         ios_plist_key: Some("NSLocationWhenInUseUsageDescription"),
@@ -161,6 +161,25 @@ pub const REGISTRY: &[Capability] = &[
         ],
         android_service: None,
         default_reason: "This app uses your location.",
+    },
+    // Location with the app in the background. No SDK declares it: an app that
+    // reads its position there opts in, in its own `[package.metadata.idealyst]
+    // capabilities`, so other `location` users ask for nothing they don't use
+    // (store review asks for a reason). The foreground permissions it builds
+    // on are included. iOS shows this reason on the "Always" prompt.
+    Capability {
+        name: "location_background",
+        ios_plist_key: Some("NSLocationAlwaysAndWhenInUseUsageDescription"),
+        macos_plist_key: None,
+        macos_entitlement: None,
+        ios_entitlements: &[],
+        android_permissions: &[
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.ACCESS_BACKGROUND_LOCATION",
+        ],
+        android_service: None,
+        default_reason: "This app uses your location, also in the background.",
     },
     // Haptic feedback. Android needs the (normal, no-prompt) `VIBRATE`
     // permission in the manifest; iOS/macOS need none. Declared by `haptics`.
@@ -583,6 +602,36 @@ mod tests {
         assert!(plist.contains("<key>com.apple.developer.nfc.readersession.formats</key>"));
         assert!(plist.contains("<string>TAG</string>"));
         assert!(plist.ends_with("</dict>\n</plist>\n"));
+    }
+
+    /// Background location is the app's opt-in: the app declares it, and
+    /// `location` alone brings neither its Android permission nor its iOS key.
+    #[test]
+    fn background_location_is_only_for_the_app_that_declares_it() {
+        const BACKGROUND: &str = "android.permission.ACCESS_BACKGROUND_LOCATION";
+        let sdk = json!({ "name": "location", "metadata": { "idealyst": { "capabilities": ["location"] } } });
+        let plain = resolve(&collect(&json!({ "packages": [sdk] })), &reasons(&[("location", "x")]));
+        assert!(!plain.android_permissions.iter().any(|p| p == BACKGROUND));
+        assert!(plain.ios_plist.iter().all(|(k, _)| !k.contains("Always")));
+
+        let app = json!({ "name": "agent", "metadata": { "idealyst": { "capabilities": ["location_background"] } } });
+        let both = resolve(
+            &collect(&json!({ "packages": [sdk, app] })),
+            &reasons(&[("location", "Find the tablet"), ("location_background", "Find a lost tablet")]),
+        );
+        assert_eq!(
+            both.android_permissions,
+            vec![
+                BACKGROUND.to_string(),
+                "android.permission.ACCESS_COARSE_LOCATION".to_string(),
+                "android.permission.ACCESS_FINE_LOCATION".to_string(),
+            ]
+        );
+        assert!(both.ios_plist.contains(&(
+            "NSLocationAlwaysAndWhenInUseUsageDescription".to_string(),
+            "Find a lost tablet".to_string()
+        )));
+        assert!(both.warnings.is_empty(), "{:?}", both.warnings);
     }
 
     #[test]

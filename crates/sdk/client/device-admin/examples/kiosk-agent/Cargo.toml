@@ -20,10 +20,19 @@ runtime-core = { workspace = true, features = ["async-driver"] }
 runtime-vocabulary = { workspace = true }
 runtime-scene = { workspace = true }
 device-admin = { workspace = true }
+location = { workspace = true }
+
+# The agent reads its position while the kiosk is in front.
+[package.metadata.idealyst]
+capabilities = ["location_background"]
 
 [package.metadata.idealyst.app]
 name      = "Kiosk Agent"
 bundle_id = "io.idealyst.kioskagent"
 version   = "0.1.0"
 targets   = ["android", "ios"]
+
+[package.metadata.idealyst.app.permissions]
+location = "Find this tablet"
+location_background = "Find this tablet while the kiosk is in front"
 

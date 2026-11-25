@@ -331,6 +331,14 @@ pub mod permission {
     pub const CAMERA: &str = "android.permission.CAMERA";
     /// `android.permission.RECORD_AUDIO`.
     pub const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+    /// `android.permission.ACCESS_FINE_LOCATION`.
+    pub const ACCESS_FINE_LOCATION: &str = "android.permission.ACCESS_FINE_LOCATION";
+    /// `android.permission.ACCESS_COARSE_LOCATION`.
+    pub const ACCESS_COARSE_LOCATION: &str = "android.permission.ACCESS_COARSE_LOCATION";
+    /// `android.permission.ACCESS_BACKGROUND_LOCATION`: location with the app
+    /// in the background, on top of one of the two above. API 29; the app
+    /// declares it with the `location_background` capability.
+    pub const ACCESS_BACKGROUND_LOCATION: &str = "android.permission.ACCESS_BACKGROUND_LOCATION";
 }
 
 /// `UserManager.DISALLOW_*` restrictions commonly set on a kiosk, for
@@ -521,6 +529,18 @@ pub fn set_system_setting(key: &str, value: &str) -> Result<()> {
 /// `None` when it was never set. Any app may read these; API 1.
 pub fn system_setting(key: &str) -> Result<Option<String>> {
     Ok(call("system_setting", json!({ "key": key }))?.as_str().map(str::to_string))
+}
+
+/// Turn Location on or off for the whole device. Off, no app gets a position,
+/// whatever it was granted. The user can change it back unless
+/// `add_user_restriction("no_config_location")` is set. Device owner; API 30.
+pub fn set_location_enabled(enabled: bool) -> Result<()> {
+    call("set_location_enabled", json!({ "enabled": enabled })).map(drop)
+}
+
+/// Whether Location is on for the device. Any app; API 1.
+pub fn is_location_enabled() -> Result<bool> {
+    as_bool(call("is_location_enabled", json!({}))?)
 }
 
 // ── The screen ──────────────────────────────────────────────────────────

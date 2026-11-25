@@ -14,6 +14,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -174,6 +175,14 @@ object RustDeviceAdmin {
 
     private fun isScreenOn(ctx: Context): Boolean =
         (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
+
+    private fun isLocationEnabled(ctx: Context): Boolean =
+        if (Build.VERSION.SDK_INT >= 28) {
+            (ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager).isLocationEnabled
+        } else {
+            @Suppress("DEPRECATION")
+            Settings.Secure.getInt(ctx.contentResolver, Settings.Secure.LOCATION_MODE, 0) != 0
+        }
 
     private fun activity(ctx: Context): Activity =
         ctx as? Activity ?: throw Failure("platform", "lock task needs the app's Activity; the context is ${ctx.javaClass.name}")
@@ -407,6 +416,12 @@ object RustDeviceAdmin {
                 dpm.setSystemSetting(admin(ctx), args.getString("key"), args.getString("value"))
             }
             "system_setting" -> return Settings.System.getString(ctx.contentResolver, args.getString("key"))
+            "set_location_enabled" -> {
+                requireApi(30, "setLocationEnabled")
+                requireOwner(ctx)
+                dpm.setLocationEnabled(admin(ctx), args.getBoolean("enabled"))
+            }
+            "is_location_enabled" -> return isLocationEnabled(ctx)
             "is_screen_on" -> return isScreenOn(ctx)
             "wake_screen" -> {
                 requireOwner(ctx)

@@ -85,6 +85,7 @@ is not installed is skipped. See "Device-owner provisioning" in
 | `add_user_restriction(r)` / `clear_user_restriction(r)` | `addUserRestriction` / `clearUserRestriction` | 21 | `Unsupported` |
 | `set_global_setting(key, value)` | `setGlobalSetting` (an allow-listed set of keys; not the animation scales) | 21 | `Unsupported` |
 | `set_system_setting(key, value)` / `system_setting(key)` | `setSystemSetting` (the three keys in `setting`: `screen_off_timeout`, `screen_brightness`, `screen_brightness_mode`) / `Settings.System.getString` | 28 / 1 | `Unsupported` |
+| `set_location_enabled(b)` / `is_location_enabled()` | `setLocationEnabled` / `isLocationEnabled` | 30 / 1 | `Unsupported` |
 | `wake_screen()` / `is_screen_on()` | an invisible `setTurnScreenOn` activity / `PowerManager.isInteractive` | 21 / 20 | `Unsupported` |
 | `set_application_hidden(pkg, b)` / `is_application_hidden(pkg)` | `setApplicationHidden` / `isApplicationHidden` | 21 | `Unsupported` |
 | `set_packages_suspended(&[pkg], b)` / `is_package_suspended(pkg)` | `setPackagesSuspended` / `isPackageSuspended` | 24 | `Unsupported` |
@@ -123,6 +124,22 @@ a foreground service, which keeps the process out of the freezer and shows
 an ongoing notification. The service uses the `systemExempted` type Android
 14+ reserves for device and profile owners, so it has no time limit.
 `stop_keep_alive()` ends it.
+
+## Location
+
+A locked-down tablet can report where it is, with nobody at it: turn Location
+on, grant the agent the location permissions, and read the position with the
+`location` SDK (its README has the calls, and the `location_background`
+capability the agent declares).
+
+`set_location_enabled(true)` is what makes "Location is off" recoverable from
+afar. `start_keep_alive` is enough to read the position from the background,
+screen off and another app in lock task, **with** `ACCESS_BACKGROUND_LOCATION`
+granted: its service type gives the process no location access of its own, and
+with the foreground grant alone there is no fix. The user can turn Location off again unless `no_config_location` is set
+(`add_user_restriction`). `set_permission_grant_state` refuses the location
+permissions on a device provisioned with the sensors-grant opt-out
+(Android 12+).
 
 ## The screen
 
