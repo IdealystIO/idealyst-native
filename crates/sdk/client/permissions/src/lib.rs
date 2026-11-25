@@ -79,11 +79,13 @@ pub enum Permission {
     /// iOS `UNUserNotificationCenter` authorization; web `Notification`).
     Notifications,
     /// Access device location while the app is in use (iOS
-    /// "When In Use"; Android `ACCESS_FINE_LOCATION`; web geolocation).
+    /// "When In Use"; Android `ACCESS_FINE_LOCATION` or, where the user chose
+    /// approximate, `ACCESS_COARSE_LOCATION`; web geolocation).
     LocationWhenInUse,
     /// Access device location in the background as well as the foreground
-    /// (iOS "Always"; Android background-location). A superset of
-    /// [`Permission::LocationWhenInUse`].
+    /// (iOS "Always"; Android `ACCESS_BACKGROUND_LOCATION`, from Android 10).
+    /// A superset of [`Permission::LocationWhenInUse`], which a request asks
+    /// for first. The app must declare the `location_background` capability.
     LocationAlways,
     /// Capture from the device camera (iOS `NSCameraUsageDescription`;
     /// Android `CAMERA`; web `camera` permission descriptor).
@@ -167,6 +169,10 @@ runtime_vocabulary::robot_only! {
     )
 ))]
 mod oneshot;
+
+// What each permission is on Android. Platform-free, so host tests cover it.
+#[cfg(any(test, all(not(target_arch = "wasm32"), target_os = "android")))]
+mod android_policy;
 
 // Android requests waiting for `onRequestPermissionsResult`. Platform-free,
 // so host tests cover it.

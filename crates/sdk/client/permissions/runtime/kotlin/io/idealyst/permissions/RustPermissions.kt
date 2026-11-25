@@ -10,7 +10,7 @@ import io.idealyst.runtime.RustPermissionsResult
  * Launches the Android runtime-permission dialog for the `permissions` SDK
  * and hands the answer back to Rust.
  *
- * Rust calls [request] with the permission and a request code. This shim
+ * Rust calls [request] with the permissions and a request code. This shim
  * registers a handler with the shared [RustPermissionsResult] registry
  * (the generated `MainActivity.onRequestPermissionsResult` forwards to it),
  * then calls `Activity.requestPermissions`. The answer comes back through
@@ -28,13 +28,16 @@ object RustPermissions {
     external fun nativeOnPermissionsResult(requestCode: Int, outcome: Int)
 
     /**
-     * Show the dialog for [permission] under [requestCode]. Returns `false`
-     * when the dialog couldn't be launched; nothing is registered then.
+     * Show the dialog for [permissions], any of which will do, under
+     * [requestCode]. Returns `false` when the dialog couldn't be launched;
+     * nothing is registered then.
      */
     @JvmStatic
-    fun request(context: Context, permission: String, requestCode: Int): Boolean {
-        val activity = context as? Activity ?: run {
-            Log.e(TAG, "requesting a permission needs an Activity context")
+    fun request(context: Context, permissions: Array<String>, requestCode: Int): Boolean {
+        val activity = context as? Activity
+        // An Activity that is gone takes the request and never answers it.
+        if (activity == null || activity.isFinishing || activity.isDestroyed) {
+            Log.e(TAG, "requesting a permission needs a live Activity")
             return false
         }
         RustPermissionsResult.register(requestCode) { _, grantResults ->
@@ -42,7 +45,7 @@ object RustPermissions {
             true
         }
         return try {
-            activity.requestPermissions(arrayOf(permission), requestCode)
+            activity.requestPermissions(permissions, requestCode)
             true
         } catch (e: Throwable) {
             Log.e(TAG, "requestPermissions failed", e)
@@ -58,7 +61,7 @@ object RustPermissions {
      */
     private fun outcome(grantResults: IntArray): Int = when {
         grantResults.isEmpty() -> RESULT_CANCELLED
-        grantResults.all { it == PackageManager.PERMISSION_GRANTED } -> RESULT_GRANTED
+        grantResults.any { it == PackageManager.PERMISSION_GRANTED } -> RESULT_GRANTED
         else -> RESULT_DENIED
     }
 }

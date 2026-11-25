@@ -3,9 +3,10 @@
 //! ## `status` — fully implementable in JNI
 //!
 //! `Context.checkSelfPermission(name)` returns `PERMISSION_GRANTED` (0) or
-//! `PERMISSION_DENIED` (-1) synchronously. We map our [`Permission`] to the
-//! Android permission string and call it on the host context (from
-//! `ndk_context`). No callback, no Activity result — a clean JNI read.
+//! `PERMISSION_DENIED` (-1) synchronously. [`crate::android_policy`] maps our
+//! [`Permission`] to the Android permissions it stands for, and we call it on
+//! the host context (from `ndk_context`). No callback, no Activity result — a
+//! clean JNI read.
 //!
 //! ## `request` — the dialog and its answer
 //!
@@ -34,6 +35,7 @@ use jni::objects::{JClass, JObject, JValue};
 use jni::sys::jint;
 use jni::{JNIEnv, JavaVM};
 
+use crate::android_policy::{self, Stage};
 use crate::pending::{self, Outcome};
 use crate::{Permission, PermissionStatus};
 
@@ -42,99 +44,116 @@ const HELPER: &str = "io/idealyst/permissions/RustPermissions";
 
 const PERMISSION_GRANTED: i32 = 0; // PackageManager.PERMISSION_GRANTED
 
-/// The Android manifest permission string for a [`Permission`], or `None`
-/// where the platform needs no runtime grant for it.
-fn android_permission(permission: Permission) -> Option<&'static str> {
-    match permission {
-        // POST_NOTIFICATIONS is a runtime permission only on API 33+; on
-        // older OS versions `checkSelfPermission` reports it granted, so the
-        // mapping is still correct to query.
-        Permission::Notifications => Some("android.permission.POST_NOTIFICATIONS"),
-        Permission::LocationWhenInUse => Some("android.permission.ACCESS_FINE_LOCATION"),
-        Permission::LocationAlways => Some("android.permission.ACCESS_BACKGROUND_LOCATION"),
-        Permission::Camera => Some("android.permission.CAMERA"),
-        Permission::Microphone => Some("android.permission.RECORD_AUDIO"),
-    }
-}
-
 fn java_vm() -> Option<JavaVM> {
     let ctx = ndk_context::android_context();
     let vm_ptr = ctx.vm() as *mut jni::sys::JavaVM;
     unsafe { JavaVM::from_raw(vm_ptr) }.ok()
 }
 
-pub(super) async fn status(permission: Permission) -> PermissionStatus {
-    let Some(perm) = android_permission(permission) else {
-        return PermissionStatus::Unsupported;
-    };
-    check_self_permission(perm).unwrap_or(PermissionStatus::Undetermined)
+/// `Build.VERSION.SDK_INT`.
+fn sdk_int(env: &mut JNIEnv) -> Option<i32> {
+    env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I").ok()?.i().ok()
 }
 
-/// `context.checkSelfPermission(name)` → Granted / Denied. A JNI failure
-/// (no context, detached VM) returns `None`, which the caller maps to
-/// `Undetermined` rather than a hard error.
-fn check_self_permission(perm: &str) -> Option<PermissionStatus> {
+/// The first grant `permission` still lacks; `None` inside when it has them
+/// all. `None` outside on a JNI failure (no context, detached VM).
+fn missing(permission: Permission) -> Option<Option<Stage>> {
     let vm = java_vm()?;
     let mut env = vm.attach_current_thread().ok()?;
-    let ctx = ndk_context::android_context();
-    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-    let perm_j = env.new_string(perm).ok()?;
-    let result = env
-        .call_method(
-            &activity,
-            "checkSelfPermission",
-            "(Ljava/lang/String;)I",
-            &[JValue::Object(&JObject::from(perm_j))],
-        )
-        .ok()?
-        .i()
-        .ok()?;
-    Some(if result == PERMISSION_GRANTED {
-        PermissionStatus::Granted
-    } else {
+    let stages = android_policy::stages(permission, sdk_int(&mut env)?);
+    let env = std::cell::RefCell::new(env);
+    let failed = std::cell::Cell::new(false);
+    let missing = android_policy::first_missing(stages, |p| {
+        check_self_permission(&mut env.borrow_mut(), p).unwrap_or_else(|| {
+            failed.set(true);
+            false
+        })
+    });
+    (!failed.get()).then_some(missing)
+}
+
+pub(super) async fn status(permission: Permission) -> PermissionStatus {
+    match missing(permission) {
+        Some(None) => PermissionStatus::Granted,
         // `checkSelfPermission` can't distinguish "never asked" from
         // "denied"; both read as `PERMISSION_DENIED`. Report `Undetermined`
         // (the safe assumption that a request may still prompt). A host that
         // tracks "already asked once" can refine this.
-        PermissionStatus::Undetermined
-    })
+        _ => PermissionStatus::Undetermined,
+    }
+}
+
+/// `context.checkSelfPermission(name)`.
+fn check_self_permission(env: &mut JNIEnv, perm: &str) -> Option<bool> {
+    let ctx = ndk_context::android_context();
+    let context = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let perm_j = env.new_string(perm).ok()?;
+    let result = env.call_method(
+        &context,
+        "checkSelfPermission",
+        "(Ljava/lang/String;)I",
+        &[JValue::Object(&JObject::from(perm_j))],
+    );
+    match result {
+        Ok(v) => Some(v.i().ok()? == PERMISSION_GRANTED),
+        Err(_) => {
+            // Left pending, it would surface in whatever runs next.
+            let _ = env.exception_clear();
+            None
+        }
+    }
 }
 
 pub(super) async fn request(permission: Permission) -> PermissionStatus {
-    let Some(perm) = android_permission(permission) else {
-        return PermissionStatus::Unsupported;
-    };
-
-    // Already granted? Don't re-prompt.
-    if check_self_permission(perm) == Some(PermissionStatus::Granted) {
-        return PermissionStatus::Granted;
+    let mut asked: Option<Stage> = None;
+    loop {
+        let stage = match missing(permission) {
+            Some(None) => return PermissionStatus::Granted,
+            Some(Some(stage)) => stage,
+            None => return PermissionStatus::Undetermined,
+        };
+        if asked.is_some_and(|a| std::ptr::eq(a, stage)) {
+            // Answered as granted and still not held: asking again would
+            // loop.
+            return PermissionStatus::Undetermined;
+        }
+        asked = Some(stage);
+        let (code, rx) = pending::park();
+        if !launch_request(stage, code) {
+            // The dialog never showed, so no answer is coming.
+            pending::abandon(code);
+            return PermissionStatus::Undetermined;
+        }
+        match rx.await {
+            // The next stage, if there is one.
+            PermissionStatus::Granted => {}
+            other => return other,
+        }
     }
-
-    let (code, rx) = pending::park();
-    if !launch_request(perm, code) {
-        // The dialog never showed, so no answer is coming.
-        pending::abandon(code);
-        return check_self_permission(perm).unwrap_or(PermissionStatus::Undetermined);
-    }
-    rx.await
 }
 
-/// `RustPermissions.request(activity, perm, code)`: registers the result
+/// `RustPermissions.request(activity, perms, code)`: registers the result
 /// handler and calls `requestPermissions`. Returns whether the dialog launched.
-fn launch_request(perm: &str, code: i32) -> bool {
+fn launch_request(perms: Stage, code: i32) -> bool {
     (|| -> Option<bool> {
         let vm = java_vm()?;
         let mut env = vm.attach_current_thread().ok()?;
         let ctx = ndk_context::android_context();
         let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-        let perm_j = env.new_string(perm).ok()?;
+        let array = env
+            .new_object_array(perms.len() as i32, "java/lang/String", JObject::null())
+            .ok()?;
+        for (i, perm) in perms.iter().enumerate() {
+            let perm_j = env.new_string(perm).ok()?;
+            env.set_object_array_element(&array, i as i32, &perm_j).ok()?;
+        }
         let launched = env.call_static_method(
             HELPER,
             "request",
-            "(Landroid/content/Context;Ljava/lang/String;I)Z",
+            "(Landroid/content/Context;[Ljava/lang/String;I)Z",
             &[
                 JValue::Object(&activity),
-                JValue::Object(&JObject::from(perm_j)),
+                JValue::Object(&array),
                 JValue::Int(code),
             ],
         );
