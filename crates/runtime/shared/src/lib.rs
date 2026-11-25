@@ -417,7 +417,7 @@ pub use style::{
     OverscrollBehavior,
     ScrollbarVisibility,
     PointerEvents, Position, Shadow, StyleApplication, StyleRules, StyleSheet, TextAlign,
-    TextTransform, UserSelect,
+    AxisTranslate, StaticTranslate, TextTransform, UserSelect,
     NoTokens, ThemePalette, TokenEntry, TokenValue, TokenVocabulary, Tokenized, Transform,
     Transition,
     VariantAxis, VariantEnum, VariantSet, VariantValue,

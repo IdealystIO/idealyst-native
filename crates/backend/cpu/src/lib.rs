@@ -266,15 +266,15 @@ impl CpuBackend {
         // Resolve static translate (px / pct of own size) plus the
         // animation-driven translate (px, additive).
         let tx = data
-            .static_translate_x
-            .as_ref()
-            .map(|l| resolve_length(l, frame.width))
+            .static_translate
+            .x
+            .map(|t| t.resolve(frame.width))
             .unwrap_or(0.0)
             + data.animated_translate_x;
         let ty = data
-            .static_translate_y
-            .as_ref()
-            .map(|l| resolve_length(l, frame.height))
+            .static_translate
+            .y
+            .map(|t| t.resolve(frame.height))
             .unwrap_or(0.0)
             + data.animated_translate_y;
 
@@ -478,14 +478,14 @@ impl CpuBackend {
         let Some(data) = self.nodes.get(&id) else { return };
         let frame = self.layout.frame_of(data.layout);
         let tx = data
-            .static_translate_x
-            .as_ref()
-            .map(|l| resolve_length(l, frame.width))
+            .static_translate
+            .x
+            .map(|t| t.resolve(frame.width))
             .unwrap_or(0.0);
         let ty = data
-            .static_translate_y
-            .as_ref()
-            .map(|l| resolve_length(l, frame.height))
+            .static_translate
+            .y
+            .map(|t| t.resolve(frame.height))
             .unwrap_or(0.0);
         let x = parent_x + frame.x + tx;
         let y = parent_y + frame.y + ty;

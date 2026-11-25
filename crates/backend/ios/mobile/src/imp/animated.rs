@@ -97,8 +97,8 @@ pub(crate) struct AnimatedTransformState {
     /// BOX-relative — the px shift can't be computed until Taffy
     /// produces a frame. Once resolved, the px value is written
     /// into `translate_x` / `translate_y` so `compose()` sees it.
-    pub static_translate_pct_x: Option<f32>,
-    pub static_translate_pct_y: Option<f32>,
+    pub static_translate_x: Option<runtime_shared::AxisTranslate>,
+    pub static_translate_y: Option<runtime_shared::AxisTranslate>,
     /// True after the first `apply_static_transform` on this view.
     /// Gates `transform_transition`: the initial apply always snaps
     /// (CSS parity — transitions fire on *changes*, not the initial
@@ -202,7 +202,7 @@ pub(crate) fn set_keyboard_lift(
     true
 }
 
-/// Resolve any `static_translate_pct_x` / `_y` requests parked on
+/// Resolve any `static_translate_x` / `_y` requests parked on
 /// the per-view animation state against the view's just-laid-out
 /// pixel dimensions (CSS spec: translate-% is BOX-relative — the
 /// shift is a fraction of the box's own size). Writes the resolved
@@ -223,14 +223,14 @@ pub(crate) fn sync_static_transform_percent(
     let Some(state) = states.get_mut(&view_ptr) else {
         return;
     };
-    if state.static_translate_pct_x.is_none() && state.static_translate_pct_y.is_none() {
+    if state.static_translate_x.is_none() && state.static_translate_y.is_none() {
         return;
     }
-    if let Some(pct_x) = state.static_translate_pct_x {
-        state.translate_x = Some(width_px * (pct_x / 100.0));
+    if let Some(t) = state.static_translate_x {
+        state.translate_x = Some(t.resolve(width_px));
     }
-    if let Some(pct_y) = state.static_translate_pct_y {
-        state.translate_y = Some(height_px * (pct_y / 100.0));
+    if let Some(t) = state.static_translate_y {
+        state.translate_y = Some(t.resolve(height_px));
     }
     let matrix = state.compose();
     let _: () = unsafe { msg_send![view, setTransform: matrix] };
@@ -289,8 +289,8 @@ impl IosBackend {
     /// `translate_y` / `scale_x` / `scale_y` / `rotate_z` (the same
     /// slots the animation system uses, so a later animated write
     /// will naturally override — CSS semantics: animated wins).
-    /// Percent translates are stashed in `static_translate_pct_x` /
-    /// `static_translate_pct_y`; the box-relative px shift can't be
+    /// Percent translates are stashed in `static_translate_x` /
+    /// `static_translate_y`; the box-relative px shift can't be
     /// computed until Taffy hands us a frame in the layout pass —
     /// see [`sync_static_transform_percent`].
     ///
@@ -303,7 +303,7 @@ impl IosBackend {
         node: &IosNode,
         style: &runtime_shared::StyleRules,
     ) {
-        use runtime_shared::{Length, Transform};
+        use runtime_shared::Transform;
         let key = node.view_key();
         let view = node.as_view();
         let state = self.animated_states.entry(key).or_default();
@@ -324,11 +324,11 @@ impl IosBackend {
         state.static_axes = axes;
         if clear & AXIS_TRANSLATE_X != 0 {
             state.translate_x = None;
-            state.static_translate_pct_x = None;
+            state.static_translate_x = None;
         }
         if clear & AXIS_TRANSLATE_Y != 0 {
             state.translate_y = None;
-            state.static_translate_pct_y = None;
+            state.static_translate_y = None;
         }
         if clear & AXIS_SCALE_X != 0 {
             state.scale_x = None;
@@ -340,22 +340,22 @@ impl IosBackend {
             state.rotate_z = None;
         }
 
+        let translate = runtime_shared::StaticTranslate::of(style.transform.as_deref());
+        if let Some(t) = translate.x {
+            // The percent's share joins in once the box has a size.
+            state.translate_x = Some(t.px);
+            state.static_translate_x = (t.percent != 0.0).then_some(t);
+        }
+        if let Some(t) = translate.y {
+            state.translate_y = Some(t.px);
+            state.static_translate_y = (t.percent != 0.0).then_some(t);
+        }
+
         if let Some(ops) = style.transform.as_ref() {
             for op in ops {
                 match op {
-                    Transform::TranslateX(Length::Px(v)) => state.translate_x = Some(*v),
-                    Transform::TranslateY(Length::Px(v)) => state.translate_y = Some(*v),
-                    Transform::TranslateX(Length::Percent(v)) => {
-                        state.static_translate_pct_x = Some(*v)
-                    }
-                    Transform::TranslateY(Length::Percent(v)) => {
-                        state.static_translate_pct_y = Some(*v)
-                    }
-                    Transform::TranslateX(Length::Auto | Length::Full | Length::FitContent)
-                    | Transform::TranslateY(Length::Auto | Length::Full | Length::FitContent) => {
-                        // Neither Auto nor Full makes sense for a
-                        // translate — leave at identity.
-                    }
+                    // Summed above.
+                    Transform::TranslateX(_) | Transform::TranslateY(_) => {}
                     Transform::Scale(v) => {
                         state.scale_x = Some(*v);
                         state.scale_y = Some(*v);
@@ -387,18 +387,18 @@ impl IosBackend {
         // un-translated raw position. Visible bug: hero sun-glare
         // disc shifts from `translate(45%, -45%)` to identity on
         // every theme toggle.
-        let need_resolve = state.static_translate_pct_x.is_some()
-            || state.static_translate_pct_y.is_some();
+        let need_resolve =
+            state.static_translate_x.is_some() || state.static_translate_y.is_some();
         if need_resolve {
             let bounds: objc2_foundation::CGRect = unsafe { msg_send![&*view, bounds] };
             let w = bounds.size.width as f32;
             let h = bounds.size.height as f32;
             if w > 0.0 && h > 0.0 {
-                if let Some(pct_x) = state.static_translate_pct_x {
-                    state.translate_x = Some(w * (pct_x / 100.0));
+                if let Some(t) = state.static_translate_x {
+                    state.translate_x = Some(t.resolve(w));
                 }
-                if let Some(pct_y) = state.static_translate_pct_y {
-                    state.translate_y = Some(h * (pct_y / 100.0));
+                if let Some(t) = state.static_translate_y {
+                    state.translate_y = Some(t.resolve(h));
                 }
             }
         }

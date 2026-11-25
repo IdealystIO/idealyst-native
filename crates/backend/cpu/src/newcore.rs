@@ -1092,22 +1092,7 @@ impl caps::StyleOps for CpuBackend {
         // Scale / Rotate would force a per-pixel inverse transform
         // (expensive without SIMD); skip for now and log a warning
         // via the debug build assertion below.
-        let mut static_tx: Option<Length> = None;
-        let mut static_ty: Option<Length> = None;
-        if let Some(transforms) = style.transform.as_ref() {
-            for t in transforms {
-                match t {
-                    runtime_shared::Transform::TranslateX(l) => static_tx = Some(*l),
-                    runtime_shared::Transform::TranslateY(l) => static_ty = Some(*l),
-                    _ => {
-                        // Silently drop. Surface a real diagnostic
-                        // once we have a logger wired into the
-                        // backend; `println!` is the wrong shape
-                        // here (won't reach the ESP32 host).
-                    }
-                }
-            }
-        }
+        let translate = runtime_shared::StaticTranslate::of(style.transform.as_deref());
 
         if let Some(data) = self.nodes.get_mut(&node.id) {
             data.style = Some(style.clone());
@@ -1119,8 +1104,7 @@ impl caps::StyleOps for CpuBackend {
             data.border_style = style.border_style.unwrap_or_default();
             data.corner_radii = radii;
             data.font_size_px = font_size_px;
-            data.static_translate_x = static_tx;
-            data.static_translate_y = static_ty;
+            data.static_translate = translate;
             // Written on every application so removing `z_index`
             // restores the default; an animated z still wins (see
             // `NodeData::animated_z`).

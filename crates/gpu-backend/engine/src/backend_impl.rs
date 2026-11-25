@@ -3326,6 +3326,7 @@ mod a11y_tests {
             border_style: Some(runtime_shared::BorderStyle::Dashed),
             transform: Some(vec![
                 Transform::TranslateX(runtime_shared::Length::Px(10.0)),
+                Transform::TranslateX(runtime_shared::Length::Percent(50.0)),
                 Transform::Scale(2.0),
             ]),
             ..Default::default()
@@ -3337,6 +3338,8 @@ mod a11y_tests {
 
         b.apply_style_impl(&node, &full);
         assert_eq!(node.borrow().render.opacity, 0.5);
+        let translate = node.borrow().render.static_translate;
+        assert_eq!(translate.x.unwrap().resolve(40.0), 30.0, "50% of 40 and 10px add up");
         assert_eq!(b.text.borrow().buffers[&layout].buffer.metrics().font_size, 30.0);
 
         b.apply_style_impl(&node, &Rc::new(StyleRules::default()));

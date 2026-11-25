@@ -1380,6 +1380,57 @@ pub enum Transform {
     SkewY(f32),
 }
 
+/// One axis of a [`StaticTranslate`]: logical px plus a percent of the box's
+/// own extent on that axis.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AxisTranslate {
+    pub px: f32,
+    pub percent: f32,
+}
+
+impl AxisTranslate {
+    /// The offset for a box `extent` long on this axis.
+    pub fn resolve(self, extent: f32) -> f32 {
+        self.px + extent * (self.percent / 100.0)
+    }
+}
+
+/// The translate a `transform` list adds up to, per axis. CSS applies every
+/// entry of the list: `translateX(100%) translateX(-24px)` is the box's width
+/// less 24, whichever comes first. A backend that keeps the translate apart
+/// from scale and rotation reads it here rather than from the entries one by
+/// one, where a later unit overwrites an earlier one.
+///
+/// `None` for an axis the list states nothing for; `Auto` / `Full` /
+/// `FitContent` mean nothing as a translate and state nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StaticTranslate {
+    pub x: Option<AxisTranslate>,
+    pub y: Option<AxisTranslate>,
+}
+
+impl StaticTranslate {
+    /// The translate `ops` adds up to.
+    pub fn of(ops: Option<&[Transform]>) -> Self {
+        fn add(axis: &mut Option<AxisTranslate>, len: &Length) {
+            match len {
+                Length::Px(v) => axis.get_or_insert_with(Default::default).px += v,
+                Length::Percent(v) => axis.get_or_insert_with(Default::default).percent += v,
+                Length::Auto | Length::Full | Length::FitContent => {}
+            }
+        }
+        let mut out = Self::default();
+        for op in ops.unwrap_or_default() {
+            match op {
+                Transform::TranslateX(l) => add(&mut out.x, l),
+                Transform::TranslateY(l) => add(&mut out.y, l),
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
 // =============================================================================
 // Animated transitions
 // =============================================================================

@@ -15,7 +15,7 @@
 use std::rc::Rc;
 
 use runtime_shared::color::Rgba;
-use runtime_shared::{GradientKind, Length, StyleRules};
+use runtime_shared::{GradientKind, StyleRules};
 use runtime_layout::LayoutNode;
 
 /// Opaque handle the framework holds as the backend's `Self::Node`.
@@ -137,10 +137,8 @@ pub(crate) struct NodeData {
     /// Cached static transforms. We support TranslateX/Y only in
     /// this MVP — Scale / Rotate would need an inverse-mapping
     /// sampler that's nontrivial to do efficiently on a software
-    /// rasterizer. Logged at apply_style time when a non-translate
-    /// transform is dropped.
-    pub static_translate_x: Option<Length>,
-    pub static_translate_y: Option<Length>,
+    /// rasterizer. Other entries of the list are dropped.
+    pub static_translate: runtime_shared::StaticTranslate,
     /// Cached gradient, populated when the stylesheet sets
     /// `background_gradient`. When present, takes precedence over
     /// the solid `bg` color in the paint pass (matches every other
@@ -193,8 +191,7 @@ impl NodeData {
             border_style: runtime_shared::BorderStyle::Solid,
             corner_radii: [0.0; 4],
             font_size_px: None,
-            static_translate_x: None,
-            static_translate_y: None,
+            static_translate: Default::default(),
             gradient: None,
         }
     }

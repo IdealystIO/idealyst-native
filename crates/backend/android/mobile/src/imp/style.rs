@@ -683,7 +683,7 @@ fn apply_transform(
     state: &mut NodeAnim,
     rules: &StyleRules,
 ) {
-    use runtime_shared::{Length, Transform};
+    use runtime_shared::Transform;
     // Per-axis "does the style block explicitly drive this axis?"
     // flags. We only write to the View property when the answer is
     // yes \u{2014} Android's `setTranslationX` / `setScaleX` /
@@ -696,43 +696,24 @@ fn apply_transform(
     // stylesheet (which has no `transform:` op), and an unconditional
     // write snaps the thumb from "on" back to 0. Mirrors iOS's
     // `apply_static_transform`.
-    let mut tx_dp: f32 = 0.0;
-    let mut ty_dp: f32 = 0.0;
-    let mut pct_x: Option<f32> = None;
-    let mut pct_y: Option<f32> = None;
+    let translate = runtime_shared::StaticTranslate::of(rules.transform.as_deref());
+    let tx_dp = translate.x.unwrap_or_default().px;
+    let ty_dp = translate.y.unwrap_or_default().px;
+    let pct_x = translate.x.filter(|t| t.percent != 0.0);
+    let pct_y = translate.y.filter(|t| t.percent != 0.0);
     let mut sx: f32 = 1.0;
     let mut sy: f32 = 1.0;
     let mut rot_deg: f32 = 0.0;
-    let mut style_writes_tx = false;
-    let mut style_writes_ty = false;
+    let style_writes_tx = translate.x.is_some();
+    let style_writes_ty = translate.y.is_some();
     let mut style_writes_sx = false;
     let mut style_writes_sy = false;
     let mut style_writes_rot = false;
     if let Some(ops) = rules.transform.as_ref() {
         for op in ops {
             match op {
-                Transform::TranslateX(Length::Px(v)) => {
-                    tx_dp = *v;
-                    style_writes_tx = true;
-                }
-                Transform::TranslateY(Length::Px(v)) => {
-                    ty_dp = *v;
-                    style_writes_ty = true;
-                }
-                Transform::TranslateX(Length::Percent(v)) => {
-                    pct_x = Some(*v);
-                    style_writes_tx = true;
-                }
-                Transform::TranslateY(Length::Percent(v)) => {
-                    pct_y = Some(*v);
-                    style_writes_ty = true;
-                }
-                Transform::TranslateX(Length::Auto | Length::Full | Length::FitContent)
-                | Transform::TranslateY(Length::Auto | Length::Full | Length::FitContent) => {
-                    // Neither makes sense for translate — treat as 0.
-                    // `Full` is a corner-radius idea, and iOS and macOS
-                    // group it with `Auto` here for the same reason.
-                }
+                // Summed above.
+                Transform::TranslateX(_) | Transform::TranslateY(_) => {}
                 Transform::Scale(v) => {
                     sx = *v;
                     sy = *v;
@@ -755,8 +736,8 @@ fn apply_transform(
             }
         }
     }
-    state.transform_translate_pct_x = pct_x;
-    state.transform_translate_pct_y = pct_y;
+    state.transform_translate_x = pct_x;
+    state.transform_translate_y = pct_y;
     // Convert dp → px for px translations; resolve percent translates
     // immediately against the view's already-laid-out box if we can.
     //
@@ -771,7 +752,7 @@ fn apply_transform(
     // pixel dimensions — resolve immediately. Without this, the
     // `applied_frames` cache in the layout pass short-circuits the
     // post-frame sync (frame unchanged → skip), so the stashed
-    // `transform_translate_pct_*` never gets re-applied and the
+    // `transform_translate_*` never gets re-applied and the
     // disc shifts from `translate(45%, -45%)` to identity.
     let mut tx_px = dp_to_px(env, view, tx_dp) as f32;
     let mut ty_px = dp_to_px(env, view, ty_dp) as f32;
@@ -785,13 +766,13 @@ fn apply_transform(
             .and_then(|v| v.i())
             .unwrap_or(0) as f32;
         if width_px > 0.0 {
-            if let Some(px) = pct_x {
-                tx_px = width_px * (px / 100.0);
+            if let Some(t) = pct_x {
+                tx_px += width_px * (t.percent / 100.0);
             }
         }
         if height_px > 0.0 {
-            if let Some(py) = pct_y {
-                ty_px = height_px * (py / 100.0);
+            if let Some(t) = pct_y {
+                ty_px += height_px * (t.percent / 100.0);
             }
         }
     }
@@ -1013,13 +994,13 @@ pub(crate) fn sync_transform_translate_percent(
     width_dp: f32,
     height_dp: f32,
 ) {
-    if let Some(pct_x) = state.transform_translate_pct_x {
-        let tx_dp = width_dp * (pct_x / 100.0);
+    if let Some(t) = state.transform_translate_x {
+        let tx_dp = t.resolve(width_dp);
         let tx_px = dp_to_px(env, view, tx_dp) as f32;
         let _ = env.call_method(view, "setTranslationX", "(F)V", &[JValue::Float(tx_px)]);
     }
-    if let Some(pct_y) = state.transform_translate_pct_y {
-        let ty_dp = height_dp * (pct_y / 100.0);
+    if let Some(t) = state.transform_translate_y {
+        let ty_dp = t.resolve(height_dp);
         let ty_px = dp_to_px(env, view, ty_dp) as f32;
         let _ = env.call_method(view, "setTranslationY", "(F)V", &[JValue::Float(ty_px)]);
     }

@@ -55,10 +55,9 @@ pub struct RenderStyle {
     /// Static transform from the stylesheet's `transform: [...]`
     /// list. Resolved into a single (translate, scale) pair —
     /// `TranslateX` / `TranslateY` accumulate in `translate`,
-    /// `Scale` / `ScaleXY` multiply into `scale`. Pixel units;
-    /// `Length::Percent` values are encoded as `(percent / 100,
-    /// is_percent=true)` so the renderer can resolve against the
-    /// box's actual size at stage time. Rotation, skew, and other
+    /// `Scale` / `ScaleXY` multiply into `scale`. The renderer resolves
+    /// the translate's percents against the box's actual size at stage
+    /// time. Rotation, skew, and other
     /// transform list entries are dropped — adding them is a
     /// straightforward extension when an example needs them
     /// (welcome only uses percent translates).
@@ -68,7 +67,7 @@ pub struct RenderStyle {
     /// from here AND `AnimatedOverrides.translate_* / scale_*` per
     /// frame, then combines (static first, then animation on top —
     /// matching iOS's `CGAffineTransform` baking order).
-    pub static_translate: [TransformLength; 2],
+    pub static_translate: runtime_shared::StaticTranslate,
     pub static_scale: [f32; 2],
 
     /// Resolved font family name. `None` keeps the renderer's
@@ -82,17 +81,6 @@ pub struct RenderStyle {
     pub font_weight: FontWeight,
     pub font_style: FontStyle,
     pub text_align: TextAlign,
-}
-
-/// One axis of a stylesheet-resolved static translate. Stored as
-/// the raw value + an `is_percent` flag so the renderer can
-/// resolve percents against the box's actual pixel size at stage
-/// time (the size isn't known when `apply_style` runs — Taffy
-/// hasn't laid out yet).
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
-pub struct TransformLength {
-    pub value: f32,
-    pub is_percent: bool,
 }
 
 /// Backend-resolved counterpart of [`runtime_shared::Gradient`].
@@ -168,7 +156,7 @@ impl Default for RenderStyle {
             object_fit: ObjectFit::Contain,
             shadow: None,
             gradient: None,
-            static_translate: [TransformLength::default(); 2],
+            static_translate: Default::default(),
             static_scale: [1.0, 1.0],
             font_family: None,
             font_weight: FontWeight::Normal,
@@ -279,64 +267,17 @@ impl RenderStyle {
         self.gradient = rules.background_gradient.as_ref().and_then(resolve_gradient);
 
         // Static transform — `TranslateX(50%)` etc. from the
-        // stylesheet. Percent values are stored with an `is_percent`
-        // flag and resolved against the box's pixel size at stage
-        // time (the box hasn't been laid out yet here). Translates
-        // accumulate additively; `Scale` / `ScaleXY` multiply into
+        // stylesheet. Translates add up, percents resolved against the
+        // box's pixel size at stage time (the box hasn't been laid out
+        // yet here); `Scale` / `ScaleXY` multiply into
         // the per-axis scale. Rotate / Skew are dropped — adding
         // those is a small extension when a real design needs them.
         if let Some(transforms) = rules.transform.as_ref() {
+            self.static_translate = runtime_shared::StaticTranslate::of(Some(transforms));
             for t in transforms {
                 match t {
-                    Transform::TranslateX(len) => {
-                        let entry = match *len {
-                            Length::Px(v) => TransformLength {
-                                value: v,
-                                is_percent: false,
-                            },
-                            Length::Percent(v) => TransformLength {
-                                value: v / 100.0,
-                                is_percent: true,
-                            },
-                            // Neither `Length::Auto` nor `Length::Full` has
-                            // meaning as a transform offset (`Full` describes
-                            // a corner radius); treat both as zero.
-                            Length::Auto | Length::Full | Length::FitContent => TransformLength::default(),
-                        };
-                        // Sum existing + new on the same axis.
-                        if entry.is_percent == self.static_translate[0].is_percent {
-                            self.static_translate[0].value += entry.value;
-                        } else {
-                            // Mixed px + percent on the same axis is
-                            // unusual; the welcome's transforms are
-                            // single-entry so this branch never trips.
-                            // Fall back to ignoring the new entry's
-                            // unit when it diverges — keeping the
-                            // resolver simple beats getting clever.
-                            self.static_translate[0] = entry;
-                        }
-                    }
-                    Transform::TranslateY(len) => {
-                        let entry = match *len {
-                            Length::Px(v) => TransformLength {
-                                value: v,
-                                is_percent: false,
-                            },
-                            Length::Percent(v) => TransformLength {
-                                value: v / 100.0,
-                                is_percent: true,
-                            },
-                            // Neither `Length::Auto` nor `Length::Full` has
-                            // meaning as a transform offset (`Full` describes
-                            // a corner radius); treat both as zero.
-                            Length::Auto | Length::Full | Length::FitContent => TransformLength::default(),
-                        };
-                        if entry.is_percent == self.static_translate[1].is_percent {
-                            self.static_translate[1].value += entry.value;
-                        } else {
-                            self.static_translate[1] = entry;
-                        }
-                    }
+                    // Summed above.
+                    Transform::TranslateX(_) | Transform::TranslateY(_) => {}
                     Transform::Scale(v) => {
                         self.static_scale[0] *= v;
                         self.static_scale[1] *= v;

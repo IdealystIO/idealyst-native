@@ -2757,3 +2757,27 @@ fn read_only_signals_and_memos_are_style_sources() {
         assert_eq!(from_memo(), "loud", "the memo source follows its inputs");
     });
 }
+
+/// REGRESSION: `[translateX(100%), translateX(-24px)]` lost its -24 on iOS
+/// and Android, where the resolved percent overwrote the px, and its 100% on
+/// wgpu and CPU, where the last entry won. CSS adds them.
+#[test]
+fn regression_a_transform_list_adds_its_translates() {
+    use crate::{Length, StaticTranslate, Transform};
+    let list = vec![
+        Transform::TranslateX(Length::Percent(100.0)),
+        Transform::TranslateX(Length::Px(-24.0)),
+        Transform::Scale(2.0),
+        Transform::TranslateX(Length::Px(4.0)),
+        Transform::TranslateY(Length::Percent(-50.0)),
+        Transform::TranslateY(Length::Auto),
+    ];
+    let t = StaticTranslate::of(Some(&list));
+    assert_eq!(t.x.unwrap().resolve(400.0), 380.0);
+    assert_eq!(t.y.unwrap().resolve(60.0), -30.0);
+    let reversed: Vec<_> = list.into_iter().rev().collect();
+    assert_eq!(StaticTranslate::of(Some(&reversed)), t, "in either order");
+    assert_eq!(StaticTranslate::of(None), StaticTranslate::default());
+    let only = [Transform::TranslateX(Length::Full)];
+    assert_eq!(StaticTranslate::of(Some(&only)).x, None, "states nothing");
+}

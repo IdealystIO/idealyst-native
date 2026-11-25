@@ -1423,22 +1423,9 @@ fn walk<'a>(
     // animated transforms compose multiplicatively (scale) /
     // additively (translate) — static first, then animated, mirroring
     // iOS's CGAffineTransform baking order.
-    let static_tx = {
-        let t = data.render.static_translate[0];
-        if t.is_percent {
-            t.value * frame.width
-        } else {
-            t.value
-        }
-    };
-    let static_ty = {
-        let t = data.render.static_translate[1];
-        if t.is_percent {
-            t.value * frame.height
-        } else {
-            t.value
-        }
-    };
+    let translate = data.render.static_translate;
+    let static_tx = translate.x.map_or(0.0, |t| t.resolve(frame.width));
+    let static_ty = translate.y.map_or(0.0, |t| t.resolve(frame.height));
     let static_sx = data.render.static_scale[0];
     let static_sy = data.render.static_scale[1];
     let combined_sx = static_sx * local_sx;

@@ -371,9 +371,10 @@ pub(crate) struct NodeAnim {
     /// BOX-relative, so we can't compute the px shift until Taffy
     /// produces a frame. `None` on an axis means "no percent
     /// translate requested" (a `Length::Px` translate was already
-    /// applied directly at style time).
-    pub(crate) transform_translate_pct_x: Option<f32>,
-    pub(crate) transform_translate_pct_y: Option<f32>,
+    /// applied directly at style time). The axis's px share is in it:
+    /// the list's translates add up.
+    pub(crate) transform_translate_x: Option<runtime_shared::AxisTranslate>,
+    pub(crate) transform_translate_y: Option<runtime_shared::AxisTranslate>,
 
     /// Last statically-applied transform, as (axis-write mask,
     /// [tx_px, ty_px, sx, sy, rot_deg]). `None` before the first
