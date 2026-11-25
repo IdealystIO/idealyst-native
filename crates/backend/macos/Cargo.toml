@@ -295,6 +295,15 @@ harness = false
 name = "hscroll_hit_test"
 harness = false
 
+# Real-AppKit test of scroll chaining (`src/imp/scroll_chain.rs`): over a
+# vertical `scroll_view` / `flat_list` inside a horizontal `scroll_view`, a
+# horizontal trackpad pan or shift+wheel scrolls the outer one, a vertical one
+# the inner, and `overscroll-behavior: contain` stops the chaining. The window
+# is never ordered on screen. Main-thread only, as `focus_attach`.
+[[test]]
+name = "nested_scroll_chain"
+harness = false
+
 # Real run loop: a view given a translate as it mounts (animated, or a static
 # style transform) carries it in the Core Animation commit that first shows it,
 # though AppKit builds the view's layer into the tree in that commit (the drag
@@ -305,4 +314,21 @@ harness = false
 
 [[test]]
 name = "variant_restyle"
+harness = false
+
+# Real AppKit: percent translates live in the layer transform, resolved
+# against the laid-out size — they animate under `transitions { transform }`,
+# compose with px translates, land in the first commit, and hit-test and
+# measure where they paint. Main-thread only, like `layout_before_commit`.
+[[test]]
+name = "percent_translate_transition"
+harness = false
+
+# Real AppKit, a window on screen and a real run loop: the animation clock
+# (`raf_loop` / `after_animation_frame`) ticks at the display's refresh rate
+# from the host root's `CADisplayLink` (macOS 14+), stops when idle, and falls
+# back to its NSTimer backstop for a window that is not on screen. Shows a
+# window (without activating the app). Main-thread only, like `focus_attach`.
+[[test]]
+name = "raf_display_rate"
 harness = false

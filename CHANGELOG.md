@@ -3940,6 +3940,24 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   stack in the window and a lone one fills it. Backends call the new
   `LayoutTree::blockify_root` as they mount.
 
+- **macOS nested scrollers chain a gesture they cannot scroll** (`backend-macos`). A horizontal
+  trackpad pan over a vertical list inside a horizontal `scroll_view` (a Kanban board's column)
+  stayed with the list, so the board never moved: AppKit gives a gesture to the innermost
+  `NSScrollView` and it kept it. Now, as on the web, a `scroll_view`, `flat_list` or virtual grid
+  that cannot scroll the axis a gesture starts along (no scroller on it, or content that fits)
+  passes it to the enclosing scroll view, for the whole gesture and its momentum. A mouse wheel
+  is vertical and shift+wheel horizontal. `overscroll-behavior: contain` / `none` keep every
+  gesture, as in CSS. The scroll views keep responsive scrolling.
+
+- **macOS animations tick at the display's refresh rate** (`backend-apple-core`, `backend-macos`).
+  The animation clock behind `raf_loop` and `after_animation_frame` was a 60 Hz NSTimer, so a
+  120 Hz ProMotion display got half the frames it can show, unevenly spaced against vsync, and
+  tweens juddered. On macOS 14+ the clock is one `CADisplayLink` from the host root view
+  (`-[NSView displayLinkWithTarget:selector:]`), which follows the window between screens; it is
+  paused when nothing animates, and an NSTimer backstop ticks while the window is not on any
+  display. On macOS 11–13 the timer drives the clock at the screen's `maximumFramesPerSecond`.
+  Several loops share one tick, and the flush after it runs once per frame.
+
 - **A layout property given as a token lays out at the installed value** (`runtime-layout`). Native
   read a token's fallback, so an app that installed a 12pt page gutter still got the theme's 32.
   Paint and web already used the installed value.

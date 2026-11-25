@@ -23,9 +23,15 @@ let backend = MacosBackend::new(...);
 backend_macos::install_global_self(&backend); // for AnimatedValue::bind
 ```
 
-The scheduler is NSTimer-backed; on macOS it forwards to the shared
+The scheduler forwards to the shared
 `backend_apple_core::scheduler::install_scheduler`, the same code the iOS
-backend uses.
+backend uses: NSTimer for `after_ms`, the main dispatch queue for
+microtasks. The animation clock (`raf_loop`, `after_animation_frame`) is a
+`CADisplayLink` vended by the host root view (`set_host_root` registers it;
+macOS 14+), so it ticks at the refresh rate of whichever display the window
+is on, with an NSTimer backstop while the window is not on any display. On
+macOS 11–13 the timer drives the clock at the screen's
+`maximumFramesPerSecond`. See `backend-apple-core/src/mac_frame_clock.rs`.
 
 ## AppKit ≠ UIKit gotchas
 

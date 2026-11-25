@@ -97,10 +97,9 @@ struct RowScope<N> {
 ///   untracked and, when the prim carries an `ItemDiff` (`flat_list`
 ///   does, from `T: PartialEq`), stores a snapshot of the item in the
 ///   row scope. `item_changed(idx)` compares that snapshot with the item
-///   now at `idx`; a keyed-diff backend (web, Android) releases + remounts
-///   a surviving key whose item changed and keeps an unchanged survivor's
-///   node. iOS/macOS `reloadData` remounts every
-///   visible row anyway. `live_by_key` maps a key to its live row so the
+///   now at `idx`; a keyed-diff backend (web, Android, macOS) releases +
+///   remounts a surviving key whose item changed and keeps an unchanged
+///   survivor's node. iOS `reloadData` remounts every visible row anyway. `live_by_key` maps a key to its live row so the
 ///   backend can ask by the key's NEW index after a reorder.
 /// - **The measured-size cache is keyed by item KEY, not scope id, and
 ///   deliberately survives release**: a re-entering row reuses its

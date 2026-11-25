@@ -224,7 +224,8 @@ declare_class!(
             true
         }
 
-        // Make views positioned by an animated `TranslateX/Y` clickable where
+        // Make views positioned by a translate (static px or percent, animated,
+        // presence) clickable where
         // they VISUALLY render. AppKit hit-tests by frame and ignores the CALayer
         // transform, so a transform-positioned view (e.g. a kanban card laid out
         // purely by translate) would draw in place but keep its click target at
@@ -263,6 +264,10 @@ declare_class!(
                     Some(resolved) => resolved,
                     None => unsafe { msg_send_id![super(self), hitTest: adjusted] },
                 };
+                // A child standing out of this view's box (a tab hung off a
+                // card's edge, an absolute box placed by its containing
+                // block) takes clicks where it paints, as on web.
+                let result = result.or_else(|| overflow_hit_test(self, adjusted));
                 // `pointer-events: none` — this subtree is hit-transparent
                 // (return nil so AppKit resolves whatever renders behind it),
                 // EXCEPT descendants that explicitly re-enable with `Auto`.
@@ -880,6 +885,60 @@ pub(crate) fn z_ordered_hit_test(view: &NSView, point: CGPoint) -> Option<Option
     Some(hit.or_else(|| unsafe { Retained::retain(view as *const NSView as *mut NSView) }))
 }
 
+/// The hit for `point` (in `view`'s superview space) among `view`'s
+/// children that stand out of its bounds, when AppKit's walk found none.
+///
+/// AppKit hit-tests a subview only where its superview's frame contains the
+/// point, so a child laid out past its parent's edge drew but took no clicks.
+/// CSS hit-tests an overflowing descendant wherever it paints unless an
+/// ancestor clips it; this follows that. Never answers with `view` itself
+/// (the point is outside it). `None` when `view` is hidden, clips
+/// (`masksToBounds`, `overflow: hidden`), or keeps every candidate inside its
+/// bounds, which is the common case and costs one frame check per child.
+///
+/// A descendant reached only through a child that is itself inside the
+/// bounds (overflow two levels down, out of both) is not found: that needs
+/// subtree extents. Children standing out directly, at any depth of the
+/// walk, are.
+pub(crate) fn overflow_hit_test(view: &NSView, point: CGPoint) -> Option<Retained<NSView>> {
+    let hidden: bool = unsafe { msg_send![view, isHidden] };
+    if hidden {
+        return None;
+    }
+    let layer: Option<Retained<objc2::runtime::NSObject>> = unsafe { msg_send_id![view, layer] };
+    if let Some(layer) = layer {
+        let clips: bool = unsafe { msg_send![&layer, masksToBounds] };
+        if clips {
+            return None;
+        }
+    }
+    let bounds: CGRect = unsafe { msg_send![view, bounds] };
+    let subs = hit_candidates(view);
+    let overflows = subs.iter().any(|sub| {
+        let f: CGRect = unsafe { msg_send![&**sub, frame] };
+        !rect_within(f, bounds)
+    });
+    if !overflows {
+        return None;
+    }
+    let superview: *mut NSView = unsafe { msg_send![view, superview] };
+    let local: CGPoint = if superview.is_null() {
+        let frame: CGRect = unsafe { msg_send![view, frame] };
+        CGPoint { x: point.x - frame.origin.x, y: point.y - frame.origin.y }
+    } else {
+        unsafe { msg_send![view, convertPoint: point, fromView: superview] }
+    };
+    walk_subviews_topmost_first(view, local)
+}
+
+/// Whether `inner` lies within `outer` (both in the same space).
+fn rect_within(inner: CGRect, outer: CGRect) -> bool {
+    inner.origin.x >= outer.origin.x
+        && inner.origin.y >= outer.origin.y
+        && inner.origin.x + inner.size.width <= outer.origin.x + outer.size.width
+        && inner.origin.y + inner.size.height <= outer.origin.y + outer.size.height
+}
+
 /// Put the portal containers mounted in `host` (the host content view
 /// they mount into, AppKit's class) into `z_index` paint order within its
 /// `subviews`. AppKit's `hitTest:` walks by index and ignores
@@ -1193,13 +1252,14 @@ impl FlippedView {
         let local_raw: CGPoint =
             unsafe { msg_send![self, convertPoint: win, fromView: std::ptr::null::<NSView>()] };
         // `convertPoint:` is frame-based and ignores the CALayer transform, so for
-        // a view positioned by an animated `TranslateX/Y` the result is relative
-        // to its untransformed frame, not its visual top-left. Subtract the
-        // translate so `position` is the point *within the visual view* — matching
-        // web/iOS. Without this the grab offset for a drag preview comes out as
-        // ~the window position, flinging the ghost to the top-left and offsetting
-        // it more the further the grabbed view sits from the origin.
-        let (ltx, lty) = crate::imp::animated::view_layer_translate(self);
+        // a view positioned by a translate (its own or an ancestor's) the result
+        // is relative to its untransformed frame, not its visual top-left.
+        // Subtract the translates so `position` is the point *within the visual
+        // view* — matching web/iOS. Without this the grab offset for a drag
+        // preview comes out as ~the window position, flinging the ghost to the
+        // top-left and offsetting it more the further the grabbed view sits from
+        // the origin.
+        let (ltx, lty) = crate::imp::animated::visual_translate_in_window(self);
         let local = CGPoint {
             x: local_raw.x - ltx,
             y: local_raw.y - lty,
@@ -3203,13 +3263,18 @@ mod anchor_hit_tests {
     }
 
     /// The other half of "no frame check on self": a child that lies
-    /// outside the anchor's own frame is still reached. The control shows
-    /// a plain view clipping it — AppKit forwards to the subview but the
-    /// subview's default `hitTest:` rejects a point outside its frame.
+    /// outside the anchor's own frame is still reached. An unclipped plain
+    /// view reaches it too ([`overflow_hit_test`], CSS's rule); a clipping
+    /// one doesn't, which is the control.
     #[test]
     fn regression_anchor_reaches_a_child_outside_its_own_frame() {
         let (root, parent, _sibling, anchor, child) = tree(50.0);
-        assert!(same(hit(&root, 125.0, 125.0).as_ref(), &parent), "control: a plain view clips");
+        assert!(same(hit(&root, 125.0, 125.0).as_ref(), &child), "an unclipped view's overflow takes the click");
+        let _: () = unsafe { msg_send![&*anchor, setWantsLayer: true] };
+        let layer: Retained<objc2::runtime::NSObject> = unsafe { msg_send_id![&*anchor, layer] };
+        let _: () = unsafe { msg_send![&layer, setMasksToBounds: true] };
+        assert!(same(hit(&root, 125.0, 125.0).as_ref(), &parent), "control: a clipping view hides it");
+        let _: () = unsafe { msg_send![&layer, setMasksToBounds: false] };
         anchor.set_layout_transparent();
         assert!(same(hit(&root, 125.0, 125.0).as_ref(), &child));
     }

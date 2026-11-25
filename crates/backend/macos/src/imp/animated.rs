@@ -30,10 +30,12 @@ use crate::imp::MacosNode;
 /// the cached components on each write.
 ///
 /// Percent translates (`Transform::TranslateX(Length::Percent(_))`
-/// from `StyleRules`) can't be resolved at apply-style time because
-/// the view's bounds aren't known yet — we stash them separately
-/// and the layout pass calls [`sync_transform_after_layout`] to fold
-/// them in once Taffy has assigned a frame.
+/// from `StyleRules`) are kept as percents and resolved against the
+/// view's own bounds every time the matrix is built
+/// ([`compose_layer_transform`]); the layout pass calls
+/// [`sync_transform_after_layout`] after each `setFrame:` so they follow
+/// the laid-out size. They live in the layer transform like every other
+/// translate, so a `transitions { transform }` animates them.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct AnimatedState {
     // STATIC transform components — written by `apply_static_transform` from
@@ -59,9 +61,10 @@ pub(crate) struct AnimatedState {
     /// the animated value with the static `stacking_z()` — the animated
     /// value overrides the static `z_index`, as on web.
     pub(crate) anim_z_index: Option<f32>,
-    /// Pending percent translateX in 0..=100 units. `None` if no
-    /// percent translate is set; the layout pass resolves it
-    /// against the view's width on each frame.
+    /// Static percent translateX in 0..=100 units, `None` when the style
+    /// has none. Resolved against the view's width when the matrix is
+    /// built, and added to the px `translate_x` (CSS sums the entries of
+    /// a `translateX(100%) translateX(-24px)` list).
     pub(crate) static_translate_pct_x: Option<f32>,
     pub(crate) static_translate_pct_y: Option<f32>,
     /// The opacity the last style stated, `Some(1.0)` once it has been dropped;
@@ -136,10 +139,10 @@ pub(crate) fn apply_static_opacity(
 }
 
 /// Apply the static `transform: [...]` from a `StyleRules` to the
-/// view's transform state. Called from `apply_style`. Percent
-/// translates are stashed for resolution in the layout pass;
-/// everything else (px translate, scale, rotate) goes straight into
-/// the matrix.
+/// view's transform state and its layer matrix. Called from
+/// `apply_style`. Percent translates resolve against the view's current
+/// bounds (0×0 before its first layout, which then resolves them in
+/// [`sync_transform_after_layout`]).
 ///
 /// Resets the static slots first so removing the transform reverts
 /// to identity — matches the iOS behavior in
@@ -155,16 +158,16 @@ pub(crate) fn apply_static_transform(
     let state = states
         .entry(key)
         .or_insert_with(|| RefCell::new(AnimatedState::new()));
-    // Snapshot for `transitions { transform: … }`: the static tuple
-    // BEFORE this apply (change detection) and the layer's CURRENT
-    // on-screen matrix (the tween's `from` — read from the
-    // presentation layer so a mid-flight reversal retargets smoothly
-    // instead of jumping). First apply snaps — CSS parity.
-    let (seen_before, old_static) = {
+    // Snapshot for `transitions { transform: … }`: the state BEFORE
+    // this apply (change detection) and the layer's CURRENT on-screen
+    // matrix (the tween's `from` — read from the presentation layer so a
+    // mid-flight reversal retargets smoothly instead of jumping). First
+    // apply snaps — CSS parity.
+    let (seen_before, old_state) = {
         let mut s = state.borrow_mut();
         let seen = s.static_transform_seen;
         s.static_transform_seen = true;
-        (seen, (s.translate_x, s.translate_y, s.scale_x, s.scale_y, s.rotate_z))
+        (seen, *s)
     };
     let from_matrix = if seen_before && style.transform_transition.is_some() {
         current_layer_transform(view)
@@ -213,10 +216,10 @@ pub(crate) fn apply_static_transform(
             }
         }
     }
-    // Apply with current bounds (likely 0 at apply-style time for
-    // percent-sized views — the layout pass calls this again with
-    // real bounds via `sync_transform_after_layout`).
-    rebuild_transform(view, &state.borrow());
+    // Apply with current bounds (0×0 at mount — the layout pass
+    // resolves the percents again via `sync_transform_after_layout`).
+    let new_state = *state.borrow();
+    rebuild_transform(view, &new_state);
 
     // `transitions { transform: … }` — animate the change instead of
     // snapping, matching web's CSS `transition: transform` (the
@@ -224,16 +227,29 @@ pub(crate) fn apply_static_transform(
     // the final MODEL matrix; the CABasicAnimation drives the
     // presentation from the captured on-screen matrix to it.
     if let (Some(t), Some(from)) = (style.transform_transition.as_ref(), from_matrix) {
-        let s = state.borrow();
-        let new_static = (s.translate_x, s.translate_y, s.scale_x, s.scale_y, s.rotate_z);
+        let (w, h) = view_size(view);
         if crate::transform_transition_policy::should_animate_static_transform(
             seen_before,
             true,
-            new_static != old_static,
+            static_transform_changed(&old_state, &new_state, w, h),
         ) {
             animate_layer_transform(view, from, t);
         }
     }
+}
+
+/// Whether going from `old` to `new` moves the layer matrix of a `w`×`h`
+/// view. Compares the composed matrices, so a percent-only change
+/// (`translateX(100%)` → `translateX(0%)`) counts, and a percent change on
+/// a view with no size yet does not: both resolve to the same matrix, and
+/// the first layout places it without a slide.
+fn static_transform_changed(old: &AnimatedState, new: &AnimatedState, w: f64, h: f64) -> bool {
+    compose_layer_transform(old, w, h) != compose_layer_transform(new, w, h)
+}
+
+fn view_size(view: &NSView) -> (f64, f64) {
+    let bounds: objc2_foundation::CGRect = unsafe { msg_send![view, bounds] };
+    (bounds.size.width as f64, bounds.size.height as f64)
 }
 
 /// Read the CURRENT on-screen transform of `view`'s layer: the
@@ -289,12 +305,11 @@ fn animate_layer_transform(
     let _: () = unsafe { msg_send![&layer, addAnimation: &*anim, forKey: &*key] };
 }
 
-/// Re-apply transforms for any view with non-identity animated
-/// state after the layout pass has assigned frames. Used for animated
-/// scale/rotate so the center-pivot compensation re-resolves
-/// against the new bounds. (Static percent translates are NOT in
-/// the layer transform on macOS — they go through frame-origin
-/// adjustment via [`static_translate_offset`].)
+/// Rebuild `view`'s layer matrix against the bounds the layout pass just
+/// gave it: percent translates resolve against the new size, and the
+/// scale/rotate center-pivot compensation follows the new center. Called
+/// after every `setFrame:` (see `sync_view_after_frame`). Writing the
+/// model value leaves an in-flight transition running toward it.
 pub(crate) fn sync_transform_after_layout(
     view: &NSView,
     states: &AnimatedStateMap,
@@ -302,33 +317,6 @@ pub(crate) fn sync_transform_after_layout(
     let key = view as *const NSView as usize;
     let Some(state) = states.get(&key) else { return };
     rebuild_transform(view, &state.borrow());
-}
-
-/// Compute the frame-origin offset for `view`'s static percent
-/// translates, resolved against the Taffy-computed frame size. Used
-/// by the layout pass to apply CSS-style `translate(50%, -50%)` as
-/// a frame shift rather than a layer transform.
-///
-/// Returns `(0.0, 0.0)` if no state exists or no percent translates
-/// are present.
-pub(crate) fn static_translate_offset(
-    view: &NSView,
-    states: &AnimatedStateMap,
-    frame_w: f32,
-    frame_h: f32,
-) -> (f64, f64) {
-    let key = view as *const NSView as usize;
-    let Some(state) = states.get(&key) else { return (0.0, 0.0) };
-    let s = state.borrow();
-    let tx = s
-        .static_translate_pct_x
-        .map(|p| p as f64 / 100.0 * frame_w as f64)
-        .unwrap_or(0.0);
-    let ty = s
-        .static_translate_pct_y
-        .map(|p| p as f64 / 100.0 * frame_h as f64)
-        .unwrap_or(0.0);
-    (tx, ty)
 }
 
 /// Write a scalar animation property on `node`. Routes through the
@@ -549,16 +537,6 @@ pub(crate) fn set_animated_color(
     }
 }
 
-/// Rebuild and apply the per-view CATransform3D from the cached
-/// component values. CATransform3D is a 4x4 matrix; we compose
-/// translate × rotate × scale in that order (matches CSS transform
-/// semantics: scale applies first, then rotate, then translate).
-///
-/// `CATransform3DMakeAffineTransform` would be one path; building
-/// from a `CGAffineTransform` and embedding is another. We use the
-/// raw CATransform3D struct directly — it's `#[repr(C)]` 16 doubles
-/// — and let `setTransform:` accept it through the standard ObjC
-/// type encoding.
 /// Translation that keeps the box center `(cx, cy)` fixed under the 2×2
 /// linear map `[[a, c], [b, d]]` (Core Animation's row-vector convention:
 /// `x' = a*x + c*y`, `y' = b*x + d*y`). Equal to `C − L(C)`, i.e. the
@@ -574,24 +552,24 @@ fn center_pivot_offset(cx: f64, cy: f64, a: f64, b: f64, c: f64, d: f64) -> (f64
     (center_tx, center_ty)
 }
 
-fn rebuild_transform(view: &NSView, state: &AnimatedState) {
-    // Layer-back the view; transforms only render through the
-    // CALayer. `setWantsLayer:true` is a no-op if already set.
-    let _: () = unsafe { msg_send![view, setWantsLayer: true] };
-    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
-    let Some(layer) = layer else { return };
+/// The translate `state` places a `w`×`h` view at: px and percent
+/// entries summed (percents resolve against the view's own size, CSS's
+/// reference box for `translate`), plus the animated translate.
+fn resolved_translate(state: &AnimatedState, w: f64, h: f64) -> (f64, f64) {
+    let pct_x = state.static_translate_pct_x.map_or(0.0, |p| p as f64 / 100.0 * w);
+    let pct_y = state.static_translate_pct_y.map_or(0.0, |p| p as f64 / 100.0 * h);
+    (
+        (state.translate_x + state.anim_translate_x) as f64 + pct_x,
+        (state.translate_y + state.anim_translate_y) as f64 + pct_y,
+    )
+}
 
-    // Read current bounds. Used for center-pivot compensation
-    // below. Static percent translates are NOT folded into the
-    // layer transform on macOS — they go through the frame.origin
-    // adjustment in the layout pass instead ([`static_translate_offset`]),
-    // because layer-backed NSViews don't honor pure-static
-    // layer.transform translates the same way UIKit does. The
-    // layer transform here is reserved for animated transforms
-    // (scale, rotate, animated translate via `set_animated_f32`).
-    let bounds: objc2_foundation::CGRect = unsafe { msg_send![view, bounds] };
-    let w = bounds.size.width as f64;
-    let h = bounds.size.height as f64;
+/// The layer matrix for `state` on a view of `w`×`h` bounds. CATransform3D
+/// is a 4x4 matrix; this composes translate × rotate × scale in that order
+/// (CSS transform semantics: scale applies first, then rotate, then
+/// translate), pivoted at the view's center. Pure, so the composition is
+/// unit-testable without AppKit.
+fn compose_layer_transform(state: &AnimatedState, w: f64, h: f64) -> CATransform3D {
     let cx = w / 2.0;
     let cy = h / 2.0;
 
@@ -599,8 +577,7 @@ fn rebuild_transform(view: &NSView, state: &AnimatedState) {
     // add. So a view with no static transform but an animated `TranslateX`
     // (the Switch thumb) keeps that translate across a restyle, and a static
     // transform + an animated one combine rather than overwrite.
-    let tx = (state.translate_x + state.anim_translate_x) as f64;
-    let ty = (state.translate_y + state.anim_translate_y) as f64;
+    let (tx, ty) = resolved_translate(state, w, h);
 
     // 2x2 linear part: rotate then scale. The derivation is kept
     // explicit here so the center-pivot compensation right below
@@ -633,16 +610,28 @@ fn rebuild_transform(view: &NSView, state: &AnimatedState) {
     // x' = a*x + c*y, y' = b*x + d*y, so the x-offset carries `c` and
     // the y-offset carries `b`. For a pure scale b = c = 0, so the
     // choice is invisible there; a rotation has b, c ≠ 0 (and opposite
-    // sign), so swapping them pivots off-center — the bug this fixes.
+    // sign), so swapping them pivots off-center.
     let (center_tx, center_ty) = center_pivot_offset(cx, cy, a, b, c, d);
 
-    let m = CATransform3D {
+    CATransform3D {
         m11: a, m12: b, m13: 0.0, m14: 0.0,
         m21: c, m22: d, m23: 0.0, m24: 0.0,
         m31: 0.0, m32: 0.0, m33: 1.0, m34: 0.0,
         m41: tx + center_tx, m42: ty + center_ty, m43: 0.0, m44: 1.0,
-    };
-    set_view_layer_transform(view, &layer, m);
+    }
+}
+
+/// Write `state`'s matrix ([`compose_layer_transform`]) to `view`'s layer,
+/// resolved against the view's current bounds. The raw `#[repr(C)]`
+/// CATransform3D goes through `setTransform:`'s standard ObjC encoding.
+fn rebuild_transform(view: &NSView, state: &AnimatedState) {
+    // Layer-back the view; transforms only render through the
+    // CALayer. `setWantsLayer:true` is a no-op if already set.
+    let _: () = unsafe { msg_send![view, setWantsLayer: true] };
+    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
+    let Some(layer) = layer else { return };
+    let (w, h) = view_size(view);
+    set_view_layer_transform(view, &layer, compose_layer_transform(state, w, h));
 }
 
 thread_local! {
@@ -766,7 +755,8 @@ pub(crate) fn current_layer_scale(layer: &NSObject) -> f64 {
     t.m11
 }
 
-/// The `(x, y)` translate currently on `view`'s layer (`transform.m41`/`m42`).
+/// The `(x, y)` translate currently on `view`'s layer (`transform.m41`/`m42`):
+/// static px and percent translates, animated and presence translates alike.
 /// `hitTest:` uses this to make transform-positioned views clickable where they
 /// VISUALLY render instead of where their untransformed frame sits — AppKit
 /// hit-tests by frame and ignores the layer transform, unlike web/iOS. For a
@@ -779,6 +769,24 @@ pub(crate) fn view_layer_translate(view: &NSView) -> (f64, f64) {
     }
     let t: CATransform3D = unsafe { msg_send![layer, transform] };
     (t.m41, t.m42)
+}
+
+/// The summed layer translates of `view` and every ancestor: how far the
+/// view paints from where its frame chain puts it. `convertRect:` /
+/// `convertPoint:` walk frames and ignore layer transforms, so a window
+/// rect or a local pointer position adds (or subtracts) this to land on
+/// the painted view — including when the translate is an ancestor's (a
+/// row inside a card slid by `translateX(100%)`).
+pub(crate) fn visual_translate_in_window(view: &NSView) -> (f64, f64) {
+    let (mut x, mut y) = view_layer_translate(view);
+    let mut cur: Option<Retained<NSView>> = unsafe { msg_send_id![view, superview] };
+    while let Some(v) = cur {
+        let (tx, ty) = view_layer_translate(&v);
+        x += tx;
+        y += ty;
+        cur = unsafe { msg_send_id![&*v, superview] };
+    }
+    (x, y)
 }
 
 /// Apply a uniform scale (about the layer's anchor point) to `layer`'s
@@ -797,9 +805,87 @@ pub(crate) fn apply_layer_scale(layer: &NSObject, s: f64) {
 
 #[cfg(test)]
 mod tests {
-    //! Pure center-pivot math — no AppKit. The native `setTransform:` write is
-    //! exercised by the robot screenshot pass, not here.
-    use super::center_pivot_offset;
+    //! Pure transform math — no AppKit. The native `setTransform:` write and
+    //! its transition are exercised by `tests/percent_translate_transition.rs`.
+    use super::{
+        center_pivot_offset, compose_layer_transform, resolved_translate,
+        static_transform_changed, AnimatedState,
+    };
+
+    fn translated(pct_x: Option<f32>, px_x: f32, pct_y: Option<f32>, px_y: f32) -> AnimatedState {
+        let mut s = AnimatedState::new();
+        s.static_translate_pct_x = pct_x;
+        s.translate_x = px_x;
+        s.static_translate_pct_y = pct_y;
+        s.translate_y = px_y;
+        s
+    }
+
+    /// The Timely content card: `[TranslateX(Percent(100)), TranslateX(Px(-24))]`
+    /// on a 400-wide card sits at 400 − 24. The percent resolves against the
+    /// view's own width and the px entry adds to it, as CSS sums a translate list.
+    #[test]
+    fn percent_and_px_translates_compose() {
+        let s = translated(Some(100.0), -24.0, Some(-50.0), 6.0);
+        assert_eq!(resolved_translate(&s, 400.0, 200.0), (376.0, -94.0));
+        let m = compose_layer_transform(&s, 400.0, 200.0);
+        assert_eq!((m.m41, m.m42), (376.0, -94.0), "a pure translate is m41/m42 exactly");
+    }
+
+    /// `translate(-50%, -50%)` centering (idea-ui overlays) lands half the
+    /// view's own size up and left, in the matrix.
+    #[test]
+    fn percent_translate_centers_against_own_size() {
+        let s = translated(Some(-50.0), 0.0, Some(-50.0), 0.0);
+        let m = compose_layer_transform(&s, 300.0, 120.0);
+        assert_eq!((m.m41, m.m42), (-150.0, -60.0));
+    }
+
+    /// An animated translate (`set_animated_f32`) adds on top of the static
+    /// percent one rather than replacing it.
+    #[test]
+    fn animated_translate_adds_to_percent_translate() {
+        let mut s = translated(Some(10.0), 0.0, None, 0.0);
+        s.anim_translate_x = 5.0;
+        assert_eq!(resolved_translate(&s, 100.0, 50.0), (15.0, 0.0));
+    }
+
+    /// REGRESSION (a `transitions { transform }` card sliding by
+    /// `translateX(100%)` → `translateX(0%)` snapped on macOS, slid on web):
+    /// the change check looked at the px/scale/rotate slots only, so a change
+    /// carried by the percent entry never counted as a change.
+    #[test]
+    fn regression_percent_only_transform_change_counts_as_a_change() {
+        let from = translated(Some(100.0), 0.0, None, 0.0);
+        let to = translated(Some(0.0), 0.0, None, 0.0);
+        assert!(static_transform_changed(&from, &to, 400.0, 300.0));
+        assert!(!static_transform_changed(&from, &from, 400.0, 300.0));
+    }
+
+    /// Before its first layout a view is 0×0, so a percent change moves
+    /// nothing; it snaps, and the first layout places the view (no phantom
+    /// slide-in at mount).
+    #[test]
+    fn percent_change_on_an_unsized_view_is_not_a_change() {
+        let from = translated(Some(100.0), 0.0, None, 0.0);
+        let to = translated(Some(0.0), 0.0, None, 0.0);
+        assert!(!static_transform_changed(&from, &to, 0.0, 0.0));
+    }
+
+    /// A translate under a scale still pivots the scale at the center: the
+    /// center maps to center + translate.
+    #[test]
+    fn percent_translate_with_scale_keeps_center_pivot() {
+        let mut s = translated(Some(50.0), 0.0, None, 0.0);
+        s.scale_x = 2.0;
+        s.scale_y = 2.0;
+        let (w, h) = (100.0, 40.0);
+        let m = compose_layer_transform(&s, w, h);
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let x = m.m11 * cx + m.m21 * cy + m.m41;
+        let y = m.m12 * cx + m.m22 * cy + m.m42;
+        assert!((x - (cx + 50.0)).abs() < 1e-9 && (y - cy).abs() < 1e-9, "({x}, {y})");
+    }
 
     /// Apply the CA row-vector map `x' = a*x + c*y + tx`, `y' = b*x + d*y + ty`
     /// to a point, using the center-pivot offset as the translate.

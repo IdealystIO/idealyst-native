@@ -48,7 +48,7 @@ changes is everything below it:
 | Cursor                   | n/a                                   | `NSCursor.pointingHand` for pressables/links; `NSTrackingArea` |
 | Dark mode                | `UITraitCollection.userInterfaceStyle`| `NSAppearance.currentAppearance`                               |
 | Vibrancy                 | n/a                                   | `NSVisualEffectView` (sidebars, popovers — opt-in)             |
-| Render loop              | NSTimer @ 60 Hz (`raf_loop`)          | `CVDisplayLink` (NSScreen.displayLink on macOS 14+); NSTimer interim |
+| Animation clock          | `CADisplayLink` per `raf_loop`        | One shared `-[NSView displayLinkWithTarget:selector:]` from the host root (macOS 14+) + NSTimer backstop; NSTimer at the screen's max fps on 11–13 |
 | Scheduler                | NSTimer + main DispatchQueue          | Identical — `dispatch_get_main_queue` + NSTimer, lifted to apple-core |
 
 The Taffy layout tree, asset registries, animation, reactivity, wire
@@ -202,9 +202,15 @@ Render loop: an NSTimer-based driver at ~60 Hz on the main thread
 `NSScreen.displayLink` on macOS 14+) would pace more exactly but needs a
 thread hop back to the main thread; the driver's consumer (an embedded GPU
 preview) doesn't need frame-exact pacing. The animation clock
-(`backend-apple-core::scheduler::raf_loop`) runs in common run-loop modes
-so springs keep advancing during scroll tracking; the render driver runs
-in the default mode so it yields to scrolling.
+(`backend-apple-core::scheduler::raf_loop` / `after_animation_frame`) is a
+`CADisplayLink` vended by the host root view on macOS 14+, shared by every
+subscriber and paused when none is left (`mac_frame_clock.rs`). The
+view-vended link follows the window between screens, so a 120 Hz ProMotion
+display gets 120 ticks a second. It runs in common run-loop modes so springs
+keep advancing during scroll tracking; an NSTimer backstop ticks while the
+link is silent (the window is not on any display), and drives the clock alone
+on macOS 11–13. The render driver runs in the default mode so it yields to
+scrolling.
 
 ---
 

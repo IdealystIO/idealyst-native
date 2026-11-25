@@ -389,6 +389,53 @@ fn active_query_is_none_while_another_screen_is_active() {
 }
 
 #[test]
+fn regression_swap_replace_onto_another_screen_shows_it() {
+    // A redirect from an alias screen (`/home` to the place it names) is a
+    // replace onto a DIFFERENT screen: no Back step to the alias. The swap
+    // driver dropped `Replace`, while the route mirror still moved, so the
+    // navigator reported the new route over the old screen: a blank page.
+    let h = harness();
+    let world = h.world.clone();
+    world.enter(|| {
+        set_initial_path(None);
+        let (inbox, detail) = (Seen::default(), Seen::default());
+        let handle_slot: Rc<RefCell<Option<NavHandle>>> = Rc::new(RefCell::new(None));
+        let ctx_slot: Rc<RefCell<Option<SwapNav>>> = Rc::new(RefCell::new(None));
+        let element = {
+            let (inbox, detail) = (inbox.clone(), detail.clone());
+            let (handle_slot, ctx_slot) = (handle_slot.clone(), ctx_slot.clone());
+            swap_navigator(&INBOX)
+                .screen(INBOX, move |_| {
+                    inbox.record();
+                    view().child(text().content("inbox")).build()
+                })
+                .screen(DETAIL, move |_: ItemId| {
+                    detail.record();
+                    view().child(text().content("detail")).build()
+                })
+                .layout(move || {
+                    *ctx_slot.borrow_mut() = inject::<SwapNav>();
+                    view().child(navigator_outlet()).build()
+                })
+                .on_handle(move |handle| *handle_slot.borrow_mut() = Some(handle))
+                .build()
+        };
+        let _realized = realize(&h.backend, &h.registry, element);
+        let handle = handle_slot.borrow_mut().take().expect("handle at mount");
+        let ctx = ctx_slot.borrow_mut().take().expect("SwapNav provided");
+        assert_eq!((inbox.builds(), detail.builds()), (1, 0));
+
+        handle.replace_with_state(&DETAIL, ItemId(4), Filters { tab: "notes".into(), page: 1 });
+        world.flush();
+
+        assert_eq!(detail.builds(), 1, "the replaced-to screen mounts");
+        assert_eq!(ctx.active_route.get(), "detail");
+        assert_eq!(ctx.active_path.get(), "/items/4");
+        assert_eq!(ctx.query.get().get("tab"), Some("notes"));
+    });
+}
+
+#[test]
 fn swap_replace_with_state_updates_the_query_in_place() {
     // A swap's `replace_with_state` is the verb for state that shouldn't add
     // a Back step (a layout toggle, a filter): the reactive query moves

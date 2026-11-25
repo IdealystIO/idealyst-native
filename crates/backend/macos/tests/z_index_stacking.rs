@@ -631,6 +631,78 @@ mod imp {
         window.close();
     }
 
+    /// REGRESSION (overflow took no clicks on Apple): a tab hung off a
+    /// card's left edge (`left: -16`, the card unclipped) paints outside the
+    /// card, and on web takes clicks there. AppKit hit-tests a subview only
+    /// inside its superview's frame, so the overflowing half was dead: a
+    /// collapsed content card couldn't be reopened by its tab. Clipping the
+    /// card (`overflow: hidden`) hides the overhang, and then it must not
+    /// take the click either.
+    fn regression_overflowing_child_takes_the_click(mtm: MainThreadMarker) {
+        let mut backend = MacosBackend::new(mtm);
+        let (window, content) = window(mtm);
+        backend.set_host_root(content.clone());
+        let a11y = AccessibilityProps::default();
+
+        let mut root = sized_root(&mut backend, &a11y);
+        let card_rules = |overflow| {
+            Rc::new(StyleRules {
+                position: Some(Position::Absolute),
+                top: px(0.0),
+                left: px(200.0),
+                width: px(150.0),
+                height: px(200.0),
+                overflow,
+                ..Default::default()
+            })
+        };
+        let mut card = backend.create_view(&a11y);
+        backend.apply_style(&card, &card_rules(None));
+        let tab = backend.create_view(&a11y);
+        backend.apply_style(
+            &tab,
+            &Rc::new(StyleRules {
+                position: Some(Position::Absolute),
+                top: px(80.0),
+                left: px(-16.0),
+                width: px(32.0),
+                height: px(40.0),
+                ..Default::default()
+            }),
+        );
+        let (root_v, card_v, tab_v) = (view_of(&root), view_of(&card), view_of(&tab));
+        backend.insert(&mut card, tab.clone());
+        backend.insert(&mut root, card.clone());
+        backend.finish(root);
+        backend.run_layout_pass_now();
+
+        // Root space: the card spans x 200..350; the tab 184..216.
+        let overhang = CGPoint { x: 190.0, y: 100.0 };
+        let inside = CGPoint { x: 210.0, y: 100.0 };
+        let got = hit(&content, &root_v, overhang);
+        assert!(
+            got.as_ref().is_some_and(|v| is_within(v, &tab_v)),
+            "the tab's half outside the card takes the click; got {got:?}"
+        );
+        let got = hit(&content, &root_v, inside);
+        assert!(got.as_ref().is_some_and(|v| is_within(v, &tab_v)), "and its half inside, as before; got {got:?}");
+        let empty = CGPoint { x: 100.0, y: 100.0 };
+        let got = hit(&content, &root_v, empty);
+        assert!(
+            !got.as_ref().is_some_and(|v| is_within(v, &card_v)),
+            "a point outside the card and its tab is not the card's; got {got:?}"
+        );
+
+        backend.apply_style(&card, &card_rules(Some(runtime_shared::Overflow::Hidden)));
+        backend.run_layout_pass_now();
+        let got = hit(&content, &root_v, overhang);
+        assert!(
+            !got.as_ref().is_some_and(|v| is_within(v, &tab_v)),
+            "a clipping card hides the overhang, and it takes no click; got {got:?}"
+        );
+        window.close();
+    }
+
     pub fn run() {
         // SAFETY: `harness = false` — `main` IS the main thread.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
@@ -643,6 +715,7 @@ mod imp {
         regression_release_subtree_drops_animation_state(mtm);
         regression_presence_hit_follows_paint_order(mtm);
         regression_virtualized_row_z_index_orders_rows(mtm);
-        println!("z_index_stacking: 9 passed");
+        regression_overflowing_child_takes_the_click(mtm);
+        println!("z_index_stacking: 10 passed");
     }
 }

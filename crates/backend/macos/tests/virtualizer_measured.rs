@@ -1,6 +1,8 @@
 //! `flat_list` with `ItemSize::Measured` against a real AppKit
 //! `NSCollectionView`: rows are spaced by the size they render at, not by
-//! the estimate, and a Known list never measures.
+//! the estimate, and a Known list never measures. Also the data-change
+//! path: a keyed change keeps surviving rows mounted, and the scroll
+//! offset survives the deferred apply.
 //!
 //! The vocabulary side of the contract (overrides keyed by item key,
 //! `item_size` returning them) is stood in for by the callbacks below:
@@ -24,7 +26,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod imp {
     use std::cell::{Cell, RefCell};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
@@ -121,6 +123,15 @@ mod imp {
         /// Every `release_item` call. Each takes the backend's borrow, as
         /// a real row's style teardown does.
         released: Rc<RefCell<Vec<u64>>>,
+        /// The data's item keys; `item_key(i)` is `keys[i]`. The scope id
+        /// of a row is its key + 1.
+        keys: Rc<RefCell<Vec<u64>>>,
+        /// Every key `mount_item` mounted, in order.
+        mounted_keys: Rc<RefCell<Vec<u64>>>,
+        /// Key → the row's root view, latest mount.
+        rows_by_key: Rc<RefCell<HashMap<u64, Retained<NSView>>>>,
+        /// Keys whose item `item_changed` reports as changed.
+        changed: Rc<RefCell<HashSet<u64>>>,
     }
 
     impl Mounted {
@@ -192,6 +203,25 @@ mod imp {
             size.height
         }
 
+        /// Replace the data's keys and run a data change the way the
+        /// vocabulary's data effect does: under the backend's borrow.
+        fn change_keys(&self, keys: Vec<u64>) {
+            self.count.set(keys.len());
+            *self.keys.borrow_mut() = keys;
+            self.backend.borrow_mut().virtualizer_data_changed(&self.list);
+        }
+
+        /// The cell frame hosting the row mounted for `key`.
+        fn cell_frame_of_key(&self, key: u64) -> CGRect {
+            let row = self.rows_by_key.borrow().get(&key).cloned().expect("row mounted");
+            let cell: Retained<NSView> = unsafe { msg_send_id![&row, superview] };
+            unsafe { msg_send![&cell, frame] }
+        }
+
+        fn handle(&self) -> runtime_shared::primitives::virtualizer::VirtualizerHandle {
+            self.backend.borrow().make_virtualizer_handle(&self.list)
+        }
+
         fn close(self) {
             self.window.close();
         }
@@ -226,11 +256,22 @@ mod imp {
         let overrides: Rc<RefCell<HashMap<usize, f32>>> = Rc::default();
         let count = Rc::new(Cell::new(heights.len()));
         let released: Rc<RefCell<Vec<u64>>> = Rc::default();
+        let keys: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new((0..heights.len() as u64).collect()));
+        let mounted_keys: Rc<RefCell<Vec<u64>>> = Rc::default();
+        let rows_by_key: Rc<RefCell<HashMap<u64, Retained<NSView>>>> = Rc::default();
+        let changed: Rc<RefCell<HashSet<u64>>> = Rc::default();
+        let item_key: Rc<dyn Fn(usize) -> u64> = {
+            let keys = keys.clone();
+            Rc::new(move |i| keys.borrow()[i])
+        };
         let mount = {
             let mount_count = count.clone();
             let backend = backend.clone();
             let rows = rows.clone();
             let children = children.clone();
+            let item_key = item_key.clone();
+            let mounted_keys = mounted_keys.clone();
+            let rows_by_key = rows_by_key.clone();
             Rc::new(move |i: usize| {
                 assert!(i < mount_count.get(), "mount_item asked past the end of the data");
                 let mut b = backend.borrow_mut();
@@ -249,7 +290,10 @@ mod imp {
                     }
                 }
                 rows.borrow_mut().insert(i, view_of(&root));
-                (root, i as u64 + 1)
+                let key = item_key(i);
+                mounted_keys.borrow_mut().push(key);
+                rows_by_key.borrow_mut().insert(key, view_of(&root));
+                (root, key + 1)
             }) as Rc<dyn Fn(usize) -> (MacosNode, u64)>
         };
         let item_size = {
@@ -274,7 +318,7 @@ mod imp {
                 let count = count.clone();
                 Rc::new(move || count.get())
             },
-            item_key: Rc::new(|i| i as u64),
+            item_key: item_key.clone(),
             item_size,
             measure_sizes,
             mount_item: mount,
@@ -287,7 +331,10 @@ mod imp {
             },
             set_measured_size,
             on_scroll: None,
-            item_changed: None,
+            item_changed: Some({
+                let changed = changed.clone();
+                Rc::new(move |i: usize| changed.borrow().contains(&item_key(i)))
+            }),
         };
         let a11y = AccessibilityProps::default();
         let (root, list) = {
@@ -311,8 +358,22 @@ mod imp {
         let scroll = view_of(&list);
         let _: () = unsafe { msg_send![&scroll, layoutSubtreeIfNeeded] };
         let cv: Retained<NSView> = unsafe { msg_send_id![&scroll, documentView] };
-        let mounted =
-            Mounted { backend, window, cv, rows, children, reports, root, list, count, released };
+        let mounted = Mounted {
+            backend,
+            window,
+            cv,
+            rows,
+            children,
+            reports,
+            root,
+            list,
+            count,
+            released,
+            keys,
+            mounted_keys,
+            rows_by_key,
+            changed,
+        };
         mounted.settle();
         mounted
     }
@@ -532,6 +593,146 @@ mod imp {
         m.close();
     }
 
+    fn ptr(v: &Retained<NSView>) -> usize {
+        &**v as *const NSView as usize
+    }
+
+    /// REGRESSION: any change to a list's items rebuilt every visible row
+    /// (`reloadData`): a Kanban drop remounted every card in both columns,
+    /// ~40ms in one frame in a debug build. A keyed change now moves,
+    /// inserts and deletes: the surviving rows keep their mounted view and
+    /// scope (no release, no remount), and the order is the new one.
+    fn regression_a_keyed_change_keeps_surviving_rows_mounted(mtm: MainThreadMarker) {
+        let m = mount_list(mtm, vec![Some(SHORT); 3], false);
+        let before: HashMap<u64, usize> =
+            m.rows_by_key.borrow().iter().map(|(k, v)| (*k, ptr(v))).collect();
+        assert_eq!(before.len(), 3, "precondition: three rows mounted");
+        m.mounted_keys.borrow_mut().clear();
+
+        // Key 2 moves to the front, key 1 is deleted, key 7 is inserted.
+        m.change_keys(vec![2, 0, 7]);
+        assert!(m.mounted_keys.borrow().is_empty(), "nothing mounts under the borrow");
+        m.settle();
+
+        assert_eq!(*m.mounted_keys.borrow(), vec![7], "only the inserted key mounts");
+        assert_eq!(*m.released.borrow(), vec![1 + 1], "only the deleted key's row is released");
+        for key in [0u64, 2] {
+            let now = ptr(m.rows_by_key.borrow().get(&key).expect("survivor"));
+            assert_eq!(now, before[&key], "key {key} keeps its mounted view");
+            let row = m.rows_by_key.borrow().get(&key).cloned().unwrap();
+            let host: Option<Retained<NSView>> = unsafe { msg_send_id![&row, superview] };
+            assert!(host.is_some(), "key {key} is still hosted in a cell");
+        }
+        assert_close(m.cell_frame_of_key(2).origin.y, 0.0, "key 2 moved to the front");
+        assert_close(m.cell_frame_of_key(0).origin.y, ESTIMATE, "key 0 is second");
+        assert_close(m.cell_frame_of_key(7).origin.y, 2.0 * ESTIMATE, "key 7 is third");
+        assert_close(m.content_main(), 3.0 * ESTIMATE, "three rows");
+        m.close();
+    }
+
+    /// A survivor whose item changed (`item_changed`) is rebuilt from its
+    /// new item — released and mounted again — while an unchanged
+    /// survivor in the same change keeps its row.
+    fn a_changed_survivor_is_remounted_in_a_keyed_change(mtm: MainThreadMarker) {
+        let m = mount_list(mtm, vec![Some(SHORT); 3], false);
+        let kept = ptr(m.rows_by_key.borrow().get(&1).unwrap());
+        let stale = ptr(m.rows_by_key.borrow().get(&0).unwrap());
+        m.mounted_keys.borrow_mut().clear();
+
+        m.changed.borrow_mut().insert(0);
+        m.change_keys(vec![1, 0, 2]);
+        m.settle();
+
+        assert_eq!(*m.mounted_keys.borrow(), vec![0], "the changed key remounts");
+        assert_eq!(*m.released.borrow(), vec![0 + 1], "its old row is released");
+        assert_ne!(ptr(m.rows_by_key.borrow().get(&0).unwrap()), stale, "a fresh row");
+        assert_eq!(ptr(m.rows_by_key.borrow().get(&1).unwrap()), kept, "key 1 keeps its row");
+        assert_close(m.cell_frame_of_key(1).origin.y, 0.0, "key 1 moved to the front");
+        assert_close(m.cell_frame_of_key(0).origin.y, ESTIMATE, "key 0 is second");
+        m.close();
+    }
+
+    /// REGRESSION: a `scroll_to` made before a deferred data change applied
+    /// was lost — the apply's reload put the list back at offset 0 (Timely's
+    /// calendar scrolled to Today on mount, then showed 2016). The offset
+    /// holds across a no-op change (the mount-time data effect), a keyed
+    /// batch and a full reload.
+    fn regression_scroll_to_survives_the_deferred_data_change(mtm: MainThreadMarker) {
+        const ROWS: usize = 20;
+        const Y: f32 = 500.0;
+        let m = mount_list(mtm, vec![Some(SHORT); ROWS], false);
+        let handle = m.handle();
+
+        // The mount-time data effect: same data, applied a turn later.
+        m.backend.borrow_mut().virtualizer_data_changed(&m.list);
+        handle.scroll_to(0.0, Y);
+        m.settle();
+        assert_close(handle.scroll_offset().1 as f64, Y, "offset after a no-op change");
+
+        // A keyed batch (one insert at the front).
+        let mut keys: Vec<u64> = (0..ROWS as u64).collect();
+        keys.insert(0, 100);
+        keys.pop();
+        handle.scroll_to(0.0, Y);
+        m.change_keys(keys);
+        m.settle();
+        assert_close(handle.scroll_offset().1 as f64, Y, "offset after a keyed batch");
+
+        // A full reload (no key survives).
+        handle.scroll_to(0.0, Y);
+        m.change_keys((200..200 + ROWS as u64).collect());
+        m.settle();
+        assert_close(handle.scroll_offset().1 as f64, Y, "offset after a reload");
+        m.close();
+    }
+
+    /// REGRESSION (scroll snapped to the start on a layout pass): the
+    /// layout pass sized every scroll view's documentView to its Taffy
+    /// children's bounding box. A virtualizer's rows are the collection view's
+    /// items, not Taffy children, so the pass shrank the collection view to
+    /// the viewport and AppKit clamped the offset to 0. Timely's calendar,
+    /// parked at Today thousands of lanes in, opened on the first lane.
+    fn regression_a_layout_pass_keeps_the_scroll_offset(mtm: MainThreadMarker) {
+        const ROWS: usize = 40;
+        const Y: f32 = 900.0;
+        let m = mount_list(mtm, vec![Some(SHORT); ROWS], false);
+        let handle = m.handle();
+        m.settle();
+        handle.scroll_to(0.0, Y);
+        m.settle();
+        assert_close(handle.scroll_offset().1 as f64, Y, "offset after scroll_to");
+        m.backend.borrow_mut().run_layout_pass_now();
+        m.settle();
+        assert_close(handle.scroll_offset().1 as f64, Y, "offset after a layout pass");
+        m.close();
+    }
+
+    /// REGRESSION (rows kept a stale cross size): `tile` re-queried item
+    /// sizes only when IT resized the collection view. When the collection
+    /// view already matched the clip (AppKit resized it with the clip on a
+    /// window resize), the flow layout kept the rows' old cross size and
+    /// centred them: Timely's calendar lanes, sized for the window's first
+    /// height, sat 117pt down after it grew.
+    fn regression_rows_follow_a_cross_axis_resize(mtm: MainThreadMarker) {
+        const NARROW: f64 = 300.0;
+        let m = mount_list(mtm, vec![Some(SHORT); 4], false);
+        m.settle();
+        assert_close(m.cell_frame(0).size.width, LIST_W as f32, "rows start the list's width");
+        // The document reaches the new width by itself, then the list does.
+        let _: () = unsafe { msg_send![&m.cv, setFrameSize: CGSize { width: NARROW, height: m.cv.frame().size.height }] };
+        {
+            let mut b = m.backend.borrow_mut();
+            b.apply_style(
+                &m.list,
+                &Rc::new(StyleRules { width: px(NARROW as f32), height: px(LIST_H as f32), ..Default::default() }),
+            );
+            b.run_layout_pass_now();
+        }
+        m.settle();
+        assert_close(m.cell_frame(0).size.width, NARROW as f32, "rows follow the new width");
+        m.close();
+    }
+
     pub fn run() {
         extern "C" {
             fn pthread_main_np() -> std::os::raw::c_int;
@@ -540,7 +741,7 @@ mod imp {
         // SAFETY: checked just above — this is the main thread.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         backend_macos::install_scheduler();
-        let tests: [(&str, fn(MainThreadMarker)); 9] = [
+        let tests: [(&str, fn(MainThreadMarker)); 14] = [
             (
                 "regression_measured_rows_are_spaced_by_their_rendered_size",
                 regression_measured_rows_are_spaced_by_their_rendered_size,
@@ -571,6 +772,20 @@ mod imp {
                 regression_removing_the_list_under_the_backend_borrow_releases_rows_later,
             ),
             ("regression_a_list_is_transparent", regression_a_list_is_transparent),
+            (
+                "regression_a_keyed_change_keeps_surviving_rows_mounted",
+                regression_a_keyed_change_keeps_surviving_rows_mounted,
+            ),
+            (
+                "a_changed_survivor_is_remounted_in_a_keyed_change",
+                a_changed_survivor_is_remounted_in_a_keyed_change,
+            ),
+            (
+                "regression_scroll_to_survives_the_deferred_data_change",
+                regression_scroll_to_survives_the_deferred_data_change,
+            ),
+            ("regression_a_layout_pass_keeps_the_scroll_offset", regression_a_layout_pass_keeps_the_scroll_offset),
+            ("regression_rows_follow_a_cross_axis_resize", regression_rows_follow_a_cross_axis_resize),
         ];
         for (name, t) in tests {
             t(mtm);

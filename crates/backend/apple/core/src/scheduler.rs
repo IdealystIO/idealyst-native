@@ -1,9 +1,28 @@
 //! Apple scheduler: NSTimer for `after_ms`, DispatchQueue.main.async
-//! for microtasks, NSTimer at 60Hz for `raf_loop`.
+//! for microtasks, and a display-synced animation clock for `raf_loop` /
+//! `after_animation_frame`.
 //!
-//! Pure Foundation — works the same on iOS, tvOS, and macOS. The
+//! Pure Foundation at link time — works the same on iOS, tvOS, and macOS. The
 //! UIKit-flavored leaf crates and the AppKit-flavored macOS backend
 //! both consume this through [`install_scheduler`].
+//!
+//! The animation clock, per platform:
+//!
+//! - **iOS/tvOS**: one `CADisplayLink` (`+[CADisplayLink
+//!   displayLinkWithTarget:selector:]`) per `raf_loop`, in common run-loop
+//!   modes. `after_animation_frame` is a 1/60 s timer.
+//! - **macOS 14+**: one shared `CADisplayLink` vended by the backend's host
+//!   root view (`-[NSView displayLinkWithTarget:selector:]`, handed over via
+//!   [`set_frame_clock_view`]), in common run-loop modes, fanned out to every
+//!   `raf_loop` and `after_animation_frame` subscriber by
+//!   [`frame_clock`](crate::frame_clock). The view-vended link follows the
+//!   window between screens, so ticks match each display's refresh (120 Hz on
+//!   ProMotion). A common-mode NSTimer backstop runs beside it and ticks only
+//!   while the link is silent (the view is on no display: a window never shown
+//!   or minimized). Both are paused/invalidated when nothing is subscribed.
+//! - **macOS 11–13** (no `displayLinkWithTarget:` on NSView), or no host root
+//!   view registered: the same shared clock driven by the NSTimer alone, at the
+//!   screen's `maximumFramesPerSecond` (60 when unknown).
 //!
 //! `runtime_shared::scheduling` falls back to synchronous execution
 //! on native when no scheduler is installed — fine for
@@ -29,8 +48,8 @@ use objc2_foundation::{NSObject, NSString};
 /// tick. Unlike an NSTimer (even one in common modes) it keeps firing reliably
 /// while a finger tracks a `UIScrollView` (`UITrackingRunLoopMode`); the run
 /// loop services the display-synced source promptly during tracking but starves
-/// a wall-clock timer. macOS stays on NSTimer (CADisplayLink there is a
-/// view/screen method) — see `raf_loop`.
+/// a wall-clock timer. macOS uses one shared view-vended link instead (see
+/// `mac_frame_clock`), since there the link comes from a view, not the class.
 #[cfg(any(target_os = "ios", target_os = "tvos"))]
 mod raf_link {
     use std::cell::RefCell;
@@ -162,6 +181,40 @@ pub fn install_scheduler() {
     crate::perf_trace::install();
 }
 
+/// macOS: drive the animation clock (`raf_loop`, `after_animation_frame`)
+/// from `view`'s display. The backend calls this with its host root view
+/// (`MacosBackend::set_host_root`); on macOS 14+ the clock's `CADisplayLink`
+/// is vended from it and follows its window between screens. A later call
+/// rebinds to the new view. No-op off the main thread (AppKit views are
+/// main-thread objects), which leaves that thread's clock on its NSTimer.
+#[cfg(target_os = "macos")]
+pub fn set_frame_clock_view(view: &NSObject) {
+    if !crate::mac_frame_clock::is_main_thread() {
+        return;
+    }
+    // SAFETY: `view` is a live object, so retaining it is sound.
+    let Some(view) = (unsafe { Retained::retain(view as *const NSObject as *mut NSObject) }) else {
+        return;
+    };
+    crate::mac_frame_clock::set_owner(view);
+}
+
+/// macOS: whether this thread's animation clock has a frame source started
+/// (a live `raf_loop` or a pending `after_animation_frame`). `false` means no
+/// display-link callback or timer is scheduled. Diagnostic, for tests.
+#[cfg(target_os = "macos")]
+pub fn frame_clock_is_running() -> bool {
+    crate::mac_frame_clock::is_running()
+}
+
+/// macOS: whether this thread's animation clock is display-synced (it holds a
+/// `CADisplayLink` from the view given to [`set_frame_clock_view`]; macOS
+/// 14+). Diagnostic, for tests.
+#[cfg(target_os = "macos")]
+pub fn frame_clock_has_display_link() -> bool {
+    crate::mac_frame_clock::has_display_link()
+}
+
 struct AppleScheduler;
 
 // SAFETY: `AppleScheduler` is a unit struct with no fields. The
@@ -207,11 +260,18 @@ impl Scheduler for AppleScheduler {
         &self,
         f: Box<dyn FnOnce() + 'static>,
     ) -> Box<dyn ScheduleHandle> {
-        // 1/60s timer ≈ next animation frame. Not as precise as
-        // CADisplayLink but matches the render-loop driver's
-        // approach in the leaf crates; good enough for the
-        // framework's frame-aligned scheduling needs.
-        Box::new(after_ms_inner(16, f))
+        // macOS: a one-shot on the shared display-synced frame clock, so it
+        // lands on the same frame boundary as the `raf_loop` ticks (the clock
+        // fires the dispatch hook after the tick).
+        #[cfg(target_os = "macos")]
+        {
+            Box::new(crate::mac_frame_clock::subscribe_once(f))
+        }
+        // iOS/tvOS: a 1/60 s timer ≈ the next animation frame.
+        #[cfg(not(target_os = "macos"))]
+        {
+            Box::new(after_ms_inner(16, f))
+        }
     }
 
     fn after_ms(
@@ -228,37 +288,45 @@ impl Scheduler for AppleScheduler {
         // coalescing), and it MUST keep advancing during a gesture or a
         // drag-to-reorder's springs freeze for the whole drag.
         //
-        // iOS/tvOS use a **CADisplayLink** (vsync-driven). A common-mode NSTimer
-        // is NOT enough here: measured live, an `addTimer:forMode:CommonModes`
-        // 60 Hz timer still collapses to ~3/60 fires while a finger tracks a
-        // UIScrollView (`UITrackingRunLoopMode`), even though the display link
-        // beside it holds a clean 60/60 (see `perf_trace`). The run loop services
-        // the display-synced source promptly during tracking but starves the
-        // wall-clock timer. CADisplayLink is the reliable per-frame source — the
-        // original "would be more accurate but needs a target class" caveat, now
-        // that the target class is cheap to declare (`RafTarget` below).
+        // Both platforms tick from a **CADisplayLink** in common run-loop modes.
+        // A common-mode NSTimer is NOT enough on iOS: measured live, an
+        // `addTimer:forMode:CommonModes` 60 Hz timer still collapses to ~3/60
+        // fires while a finger tracks a UIScrollView (`UITrackingRunLoopMode`),
+        // even though the display link beside it holds a clean 60/60 (see
+        // `perf_trace`). The run loop services the display-synced source
+        // promptly during tracking but starves the wall-clock timer. On macOS a
+        // 60 Hz timer also under-ticks a 120 Hz ProMotion display (12 ticks for
+        // a 220 ms tween against ~26 refreshes) and lands unevenly against
+        // vsync, which reads as judder.
         //
         // This is the "decouple draw from tick" split: the EXPENSIVE wgpu
-        // `draw_frame` (Metal encode + present) runs on a SEPARATE loop — the iOS
-        // `RenderLoopDriver` in `backend-ios-core::render_loop`, kept in DEFAULT
-        // mode so it still yields to scroll. Different loops, so this cheap tick
-        // doesn't pay that cost.
-        //
-        // Post-dispatch flush hook: rAF-loop iterations run author code
-        // (animation ticks that stage writes) — fire the hook
-        // after each iteration so the flush driver commits them.
-        // No-op unless a boot installed the hook (see
-        // `dispatch_hook`); wrapping HERE covers both the CADisplayLink
-        // (iOS/tvOS) and NSTimer (macOS) branches below identically.
-        let mut inner = f.take_inner();
-        let hooked: Box<dyn FnMut() + 'static> = Box::new(move || {
-            inner();
-            crate::dispatch_hook::fire_dispatch_hook();
-        });
-        let state: Rc<RefCell<Box<dyn FnMut() + 'static>>> = Rc::new(RefCell::new(hooked));
+        // `draw_frame` (Metal encode + present) runs on a SEPARATE loop — the
+        // `RenderLoopDriver` in `backend-ios-core::render_loop` /
+        // `backend-macos::render_loop`, kept in DEFAULT mode so it still yields
+        // to scroll. Different loops, so this cheap tick doesn't pay that cost.
 
+        // macOS: one shared, view-vended link fanned out to every subscriber
+        // (`mac_frame_clock`), which also fires the post-dispatch hook once per
+        // frame.
+        #[cfg(target_os = "macos")]
+        {
+            Box::new(crate::mac_frame_clock::subscribe_every(f))
+        }
+
+        // iOS/tvOS: one `+[CADisplayLink displayLinkWithTarget:selector:]` per
+        // loop.
         #[cfg(any(target_os = "ios", target_os = "tvos"))]
         {
+            // Post-dispatch flush hook: rAF-loop iterations run author code
+            // (animation ticks that stage writes) — fire the hook after each
+            // iteration so the flush driver commits them. No-op unless a boot
+            // installed the hook (see `dispatch_hook`).
+            let mut inner = f.take_inner();
+            let hooked: Box<dyn FnMut() + 'static> = Box::new(move || {
+                inner();
+                crate::dispatch_hook::fire_dispatch_hook();
+            });
+            let state: Rc<RefCell<Box<dyn FnMut() + 'static>>> = Rc::new(RefCell::new(hooked));
             // SAFETY: the scheduler (and the animation clock it drives) runs on
             // the main thread — the same assumption the rest of this file makes.
             let mtm = unsafe { objc2_foundation::MainThreadMarker::new_unchecked() };
@@ -281,49 +349,8 @@ impl Scheduler for AppleScheduler {
             // The link retains its target. `NsTimerHandle::cancel_inner` calls
             // `invalidate` (CADisplayLink has it, same as NSTimer) on drop, which
             // unschedules the link and releases the target.
-            return Box::new(NsTimerHandle {
-                timer: Some(link),
-                _state: AnyState::Raf(state),
-            });
-        }
-
-        // macOS: keep an NSTimer in common modes. CADisplayLink on macOS is a
-        // method on NSView/NSScreen (needs a view), which the scheduler doesn't
-        // have; common-mode NSTimer is adequate there (AppKit event tracking,
-        // mouse-driven — no reported starvation) and still runs during scroll.
-        #[cfg(target_os = "macos")]
-        {
-            let state_for_block = state.clone();
-            let block = StackBlock::new(move |_t: *const NSObject| {
-                // Count this animation frame for the frame-pacing trace (debug).
-                // If `frames` (display link) holds 60 but `anim` collapses during
-                // a scroll, the common-mode NSTimer is being starved by AppKit
-                // event tracking — the macOS analogue of the iOS finding.
-                #[cfg(debug_assertions)]
-                crate::perf_trace::on_raf_tick();
-                crate::crash::abort_on_panic("NSTimer raf tick", || {
-                    (state_for_block.borrow_mut())();
-                });
-            });
-            let block = block.copy();
-            extern "C" {
-                static NSRunLoopCommonModes: *const NSString;
-            }
-            let timer: Retained<NSObject> = unsafe {
-                msg_send_id![
-                    objc2::class!(NSTimer),
-                    timerWithTimeInterval: (1.0 / 60.0) as f64,
-                    repeats: true,
-                    block: &*block
-                ]
-            };
-            let run_loop: Retained<NSObject> =
-                unsafe { msg_send_id![objc2::class!(NSRunLoop), mainRunLoop] };
-            let common_modes: &NSString = unsafe { &*NSRunLoopCommonModes };
-            let _: () =
-                unsafe { msg_send![&*run_loop, addTimer: &*timer, forMode: common_modes] };
             Box::new(NsTimerHandle {
-                timer: Some(timer),
+                timer: Some(link),
                 _state: AnyState::Raf(state),
             })
         }
@@ -350,10 +377,12 @@ impl Scheduler for AppleScheduler {
 /// Internal helper trait — works around `Box<dyn FnMut>` not having
 /// `take_inner`. We just need a way to move the boxed `FnMut` out
 /// of `Box` into `Rc<RefCell<Box>>` for sharing with the StackBlock.
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
 trait TakeInner {
     type Inner;
     fn take_inner(self) -> Self::Inner;
 }
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
 impl TakeInner for Box<dyn FnMut() + 'static> {
     type Inner = Box<dyn FnMut() + 'static>;
     fn take_inner(self) -> Self::Inner {
@@ -367,8 +396,8 @@ fn after_ms_inner(delay_ms: i32, f: Box<dyn FnOnce() + 'static>) -> NsTimerHandl
     // signals) — fire the hook after the body so the flush
     // driver commits the staged writes (see `dispatch_hook`). Wrapped
     // ONCE here so both delivery paths (the 0-delay libdispatch branch
-    // and the NSTimer branch below) are covered; `after_animation_frame`
-    // routes through here too. Cancellation empties the take-once cell
+    // and the NSTimer branch below) are covered; iOS/tvOS
+    // `after_animation_frame` routes through here too. Cancellation empties the take-once cell
     // BEFORE the wrapper runs, so a cancelled task fires neither the
     // body nor the hook.
     let f: Box<dyn FnOnce() + 'static> = Box::new(move || {
