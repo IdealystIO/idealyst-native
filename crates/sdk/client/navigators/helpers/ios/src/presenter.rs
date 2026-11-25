@@ -19,6 +19,17 @@
 //! nodes and decides how they appear. That split is why the presenter
 //! never mounts or releases a screen scope.
 //!
+//! # Every move is a whole stack, shown when UIKit can take it
+//!
+//! UIKit drops a move made at the wrong time, silently: one made in the turn
+//! of an unanimated `setViewControllers:` (a `reset`, the first seat), and a
+//! push made while another slide plays. The container then shows one screen
+//! and the handler believes another. So a reveal edits the stack the
+//! container SHOULD hold and [`Container::show`] hands UIKit the whole of it:
+//! at once when nothing is moving, else once the slide in flight is over. A
+//! stack UIKit did not take is handed over again. Several moves in one turn
+//! land as one transition to the final stack.
+//!
 //! # Chrome stays author layout
 //!
 //! The native bar is hidden (`setNavigationBarHidden`). Per CLAUDE.md §7
@@ -27,16 +38,17 @@
 //! *mechanics* are platform-idiomatic here.
 
 use std::any::Any;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 
 use backend_ios::{mount_screen_in_vc, schedule_layout_pass, IosNode};
-use objc2::rc::Retained;
+use objc2::rc::{Retained, WeakId};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{MainThreadMarker, NSArray};
 use objc2_ui_kit::{
-    UINavigationController, UINavigationControllerDelegate, UIView, UIViewController,
+    UIGestureRecognizer, UIGestureRecognizerDelegate, UINavigationController,
+    UINavigationControllerDelegate, UIView, UIViewController,
 };
 use runtime_vocabulary::handlers::nav_native_push::{NativePushHandle, StackPresenter};
 
@@ -55,6 +67,13 @@ pub(crate) struct PresenterDelegateIvars {
     /// quiet. A user-driven pop moves the container without going
     /// through us, so there `actual < believed` — which is the signal.
     vcs: Rc<RefCell<Vec<Retained<UIViewController>>>>,
+    /// Whether the container held `vcs` when last looked at. Until it does,
+    /// a shorter container is a move of ours UIKit has yet to make, and no
+    /// user pop.
+    in_step: Rc<Cell<bool>>,
+    /// Weak: the controller does not retain its delegate, and the closures
+    /// that own this delegate own the controller too.
+    nav: WeakId<UINavigationController>,
     /// The handler's logical-only pop, installed via `set_user_pop`.
     /// `RefCell` because the handle is built (and handed to the handler)
     /// before the handler can give us this.
@@ -90,7 +109,7 @@ declare_class!(
             let ivars = self.ivars();
             let actual = unsafe { nav.viewControllers().count() };
             let believed = ivars.vcs.borrow().len();
-            if actual >= believed {
+            if actual >= believed || !ivars.in_step.get() {
                 // We drove this transition (or nothing moved).
                 return;
             }
@@ -117,17 +136,144 @@ declare_class!(
             schedule_layout_pass();
         }
     }
+
+    unsafe impl UIGestureRecognizerDelegate for PresenterDelegate {
+        /// The swipe-back begins whenever there is a screen to go back to.
+        /// UIKit's own delegate refuses it while the navigation bar is
+        /// hidden, which here is always. Not at the root, nor during a slide:
+        /// a gesture begun there leaves the controller stuck.
+        #[method(gestureRecognizerShouldBegin:)]
+        fn should_begin(&self, _recognizer: &UIGestureRecognizer) -> bool {
+            self.ivars()
+                .nav
+                .load()
+                .is_some_and(|nav| unsafe { nav.viewControllers().count() } > 1 && !is_moving(&nav))
+        }
+    }
 );
 
 impl PresenterDelegate {
     fn new(
         mtm: MainThreadMarker,
+        nav: &Retained<UINavigationController>,
         vcs: Rc<RefCell<Vec<Retained<UIViewController>>>>,
+        in_step: Rc<Cell<bool>>,
         user_pop: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
     ) -> Retained<Self> {
         let this = mtm.alloc::<Self>();
-        let this = this.set_ivars(PresenterDelegateIvars { vcs, user_pop });
+        let nav = WeakId::from_retained(nav);
+        let this = this.set_ivars(PresenterDelegateIvars { vcs, in_step, nav, user_pop });
         unsafe { msg_send_id![super(this), init] }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The container — what UIKit should show, and getting it to
+// ---------------------------------------------------------------------------
+
+/// A slide is playing, or the user is swiping.
+fn is_moving(nav: &UINavigationController) -> bool {
+    let coordinator: *mut AnyObject = unsafe { msg_send![nav, transitionCoordinator] };
+    !coordinator.is_null()
+}
+
+/// How often a move that could not be made yet is tried again.
+const RETRY_MS: i32 = 32;
+
+/// How many times a stack UIKit does not take is handed over before giving
+/// up, so a container that can't move (torn out of its window mid-move)
+/// doesn't keep the app awake.
+const MAX_TRIES: u32 = 30;
+
+struct Container {
+    nav: Retained<UINavigationController>,
+    /// `setDelegate:` does NOT retain, so this keeps the delegate alive as
+    /// long as the closures of the `NativePushHandle`, which the handler
+    /// holds for the navigator's lifetime.
+    _delegate: Retained<PresenterDelegate>,
+    /// The stack to show (the delegate's `vcs`).
+    wanted: Rc<RefCell<Vec<Retained<UIViewController>>>>,
+    in_step: Rc<Cell<bool>>,
+    /// A move UIKit has not been given yet, and whether it animates.
+    held: Cell<Option<bool>>,
+    /// UIKit was given a move in this turn of the run loop.
+    moved: Cell<bool>,
+    checking: Cell<bool>,
+    tries: Cell<u32>,
+}
+
+impl Container {
+    /// Show `wanted`, which the caller has just changed.
+    fn show(self: &Rc<Self>, animated: bool) {
+        let held = self.held.get();
+        if held.is_some() || self.moved.get() || is_moving(&self.nav) {
+            self.held.set(Some(held.unwrap_or(false) || animated));
+            self.in_step.set(false);
+        } else {
+            self.hand_over(animated);
+        }
+        self.check_later();
+        schedule_layout_pass();
+    }
+
+    fn hand_over(&self, animated: bool) {
+        self.moved.set(true);
+        // Before the call: an unanimated move can report `didShow` inside it.
+        self.in_step.set(false);
+        let stack = self.wanted.borrow().clone();
+        unsafe { self.nav.setViewControllers_animated(&NSArray::from_vec(stack), animated) };
+        self.in_step.set(self.shows_wanted());
+    }
+
+    fn shows_wanted(&self) -> bool {
+        let shown = unsafe { self.nav.viewControllers() };
+        let wanted = self.wanted.borrow();
+        shown.count() == wanted.len() && shown.iter().zip(wanted.iter()).all(|(a, b)| std::ptr::eq(a, &**b))
+    }
+
+    /// Look again on a later turn. A timer, not a microtask: during the boot
+    /// microtasks run inside the turn that queued them.
+    fn check_later(self: &Rc<Self>) {
+        if self.checking.replace(true) {
+            return;
+        }
+        let this: Weak<Self> = Rc::downgrade(self);
+        runtime_shared::scheduling::after_ms_detached(RETRY_MS, move || {
+            if let Some(this) = this.upgrade() {
+                this.check();
+            }
+        });
+    }
+
+    fn check(self: &Rc<Self>) {
+        self.checking.set(false);
+        self.moved.set(false);
+        if is_moving(&self.nav) {
+            // Nothing to look at until the slide is over, and nothing to do
+            // after it when UIKit took the move and no other waits.
+            if self.held.get().is_some() || !self.in_step.get() {
+                self.check_later();
+            }
+            return;
+        }
+        let shows = self.shows_wanted();
+        self.in_step.set(shows);
+        if shows {
+            self.held.set(None);
+            self.tries.set(0);
+            return;
+        }
+        let tries = self.tries.get() + 1;
+        self.tries.set(tries);
+        if tries > MAX_TRIES {
+            backend_ios_core::ios_log("[stack] UIKit did not take the stack; giving up until the next move");
+            self.held.set(None);
+            self.tries.set(0);
+            return;
+        }
+        self.hand_over(self.held.take().unwrap_or(true));
+        self.check_later();
+        schedule_layout_pass();
     }
 }
 
@@ -187,56 +333,63 @@ impl StackPresenter for IosStackPresenter {
             Rc::new(RefCell::new(Vec::new()));
         let user_pop: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
-        let delegate = PresenterDelegate::new(mtm, vcs.clone(), user_pop.clone());
+        let in_step = Rc::new(Cell::new(true));
+        let delegate = PresenterDelegate::new(mtm, &nav, vcs.clone(), in_step.clone(), user_pop.clone());
         unsafe {
             nav.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+            let recognizer: *mut AnyObject = msg_send![&*nav, interactivePopGestureRecognizer];
+            if !recognizer.is_null() {
+                let _: () = msg_send![recognizer, setDelegate: &*delegate];
+            }
+            // iOS 26's swipe from anywhere in the content stays off, whatever
+            // UIKit thinks of a hidden bar: it would take the app's own
+            // horizontal drags (a row, a canvas), which are raw touches no
+            // recognizer stands for.
+            let has: bool =
+                msg_send![&*nav, respondsToSelector: objc2::sel!(interactiveContentPopGestureRecognizer)];
+            if has {
+                let recognizer: *mut AnyObject = msg_send![&*nav, interactiveContentPopGestureRecognizer];
+                if !recognizer.is_null() {
+                    let _: () = msg_send![recognizer, setEnabled: false];
+                }
+            }
         }
-
-        // Every closure below captures `nav` and `delegate`. That is the
-        // ownership model: `setDelegate:` does NOT retain, so dropping
-        // the delegate would leave UIKit holding a dangling pointer and
-        // the swipe-back observer would silently stop firing. Both live
-        // exactly as long as the `NativePushHandle`, which the handler
-        // holds for the navigator's lifetime.
-        let keep_delegate = delegate.clone();
+        let container = Rc::new(Container {
+            nav: nav.clone(),
+            _delegate: delegate,
+            wanted: vcs.clone(),
+            in_step,
+            held: Cell::new(None),
+            moved: Cell::new(false),
+            checking: Cell::new(false),
+            tries: Cell::new(0),
+        });
 
         // `seat` and `reset` are the same UIKit move — collapse the
         // container to one screen, unanimated — and differ only in the
         // handler's intent, so they share a builder.
-        let collapse_to_one = |nav: Retained<UINavigationController>,
-                               vcs: Rc<RefCell<Vec<Retained<UIViewController>>>>,
-                               _d: Retained<PresenterDelegate>| {
+        let collapse_to_one = || {
+            let container = container.clone();
             Rc::new(move |node: Rc<dyn Any>| {
                 let Some(view) = screen_view(&node) else { return };
-                let vc = mount_screen_in_vc(mtm, &view);
-                *vcs.borrow_mut() = vec![vc.clone()];
-                unsafe {
-                    nav.setViewControllers_animated(&NSArray::from_vec(vec![vc]), false);
-                }
-                schedule_layout_pass();
+                *container.wanted.borrow_mut() = vec![mount_screen_in_vc(mtm, &view)];
+                container.show(false);
             }) as Rc<dyn Fn(Rc<dyn Any>)>
         };
-
-        let seat = collapse_to_one(nav.clone(), vcs.clone(), keep_delegate.clone());
-        let reset = collapse_to_one(nav.clone(), vcs.clone(), keep_delegate.clone());
+        let seat = collapse_to_one();
+        let reset = collapse_to_one();
 
         let push = {
-            let nav = nav.clone();
-            let vcs = vcs.clone();
-            let _d = keep_delegate.clone();
+            let container = container.clone();
             Rc::new(move |node: Rc<dyn Any>| {
                 let Some(view) = screen_view(&node) else { return };
-                let vc = mount_screen_in_vc(mtm, &view);
-                vcs.borrow_mut().push(vc.clone());
-                unsafe { nav.pushViewController_animated(&vc, true) };
-                schedule_layout_pass();
+                container.wanted.borrow_mut().push(mount_screen_in_vc(mtm, &view));
+                container.show(true);
             }) as Rc<dyn Fn(Rc<dyn Any>)>
         };
 
         let pop = {
-            let nav = nav.clone();
-            let vcs = vcs.clone();
-            let _d = keep_delegate.clone();
+            let container = container.clone();
             // The revealed screen's VC is already in the container (a
             // native stack retains what it covers — which is why the
             // handler tightens retention to `Retain` on attach), so the
@@ -246,27 +399,21 @@ impl StackPresenter for IosStackPresenter {
                 // Never pop the root: the handler guards this too, but a
                 // presenter that emptied the container would leave a
                 // blank screen no command could recover.
-                if vcs.borrow().len() <= 1 {
+                if container.wanted.borrow().len() <= 1 {
                     return;
                 }
-                vcs.borrow_mut().pop();
-                let _ = unsafe { nav.popViewControllerAnimated(true) };
-                schedule_layout_pass();
+                container.wanted.borrow_mut().pop();
+                container.show(true);
             }) as Rc<dyn Fn(Rc<dyn Any>)>
         };
 
         let replace = {
-            let nav = nav.clone();
-            let vcs = vcs.clone();
-            let _d = keep_delegate.clone();
+            let container = container.clone();
             Rc::new(move |node: Rc<dyn Any>| {
                 let Some(view) = screen_view(&node) else { return };
                 let vc = mount_screen_in_vc(mtm, &view);
-                let mv = replace_move(&mut vcs.borrow_mut(), vc);
-                unsafe {
-                    nav.setViewControllers_animated(&NSArray::from_vec(mv.stack), mv.animated);
-                }
-                schedule_layout_pass();
+                let animated = replace_move(&mut container.wanted.borrow_mut(), vc);
+                container.show(animated);
             }) as Rc<dyn Fn(Rc<dyn Any>)>
         };
 
@@ -283,10 +430,9 @@ impl StackPresenter for IosStackPresenter {
         // every navigation with that screen's flag. The native back
         // chevron needs no lock: the bar is hidden.
         let set_back_enabled = {
-            let nav = nav.clone();
-            let _d = keep_delegate.clone();
+            let container = container.clone();
             Rc::new(move |enabled: bool| unsafe {
-                let recognizer: *mut AnyObject = msg_send![&*nav, interactivePopGestureRecognizer];
+                let recognizer: *mut AnyObject = msg_send![&*container.nav, interactivePopGestureRecognizer];
                 if !recognizer.is_null() {
                     let _: () = msg_send![recognizer, setEnabled: enabled];
                 }
@@ -306,16 +452,8 @@ impl StackPresenter for IosStackPresenter {
     }
 }
 
-/// The container move a `Replace` reveal makes: the stack to hand
-/// `setViewControllers:animated:` and whether to animate it.
-struct StackMove<T> {
-    stack: Vec<T>,
-    animated: bool,
-}
-
-/// Swap the top of `believed` for `incoming` (updating it first, so the
-/// `didShow` that follows sees `actual == believed` and stays quiet) and
-/// say how to show the result.
+/// Swap the top of `wanted` for `incoming` and say whether to show it
+/// animated.
 ///
 /// Animated, because replacing the top is a navigation on iOS: with a new
 /// top that was not in the old stack, `setViewControllers:animated:YES`
@@ -329,10 +467,10 @@ struct StackMove<T> {
 /// releases it before this reveal, but `release_subtree` only unregisters
 /// it from layout; the view stays inside its view controller, which UIKit
 /// retains until the transition ends (the same as an app-initiated pop).
-fn replace_move<T: Clone>(believed: &mut Vec<T>, incoming: T) -> StackMove<T> {
-    believed.pop();
-    believed.push(incoming);
-    StackMove { stack: believed.clone(), animated: true }
+fn replace_move<T>(wanted: &mut Vec<T>, incoming: T) -> bool {
+    wanted.pop();
+    wanted.push(incoming);
+    true
 }
 
 /// Install the iOS stack presenter. Idempotent; safe to call more than
@@ -343,11 +481,11 @@ pub fn install() {
     ));
 }
 
-// The UIKit call itself needs a windowed `UINavigationController` to show
-// a transition, which a test binary cannot host. These pin the decision
-// the presenter hands it. The crate is iOS-only, so they run on the
-// simulator: `cargo test -p ios-navigator-helpers --target
-// aarch64-apple-ios-sim --no-run`, then `xcrun simctl spawn booted <bin>`.
+// The moves themselves run on a real `UINavigationController` in
+// `stack-navigator`'s `tests/ios_stack.rs`. These pin the decision a replace
+// makes. The crate is iOS-only, so they run on the simulator: `cargo test -p
+// ios-navigator-helpers --target aarch64-apple-ios-sim --no-run`, then
+// `xcrun simctl spawn booted <bin>`.
 #[cfg(test)]
 mod tests {
     use super::replace_move;
@@ -356,26 +494,15 @@ mod tests {
     /// no slide, while push and pop animated.
     #[test]
     fn regression_replace_to_a_different_screen_animates() {
-        let mut believed = vec!["pin_pad", "picker"];
-        let mv = replace_move(&mut believed, "employee_id");
-        assert!(mv.animated, "a replace that changes the top screen is a navigation");
-    }
-
-    #[test]
-    fn replace_swaps_only_the_top_and_keeps_the_stack_below() {
-        let mut believed = vec!["pin_pad", "picker"];
-        let mv = replace_move(&mut believed, "employee_id");
-        assert_eq!(mv.stack, ["pin_pad", "employee_id"]);
-        // Updated before UIKit moves, so `didShow` reads it as our move
-        // and not as a user pop.
-        assert_eq!(believed, mv.stack);
+        let mut wanted = vec!["pin_pad", "picker"];
+        assert!(replace_move(&mut wanted, "employee_id"), "a replace that changes the top screen is a navigation");
+        assert_eq!(wanted, ["pin_pad", "employee_id"], "only the top is swapped");
     }
 
     #[test]
     fn replace_at_the_root_keeps_a_single_screen() {
-        let mut believed = vec!["pin_pad"];
-        let mv = replace_move(&mut believed, "form");
-        assert_eq!(mv.stack, ["form"]);
-        assert!(mv.animated);
+        let mut wanted = vec!["pin_pad"];
+        assert!(replace_move(&mut wanted, "form"));
+        assert_eq!(wanted, ["form"]);
     }
 }
