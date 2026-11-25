@@ -15,10 +15,10 @@
 //!   `VirtualizerCallbacks` the framework handed us. It also tracks
 //!   the orientation so `sizeForItemAt` returns axis-correct sizes.
 //! - A stock `UICollectionViewCell` hosts a single child UIView produced
-//!   by `callbacks.mount_item(idx)`. On reuse / display-end, the cell's
-//!   host child is removed and `callbacks.release_item(scope_id)` fires so
-//!   the per-item Scope drops (freeing every Signal / Effect nested inside
-//!   the item).
+//!   by `callbacks.mount_item(idx)`. On reuse, or when a data change takes
+//!   its item away, the cell's host child is removed and
+//!   `callbacks.release_item(scope_id)` fires so the per-item Scope drops
+//!   (freeing every Signal / Effect nested inside the item).
 //!
 //! ## Cell hosting
 //!
@@ -68,10 +68,12 @@
 //! - The map of `scope_id -> cell_ptr -> child_view` lives on the data
 //!   source so we can release the right scope on reuse / teardown.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use runtime_shared::primitives::virtualizer::ItemKey;
+use runtime_shared::primitives::virtualizer_diff::{diff_keys, KeyedUpdate, MAX_BATCH_OPS};
 use runtime_shared::{VirtualizerCallbacks, VirtualLayout};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol};
@@ -91,6 +93,8 @@ use super::IosNode;
 #[derive(Clone)]
 struct CellMount {
     scope_id: u64,
+    /// The item key the row was mounted for.
+    key: ItemKey,
     child: Retained<UIView>,
 }
 
@@ -345,6 +349,20 @@ pub(crate) struct VirtualizerDataSourceIvars {
     /// holds it — installing a `ScrollDelegate` over the top would
     /// take the data source down with it and empty the list.
     end: RefCell<Option<crate::imp::callbacks::EndObserver>>,
+    /// The item keys the collection view was last given, in order — `None`
+    /// until it first asks for its item count. This, not the live
+    /// `item_count`, is what `numberOfItemsInSection` answers: a batch
+    /// update is checked against the count the collection view had before
+    /// it (old count − deletes + inserts must equal the count after, or
+    /// UIKit raises), so the data source must not show a change before the
+    /// batch that applies it. See [`data_changed`].
+    known_keys: RefCell<Option<Vec<ItemKey>>>,
+    /// A data change is waiting for its deferred apply.
+    pending: Cell<bool>,
+    /// A row was mounted while a change was pending. Its index path is the
+    /// collection view's old one but its content came from the new data, so
+    /// a keyed batch would keep a wrong row: the apply reloads.
+    mounted_while_pending: Cell<bool>,
 }
 
 declare_class!(
@@ -375,15 +393,16 @@ declare_class!(
             if !*self.ivars().alive.borrow() {
                 return 0;
             }
-            let cb_opt = self.ivars().callbacks.borrow();
-            let Some(cb) = cb_opt.as_ref() else {
-                return 0;
-            };
-            // Guard the framework callback — this is an extern "C" IMP.
-            crate::imp::ffi_guard::guard_ffi(
-                "VirtualizerDataSource::numberOfItems",
-                || (cb.item_count)(),
-            ) as NSInteger
+            // Guard the framework callbacks — this is an extern "C" IMP.
+            crate::imp::ffi_guard::guard_ffi("VirtualizerDataSource::numberOfItems", || {
+                let mut known = self.ivars().known_keys.borrow_mut();
+                if known.is_none() {
+                    // First load: the collection view starts from the live data.
+                    let cb_opt = self.ivars().callbacks.borrow();
+                    *known = cb_opt.as_ref().map(live_keys);
+                }
+                known.as_ref().map_or(0, |k| k.len())
+            }) as NSInteger
         }
 
         #[method_id(collectionView:cellForItemAtIndexPath:)]
@@ -549,6 +568,12 @@ declare_class!(
             };
             let row: NSInteger = unsafe { msg_send![index_path, row] };
             let idx = if row < 0 { 0usize } else { row as usize };
+            // Between a data change and its deferred apply UIKit still has
+            // the old count, and a layout in that gap asks about rows the
+            // data no longer has.
+            if idx >= (cb.item_count)() {
+                return CGSize::new(0.0, 0.0);
+            }
             // Guard the framework size callback (extern "C" IMP).
             let size_f = crate::imp::ffi_guard::guard_ffi(
                 "VirtualizerDataSource::sizeForItem",
@@ -694,11 +719,22 @@ impl VirtualizerDataSource {
         // native node and the scope id.
         let mount_fn = {
             let cb_opt = self.ivars().callbacks.borrow();
-            cb_opt.as_ref().map(|c| c.mount_item.clone())
+            cb_opt
+                .as_ref()
+                .map(|c| (c.mount_item.clone(), c.item_key.clone(), (c.item_count)()))
         };
-        let Some(mount) = mount_fn else {
+        let Some((mount, key_fn, count)) = mount_fn else {
             return cell;
         };
+        // A stale row of a change not applied yet (see `size_for_item_at`):
+        // an empty cell, gone with the apply.
+        if idx >= count {
+            return cell;
+        }
+        if self.ivars().pending.get() {
+            self.ivars().mounted_while_pending.set(true);
+        }
+        let key = key_fn(idx);
         let (node, scope_id) = (mount)(idx);
         let child_view = node.as_view();
         let measure = {
@@ -745,6 +781,7 @@ impl VirtualizerDataSource {
             cell_ptr,
             CellMount {
                 scope_id,
+                key,
                 child: child_retained,
             },
         );
@@ -764,8 +801,155 @@ impl VirtualizerDataSource {
             alive: Rc::new(RefCell::new(true)),
             layout,
             end: RefCell::new(None),
+            known_keys: RefCell::new(None),
+            pending: Cell::new(false),
+            mounted_while_pending: Cell::new(false),
         });
         unsafe { msg_send_id![super(this), init] }
+    }
+
+    /// Bring the collection view from the keys it knows to the live data:
+    /// one `performBatchUpdates` of the keyed diff ([`diff_keys`]), or a
+    /// `reloadData` when the diff is unusable. Runs on a main-loop turn of
+    /// its own ([`data_changed`]), never under the backend's borrow: both
+    /// paths release rows and mount new ones.
+    ///
+    /// Survivors keep their cell, view and row scope: UIKit moves a batch's
+    /// untouched cells without asking the data source again. A survivor
+    /// whose item changed (`item_changed`) is deleted and inserted, which
+    /// mounts it from the new item. The scroll offset is UIKit's to keep,
+    /// and it does.
+    ///
+    /// A list in no window reloads: there is no row on screen to keep, and
+    /// a batch makes UIKit lay out cells outside a view hierarchy.
+    fn apply_data_change(&self, cv: &UIView) {
+        self.ivars().pending.set(false);
+        let mounted_in_gap = self.ivars().mounted_while_pending.replace(false);
+        if !*self.ivars().alive.borrow() {
+            return;
+        }
+        let (new_keys, changed) = {
+            let cb_opt = self.ivars().callbacks.borrow();
+            let Some(cb) = cb_opt.as_ref() else {
+                return;
+            };
+            (live_keys(cb), cb.item_changed.clone())
+        };
+        let old_keys = self.ivars().known_keys.borrow().clone();
+        // Never loaded: the collection view reads the live data when it
+        // first asks.
+        let Some(old_keys) = old_keys else {
+            return;
+        };
+        let window: *mut UIView = unsafe { msg_send![cv, window] };
+        let update = if mounted_in_gap || window.is_null() {
+            None
+        } else {
+            diff_keys(
+                &old_keys,
+                &new_keys,
+                |i| changed.as_ref().is_some_and(|f| f(i)),
+                MAX_BATCH_OPS,
+            )
+        };
+        let Some(update) = update else {
+            *self.ivars().known_keys.borrow_mut() = Some(new_keys);
+            let _: () = unsafe { msg_send![cv, reloadData] };
+            return;
+        };
+        if update.is_empty() {
+            // Same keys, same order, no stale row: no batch. The sizes may
+            // still differ (a Known size can come from anything the author's
+            // fn reads), and a flow layout keeps the ones it has.
+            *self.ivars().known_keys.borrow_mut() = Some(new_keys);
+            let layout: Retained<NSObject> = unsafe { msg_send_id![cv, collectionViewLayout] };
+            invalidate_item_sizes(&layout);
+            return;
+        }
+        // The rows the batch takes away, by cell: the cell goes to UIKit's
+        // reuse pool with the row still in it, and the row's scope must not
+        // outlive its item there.
+        let gone: HashSet<ItemKey> = update.deletes.iter().map(|&i| old_keys[i]).collect();
+        let stale: Vec<(usize, u64)> = self
+            .ivars()
+            .mounts
+            .borrow()
+            .iter()
+            .filter(|(_, m)| gone.contains(&m.key))
+            .map(|(cell, m)| (*cell, m.scope_id))
+            .collect();
+        self.perform_batch(cv, new_keys, update);
+        let _: () = unsafe { msg_send![cv, layoutIfNeeded] };
+        for (cell, scope_id) in stale {
+            let mount = {
+                let mut mounts = self.ivars().mounts.borrow_mut();
+                // Not if the batch reused the cell, which released it.
+                match mounts.get(&cell) {
+                    Some(m) if m.scope_id == scope_id => mounts.remove(&cell),
+                    _ => None,
+                }
+            };
+            if let Some(mount) = mount {
+                let release = {
+                    let cb_opt = self.ivars().callbacks.borrow();
+                    cb_opt.as_ref().map(|c| c.release_item.clone())
+                };
+                retire_mount(&mount, release.as_ref());
+            }
+        }
+    }
+
+    /// Apply `update` as one non-animated batch. The known keys switch to
+    /// `new_keys` INSIDE the updates block, which UIKit runs synchronously:
+    /// it reads the item count before the block (old) and after it (new)
+    /// and checks the ops against both.
+    fn perform_batch(&self, cv: &UIView, new_keys: Vec<ItemKey>, update: KeyedUpdate) {
+        let paths = |idxs: &[usize]| -> Retained<NSObject> {
+            unsafe {
+                let out: Retained<NSObject> = msg_send_id![objc2::class!(NSMutableArray), array];
+                for &i in idxs {
+                    let path = index_path(i);
+                    let _: () = msg_send![&out, addObject: &*path];
+                }
+                out
+            }
+        };
+        let deletes = paths(&update.deletes);
+        let inserts = paths(&update.inserts);
+        let moves: Vec<(Retained<NSObject>, Retained<NSObject>)> =
+            update.moves.iter().map(|&(o, n)| (index_path(o), index_path(n))).collect();
+        // SAFETY: both are live for the synchronous calls below; retained so
+        // the blocks own what they touch.
+        let this: Retained<Self> =
+            unsafe { Retained::retain(self as *const Self as *mut Self) }.expect("data source");
+        let list: Retained<UIView> =
+            unsafe { Retained::retain(cv as *const UIView as *mut UIView) }.expect("list");
+        let new_keys = RefCell::new(Some(new_keys));
+        let ops_list = list.clone();
+        let ops = block2::RcBlock::new(move || {
+            if let Some(keys) = new_keys.borrow_mut().take() {
+                *this.ivars().known_keys.borrow_mut() = Some(keys);
+            }
+            let list = &*ops_list;
+            unsafe {
+                let _: () = msg_send![list, deleteItemsAtIndexPaths: &*deletes];
+                let _: () = msg_send![list, insertItemsAtIndexPaths: &*inserts];
+                for (from, to) in &moves {
+                    let _: () = msg_send![list, moveItemAtIndexPath: &**from, toIndexPath: &**to];
+                }
+            }
+        });
+        let batch = block2::RcBlock::new(move || {
+            let _: () = unsafe {
+                msg_send![
+                    &list,
+                    performBatchUpdates: &*ops,
+                    completion: Option::<&block2::Block<dyn Fn(objc2::runtime::Bool)>>::None
+                ]
+            };
+        });
+        // Without animation, as `reloadData` applies and as web does.
+        let _: () = unsafe { msg_send![UIView::class(), performWithoutAnimation: &*batch] };
     }
 
     /// Tear down — flips the alive flag so further UIKit callbacks
@@ -858,13 +1042,7 @@ pub(crate) fn sync_padding(
     let _: () = unsafe { msg_send![&instance.layout, setSectionInset: next] };
     // A section-inset change invalidates the flow layout, but its cached
     // item sizes were sized against the old cross extent: re-query them.
-    if let Some(ctx_cls) = objc2::runtime::AnyClass::get("UICollectionViewFlowLayoutInvalidationContext") {
-        unsafe {
-            let ctx: Retained<NSObject> = msg_send_id![msg_send_id![ctx_cls, alloc], init];
-            let _: () = msg_send![&ctx, setInvalidateFlowLayoutDelegateMetrics: true];
-            let _: () = msg_send![&instance.layout, invalidateLayoutWithContext: &*ctx];
-        }
-    }
+    invalidate_item_sizes(&instance.layout);
 }
 
 /// Build a UICollectionView with a vertical flow layout, register our
@@ -981,13 +1159,61 @@ pub(crate) fn create(
     cv
 }
 
-/// Force a full reload. Phase-1 uses `reloadData` for every data-changed
-/// notification; this is correct (UIKit re-queries item_count + sizes
-/// + cellForItem) but potentially expensive on very large lists.
-/// Phase-2: switch to `performBatchUpdates` + diff against the previous
-/// key set so surviving items animate in place.
-pub(crate) fn data_changed(view: &UIView) {
-    let _: () = unsafe { msg_send![view, reloadData] };
+/// Schedule the collection view's update to the list's new data. The
+/// update itself is [`VirtualizerDataSource::apply_data_change`]: a keyed
+/// `performBatchUpdates` that keeps every unchanged surviving row mounted,
+/// or a `reloadData` when the diff is unusable.
+///
+/// On a later main-loop turn, not now: this runs inside the reactive update
+/// that changed the data, under the backend's borrow, and applying the
+/// change releases rows (dropping their reactive scopes) and mounts new
+/// ones. A burst of changes applies once, against the data as it stands
+/// then. Released before it runs, the data source is dead and the apply is a
+/// no-op.
+pub(crate) fn data_changed(instances: &HashMap<usize, VirtualizerInstance>, view: &UIView) {
+    let Some(instance) = instances.get(&(view as *const UIView as usize)) else {
+        return;
+    };
+    let data_source = instance.data_source.clone();
+    if data_source.ivars().pending.replace(true) {
+        return;
+    }
+    let view: Retained<UIView> =
+        unsafe { Retained::retain(view as *const UIView as *mut UIView) }.expect("retain UIView");
+    runtime_shared::scheduling::schedule_microtask(move || {
+        data_source.apply_data_change(&view);
+    });
+}
+
+/// The live data's keys, in order.
+fn live_keys(cb: &VirtualizerCallbacks<IosNode>) -> Vec<ItemKey> {
+    (0..(cb.item_count)()).map(|i| (cb.item_key)(i)).collect()
+}
+
+/// `NSIndexPath` for item `i` of the list's one section.
+fn index_path(i: usize) -> Retained<NSObject> {
+    unsafe {
+        msg_send_id![
+            objc2::class!(NSIndexPath),
+            indexPathForItem: i as NSInteger,
+            inSection: 0 as NSInteger
+        ]
+    }
+}
+
+/// Ask for every item size again. The flow layout keeps the ones it has
+/// through a bare `invalidateLayout`.
+fn invalidate_item_sizes(layout: &NSObject) {
+    let Some(ctx_cls) =
+        objc2::runtime::AnyClass::get("UICollectionViewFlowLayoutInvalidationContext")
+    else {
+        return;
+    };
+    unsafe {
+        let ctx: Retained<NSObject> = msg_send_id![msg_send_id![ctx_cls, alloc], init];
+        let _: () = msg_send![&ctx, setInvalidateFlowLayoutDelegateMetrics: true];
+        let _: () = msg_send![layout, invalidateLayoutWithContext: &*ctx];
+    }
 }
 
 /// Tear down the data source's mounts + drop the framework callbacks

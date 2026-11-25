@@ -56,12 +56,12 @@
 //! detected and re-rendered), but any insert or reorder shifts every
 //! index and re-renders every visible row — use a stable id.
 //!
-//! Per backend: web, Android and macOS do the keyed diff above (macOS
-//! applies it as one `performBatchUpdates`, built by
-//! [`super::virtualizer_diff::diff_keys`], and reloads when the diff is
+//! Per backend: web, Android, macOS and iOS do the keyed diff above (macOS
+//! and iOS apply it as one `performBatchUpdates`, built by
+//! [`super::virtualizer_diff::diff_keys`], and reload when the diff is
 //! unusable: no prior load, repeated keys, no survivor, too many ops).
-//! iOS, GTK and the wgpu engine rebuild every visible row on each data
-//! change (`reloadData` / full refill): content is always fresh, but row
+//! GTK and the wgpu engine rebuild every visible row on each data
+//! change (full refill): content is always fresh, but row
 //! state never survives a data change there, even for unchanged items.
 //! That is a known divergence, not a contract — don't rely on either side
 //! of it.

@@ -139,8 +139,7 @@ pub(crate) fn create(
     let scroll: Retained<NSView> = crate::imp::scroll_chain::ChainedScrollView::new_view(mtm);
     // Both axes scroll here, so both scrollers exist — unlike
     // `create_scroll_view`, which enables exactly one.
-    let _: () = unsafe { msg_send![&scroll, setHasVerticalScroller: true] };
-    let _: () = unsafe { msg_send![&scroll, setHasHorizontalScroller: true] };
+    crate::imp::scroll_chain::set_axes(&scroll, true, true);
     let _: () = unsafe { msg_send![&scroll, setAutohidesScrollers: true] };
     // Overlay scrollers (NSScrollerStyleOverlay = 1) reserve no width,
     // so a cell's full column width stays visible instead of sliding

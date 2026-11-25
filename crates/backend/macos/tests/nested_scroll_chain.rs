@@ -15,6 +15,13 @@
 //! AppKit's responder chain brings a wheel event over a row. The window is
 //! never ordered on screen.
 //!
+//! Responsive scrolling is turned off here (`event_per_event_scrolling`).
+//! With it on, a scroll view that takes a `began` runs its own tracking loop,
+//! which waits for the rest of the gesture from the window server: there is
+//! no trackpad behind these events, so it would wait forever. What this
+//! leaves to a real trackpad is that loop; which scroll view enters it is
+//! decided by the `began` routing tested here.
+//!
 //! `harness = false`: AppKit views and windows are main-thread only, and
 //! libtest runs cases on worker threads.
 //!
@@ -176,6 +183,53 @@ mod imp {
         }
     }
 
+    /// Answer NO from `+isCompatibleWithResponsiveScrolling` on both chained
+    /// scroll view classes, so every event of a gesture is delivered through
+    /// `scrollWheel:`. The classes register when their first instance is made.
+    fn event_per_event_scrolling(mtm: MainThreadMarker) {
+        unsafe extern "C" fn no(
+            _cls: *const objc2::runtime::AnyClass,
+            _cmd: objc2::runtime::Sel,
+        ) -> objc2::runtime::Bool {
+            objc2::runtime::Bool::NO
+        }
+        let a11y = AccessibilityProps::default();
+        let mut b = MacosBackend::new(mtm);
+        b.create_scroll_view(ScrollAxis::Vertical, None, &a11y);
+        let callbacks = VirtualizerCallbacks {
+            item_count: Rc::new(|| 0),
+            item_key: Rc::new(|i| i as u64),
+            item_size: Rc::new(|_| ROW_H),
+            measure_sizes: false,
+            mount_item: Rc::new(|_| unreachable!("no items")),
+            release_item: Rc::new(|_| {}),
+            set_measured_size: Rc::new(|_, _| {}),
+            on_scroll: None,
+            item_changed: None,
+        };
+        b.create_virtualizer(callbacks, 0.0, VirtualLayout::default(), &a11y);
+        for name in ["IdealystMacChainedScrollView", "IdealystMacVirtualizerScrollView"] {
+            let cls = objc2::runtime::AnyClass::get(name).expect("registered");
+            let sel = objc2::sel!(isCompatibleWithResponsiveScrolling);
+            unsafe {
+                objc2::ffi::class_replaceMethod(
+                    cls.metaclass() as *const _ as *mut objc2::ffi::objc_class,
+                    sel.as_ptr(),
+                    Some(std::mem::transmute::<
+                        unsafe extern "C" fn(
+                            *const objc2::runtime::AnyClass,
+                            objc2::runtime::Sel,
+                        ) -> objc2::runtime::Bool,
+                        unsafe extern "C" fn(),
+                    >(no)),
+                    c"B@:".as_ptr(),
+                );
+            }
+            let on: bool = unsafe { msg_send![cls, isCompatibleWithResponsiveScrolling] };
+            assert!(!on, "{name}: responsive scrolling is off for this test");
+        }
+    }
+
     /// A trackpad gesture moving `(dx, dy)` per event: mayBegin, began, a few
     /// changes, ended, then momentum. Each event goes to `target`'s
     /// `scrollWheel:`.
@@ -228,6 +282,7 @@ mod imp {
         /// The vertical scroller in the first column.
         inner: Retained<NSView>,
         inner_node: MacosNode,
+        outer_node: MacosNode,
     }
 
     impl Board {
@@ -293,7 +348,17 @@ mod imp {
                 let mut list = b.create_scroll_view(ScrollAxis::Vertical, None, &a11y);
                 b.apply_style(&list, &sized(COLUMN_W, WINDOW_H as f32));
                 let tall = b.create_view(&a11y);
-                b.apply_style(&tall, &sized(COLUMN_W, ROW_H * ROWS as f32));
+                // An empty box has no content to floor it, so flexbox would
+                // shrink it to the scroller (as on the web).
+                b.apply_style(
+                    &tall,
+                    &Rc::new(StyleRules {
+                        width: px(COLUMN_W),
+                        height: px(ROW_H * ROWS as f32),
+                        flex_shrink: Some(0.0f32.into()),
+                        ..Default::default()
+                    }),
+                );
                 b.insert(&mut list, tall);
                 list
             }
@@ -366,6 +431,7 @@ mod imp {
             outer,
             inner,
             inner_node,
+            outer_node: board,
         }
     }
 
@@ -453,9 +519,47 @@ mod imp {
         );
     }
 
+    /// REGRESSION: `scrollbar: Hidden` was ignored. The bars go, the board
+    /// still scrolls and still takes what its list passes on, and `Auto`
+    /// brings back the bars it had (one axis only).
+    fn regression_scrollbar_hidden_hides_the_bars(board: &Board, what: &str) {
+        use runtime_shared::ScrollbarVisibility;
+        let bars = |v: &NSView| -> (bool, bool) {
+            unsafe { (msg_send![v, hasHorizontalScroller], msg_send![v, hasVerticalScroller]) }
+        };
+        let style = |w: f32, h: f32, scrollbar| {
+            Rc::new(StyleRules { width: px(w), height: px(h), scrollbar, ..Default::default() })
+        };
+        let set = |scrollbar| {
+            let mut b = board.backend.borrow_mut();
+            b.apply_style(&board.outer_node, &style(WINDOW_W as f32, WINDOW_H as f32, scrollbar));
+            b.apply_style(&board.inner_node, &style(COLUMN_W, WINDOW_H as f32, scrollbar));
+        };
+        assert_eq!((bars(&board.outer), bars(&board.inner)), ((true, false), (false, true)));
+        set(Some(ScrollbarVisibility::Hidden));
+        assert_eq!(
+            (bars(&board.outer), bars(&board.inner)),
+            ((false, false), (false, false)),
+            "{what}: hidden"
+        );
+        board.reset();
+        trackpad_gesture(&board.inner, 0, -12);
+        assert!(board.moved().1 > 1.0, "{what}: the list scrolls without its bar");
+        board.reset();
+        trackpad_gesture(&board.inner, -12, 0);
+        assert!(board.moved().0 > 1.0, "{what}: the board scrolls without its bar");
+        set(None);
+        assert_eq!(
+            (bars(&board.outer), bars(&board.inner)),
+            ((true, false), (false, true)),
+            "{what}: shown again"
+        );
+    }
+
     pub fn run() {
         // SAFETY: `harness = false` — `main` IS the main thread.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        event_per_event_scrolling(mtm);
         let mut passed = 0;
         for (kind, what) in [
             (Inner::ScrollView, "scroll_view"),
@@ -466,8 +570,9 @@ mod imp {
             vertical_pan_over_list_scrolls_the_list(&board, what);
             mouse_wheel_and_shift_wheel_split_by_axis(&board, what);
             overscroll_contain_stops_chaining(&board, what);
+            regression_scrollbar_hidden_hides_the_bars(&board, what);
             board.close();
-            passed += 4;
+            passed += 5;
         }
         println!("nested_scroll_chain: {passed} passed");
     }

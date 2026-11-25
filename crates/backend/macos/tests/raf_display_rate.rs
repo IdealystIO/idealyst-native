@@ -236,11 +236,14 @@ mod imp {
     /// Needs two screens whose rates differ; skipped otherwise.
     fn the_clock_follows_the_window_to_another_screen(fx: &Fixture) {
         let screens: Retained<AnyObject> = unsafe { msg_send_id![class!(NSScreen), screens] };
-        let count: usize = unsafe { msg_send![&*screens, count] };
+        // Through an enumerator: the array is a Swift one, whose `count` and
+        // `objectAtIndex:` are declared signed, against NSArray's unsigned.
+        let each: Retained<AnyObject> = unsafe { msg_send_id![&*screens, objectEnumerator] };
         let here = window_hz(&fx.window).unwrap_or(60.0);
         let mut other: Option<(Retained<AnyObject>, f64)> = None;
-        for i in 0..count {
-            let s: Retained<AnyObject> = unsafe { msg_send_id![&*screens, objectAtIndex: i] };
+        loop {
+            let next: Option<Retained<AnyObject>> = unsafe { msg_send_id![&*each, nextObject] };
+            let Some(s) = next else { break };
             let fps: isize = unsafe { msg_send![&*s, maximumFramesPerSecond] };
             if fps > 0 && (fps as f64 - here).abs() > 5.0 {
                 other = Some((s, fps as f64));

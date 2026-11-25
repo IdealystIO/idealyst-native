@@ -183,6 +183,16 @@ harness = false
 name = "flat_list_measured"
 harness = false
 
+# Real UIKit: a data change applied to a `flat_list` keeps the rows whose
+# items did not change, and the percent + px translate of a transform list.
+[[test]]
+name = "flat_list_data_change"
+harness = false
+
+[[test]]
+name = "percent_translate"
+harness = false
+
 [[test]]
 name = "text_input_focus"
 harness = false

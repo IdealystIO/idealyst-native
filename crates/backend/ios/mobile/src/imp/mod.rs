@@ -1632,11 +1632,14 @@ impl IosBackend {
         &self,
         done: Box<dyn FnOnce(Result<runtime_shared::Screenshot, String>)>,
     ) {
-        let result = match self.host_root.as_ref() {
-            Some(view) => screenshot::capture(view),
-            None => Err("no host root installed yet".into()),
+        let Some(view) = self.host_root.clone() else {
+            return done(Err("no host root installed yet".into()));
         };
-        done(result);
+        // On a later turn: the caller holds the backend's borrow, and a
+        // capture makes UIKit lay out, which mounts the rows a list then shows.
+        // Their mount borrows the backend ("RefCell already borrowed", an
+        // abort out of UIKit's frame).
+        runtime_shared::scheduling::schedule_microtask(move || done(screenshot::capture(&view)));
     }
 
     pub(crate) fn url_opener_impl(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
@@ -2874,31 +2877,11 @@ impl IosBackend {
     }
 
     pub(crate) fn virtualizer_data_changed_impl(&mut self, node: &IosNode) {
-        // Phase-1: full reload. Phase-2 would diff item keys against
-        // the previous snapshot and issue `performBatchUpdates` so
-        // surviving rows animate in place. `reloadData()` is correct
-        // (UIKit re-queries item_count + sizes + cellForItem on every
-        // visible index) but throws away every mounted cell — every
-        // item gets remounted via a fresh per-item Scope. For lists
-        // whose data churns rarely, that cost is fine; for live
-        // streams it's the obvious next thing to optimize.
+        // Schedules the keyed batch update (or a reload when the diff is
+        // unusable) for a later main-loop turn; see
+        // `virtualizer::data_changed`.
         let view = node.as_view();
-        // Defer the UICollectionView `reloadData`. It synchronously fires
-        // `didEndDisplayingCell` for every currently-visible cell, and our
-        // handler calls `release_item` — which DROPS the per-item reactive
-        // Scope. But `virtualizer_data_changed` is invoked from WITHIN the
-        // reactive update that changed the data signal, so dropping a Scope
-        // here re-enters the reactive runtime mid-update and panics (the
-        // panic then aborts across UIKit's Obj-C frame). Hop to the next
-        // main-loop turn so the current update finishes before any cell is
-        // recycled. (This bug only surfaces once the list actually renders
-        // cells — see the content-size measure_fn in `create_virtualizer`.)
-        let view_retained: Retained<UIView> = unsafe {
-            Retained::retain(view as *const UIView as *mut UIView).expect("retain UIView")
-        };
-        runtime_shared::scheduling::schedule_microtask(move || {
-            virtualizer::data_changed(&view_retained);
-        });
+        virtualizer::data_changed(&self.virtualizer_instances, view);
         // The item count changed, so the list's content size changed. Mark
         // the Taffy node dirty and schedule a layout pass so the measure_fn
         // re-runs and the node resizes to the new content height — otherwise

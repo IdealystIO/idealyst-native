@@ -660,8 +660,11 @@ impl VirtualizerDataSource {
             )
         };
         if update.as_ref().is_some_and(KeyedUpdate::is_empty) {
-            // Same keys, same order, no stale row: nothing to tell AppKit.
+            // Same keys, same order, no stale row: no batch. The sizes may
+            // still differ (a Known size can come from anything the author's
+            // fn reads), and a flow layout keeps the ones it has.
             *self.ivars().known_keys.borrow_mut() = Some(new_keys);
+            invalidate_item_sizes(cv);
             return;
         }
         let offset = ScrollOffset::save(cv);
@@ -1342,12 +1345,7 @@ pub(crate) fn create(
         Retained::retain(&*scroll_typed as *const VirtualizerScrollView as *mut NSView)
             .expect("retain VirtualizerScrollView as NSView")
     };
-    let _: () = unsafe {
-        msg_send![&scroll, setHasVerticalScroller: !horizontal]
-    };
-    let _: () = unsafe {
-        msg_send![&scroll, setHasHorizontalScroller: horizontal]
-    };
+    crate::imp::scroll_chain::set_axes(&scroll, horizontal, !horizontal);
     let _: () = unsafe { msg_send![&scroll, setAutohidesScrollers: true] };
     // Overlay scrollers (`NSScrollerStyleOverlay` = 1), as `create_scroll_view`
     // sets: the legacy style the user's "Show scroll bars" setting can pick

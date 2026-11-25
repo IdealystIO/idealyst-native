@@ -224,13 +224,15 @@ fn abs_rect(view: &Retained<NSView>) -> Option<NativeRect> {
     }
     let content: *mut NSView = unsafe { msg_send![window, contentView] };
     let to_view: *mut NSView = if content.is_null() { std::ptr::null_mut() } else { content };
-    let in_window: CGRect = unsafe { msg_send![&**view, convertRect: bounds, toView: to_view] };
-    let (tx, ty) = super::animated::visual_translate_in_window(&**view);
+    let painted = match super::animated::painted_rect(view) {
+        Some(r) => r,
+        None => unsafe { msg_send![&**view, convertRect: bounds, toView: to_view] },
+    };
     Some(NativeRect {
-        x: in_window.origin.x as f32 + tx as f32,
-        y: in_window.origin.y as f32 + ty as f32,
-        width: in_window.size.width as f32,
-        height: in_window.size.height as f32,
+        x: painted.origin.x as f32,
+        y: painted.origin.y as f32,
+        width: painted.size.width as f32,
+        height: painted.size.height as f32,
     })
 }
 

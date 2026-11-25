@@ -3958,6 +3958,56 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   display. On macOS 11–13 the timer drives the clock at the screen's `maximumFramesPerSecond`.
   Several loops share one tick, and the flush after it runs once per frame.
 
+- **A `flat_list` data change on macOS and iOS keeps the rows that did not change**
+  (`backend-macos`, `backend-ios-mobile`, `runtime-shared` minor:
+  `primitives::virtualizer_diff`). Every change rebuilt every visible row.
+  It is now one keyed batch, as on web and Android: surviving rows keep their view and state, a
+  row whose item changed is rebuilt, and a change it can't batch (repeated keys, nothing left,
+  more than 128 steps) still reloads.
+
+- **A scrolled macOS `flat_list` keeps its offset** (`backend-macos`) through a layout pass or a
+  data change; a `scroll_to` made as it mounts holds. Its rows follow a cross-axis resize, and it
+  uses overlay scrollers whatever the "Show scroll bars" setting, as `scroll_view` does.
+
+- **A percent translate animates under `transitions { transform }` on macOS** (`backend-macos`).
+  Only px translates did; a panel going from `translateX(100%)` to `translateX(0%)` jumped. Percent
+  translates also apply inside portals.
+
+- **A child that stands out of its parent takes clicks on macOS and iOS** (`backend-macos`,
+  `backend-ios-mobile`), unless an ancestor clips it, as on web. Directly overflowing children
+  only: not one reached through a child that stays inside.
+
+- **A transformed view is hit and measured where it paints on macOS** (`backend-macos`). Hit tests
+  undid only the translate of a layer's transform, so a 36pt button turned 180° took clicks 36pt
+  off. `absolute_frame`, the robot's rects and a touch's `position` count every ancestor's
+  translate, scale and rotation.
+
+- **A transform list's translates add up everywhere** (`backend-ios-mobile`,
+  `backend-android-mobile`, `render-wgpu`, `backend-cpu`, `backend-macos`; `runtime-shared` minor:
+  `StaticTranslate`). In `[translateX(100%), translateX(-24px)]` the percent replaced the px on iOS
+  and Android, and the last entry won on wgpu and CPU. Web, Linux and Windows added them already.
+
+- **Quitting a macOS app no longer aborts** (`host-appkit`, `backend-macos` minor:
+  `NewCoreApp::stop_at_quit`, `runtime-world` minor: `leave_worlds_at_thread_end`, `host-winit`).
+  The app is unmounted when it is told to terminate. Its cleanups ran from a thread-local's
+  destructor, where one reaching another thread-local already destroyed aborted the process.
+
+- **`scrollbar: Hidden` hides the bars on macOS** (`backend-macos`), on a `scroll_view`, a
+  `flat_list` and a virtual grid. It was ignored.
+
+- **A Robot screenshot can't abort the app on macOS or iOS** (`backend-macos`,
+  `backend-ios-mobile`). Taken under the backend's borrow, it made the toolkit lay out and mount
+  list rows, which borrow it again. The capture runs on the next turn.
+
+- **`idealyst run <platform> --robot`** (`idealyst-cli` minor; macOS, Linux, Windows, terminal)
+  builds the app with the Robot, without `idealyst dev`'s watcher and server.
+
+- **Removing many styled views on macOS no longer takes time proportional to the views alive**
+  (`backend-macos`).
+
+- **`replace` onto another screen of a swap navigator shows it** (`runtime-vocabulary`). The route
+  moved and the old screen stayed, so a redirect from an alias screen was a blank page.
+
 - **A layout property given as a token lays out at the installed value** (`runtime-layout`). Native
   read a token's fallback, so an app that installed a 12pt page gutter still got the theme's 32.
   Paint and web already used the installed value.

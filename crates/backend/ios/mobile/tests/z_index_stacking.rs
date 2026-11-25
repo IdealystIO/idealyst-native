@@ -536,6 +536,76 @@ mod imp {
         assert_eq!(z_of(&cell_of(&row1.1)), 5.0, "the cell follows an animated z");
     }
 
+    /// REGRESSION (overflow took no touches on Apple): a tab hung off a
+    /// card's left edge paints outside the card and on web takes touches
+    /// there. UIKit hit-tests a subview only inside its superview, so the
+    /// overflowing half was dead. A clipping card (`overflow: hidden`) hides
+    /// the overhang, and then it takes no touch either. One moved out by its
+    /// transform counts like one laid out past the edge.
+    fn regression_overflowing_child_takes_the_touch(mtm: MainThreadMarker) {
+        let mut backend = IosBackend::new(mtm);
+        let host = host(mtm);
+        backend.set_host_root(host.clone());
+        let a11y = AccessibilityProps::default();
+        let mut root = sized_root(&mut backend, &a11y);
+        let card_rules = |overflow| {
+            Rc::new(StyleRules {
+                position: Some(Position::Absolute),
+                top: px(0.0),
+                left: px(200.0),
+                width: px(150.0),
+                height: px(200.0),
+                overflow,
+                ..Default::default()
+            })
+        };
+        let mut card = backend.create_view(&a11y);
+        backend.apply_style(&card, &card_rules(None));
+        let tab_rules = |top: f32, left: f32, shift: f32| {
+            Rc::new(StyleRules {
+                position: Some(Position::Absolute),
+                top: px(top),
+                left: px(left),
+                width: px(32.0),
+                height: px(40.0),
+                transform: Some(vec![runtime_shared::Transform::TranslateX(Length::Px(shift))]),
+                ..Default::default()
+            })
+        };
+        let laid_out = backend.create_view(&a11y);
+        backend.apply_style(&laid_out, &tab_rules(80.0, -16.0, 0.0));
+        let moved = backend.create_view(&a11y);
+        backend.apply_style(&moved, &tab_rules(140.0, 0.0, -16.0));
+        let (root_v, card_v) = (view_of(&root), view_of(&card));
+        let (laid_out_v, moved_v) = (view_of(&laid_out), view_of(&moved));
+        backend.insert(&mut card, laid_out.clone());
+        backend.insert(&mut card, moved.clone());
+        backend.insert(&mut root, card.clone());
+        backend.finish(root);
+        backend.run_layout();
+
+        let at = |x: f64, y: f64| hit(&host, &root_v, CGPoint { x, y });
+        for (tab, y) in [(&laid_out_v, 100.0), (&moved_v, 160.0)] {
+            let got = at(190.0, y);
+            assert!(got.as_ref().is_some_and(|v| is_within(v, tab)), "the overhang takes it; got {got:?}");
+            let got = at(210.0, y);
+            assert!(got.as_ref().is_some_and(|v| is_within(v, tab)), "and the half inside; got {got:?}");
+        }
+        let got = at(100.0, 100.0);
+        assert!(
+            !got.as_ref().is_some_and(|v| is_within(v, &card_v)),
+            "a point outside the card and its tabs is not the card's; got {got:?}"
+        );
+
+        backend.apply_style(&card, &card_rules(Some(runtime_shared::Overflow::Hidden)));
+        backend.run_layout();
+        let got = at(190.0, 100.0);
+        assert!(
+            !got.as_ref().is_some_and(|v| is_within(v, &laid_out_v)),
+            "a clipping card hides the overhang, and it takes no touch; got {got:?}"
+        );
+    }
+
     pub fn run() {
         // SAFETY: `harness = false` — `main` IS the main thread.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
@@ -547,6 +617,7 @@ mod imp {
         regression_anchor_children_stack_against_anchor_siblings(mtm);
         regression_raised_portal_takes_the_touch(mtm);
         regression_virtualized_row_z_index_orders_rows(mtm);
-        println!("z_index_stacking: 8 passed");
+        regression_overflowing_child_takes_the_touch(mtm);
+        println!("z_index_stacking: 9 passed");
     }
 }

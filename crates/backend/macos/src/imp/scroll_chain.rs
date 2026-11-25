@@ -14,8 +14,9 @@
 //!   (`|dx| > |dy|` is horizontal; otherwise vertical — a plain mouse wheel
 //!   only carries `dy`, and AppKit turns shift+wheel into `dx`);
 //! - the scroll view keeps the gesture when it can scroll that axis: it
-//!   scrolls the axis at all (`hasHorizontalScroller` /
-//!   `hasVerticalScroller`) AND its content is longer than its viewport on
+//!   scrolls the axis at all ([`set_axes`]; not `hasVerticalScroller` /
+//!   `hasHorizontalScroller`, which `scrollbar: Hidden` turns off on a
+//!   scroller that still scrolls) AND its content is longer than its viewport on
 //!   it. Otherwise it forwards the gesture up the responder chain, where the
 //!   enclosing scroll view makes the same decision;
 //! - the decision holds for the whole gesture: every later `changed` /
@@ -166,6 +167,11 @@ impl Wheel {
 pub(crate) struct ScrollChain {
     /// `overscroll-behavior: contain | none` — never forward.
     pub contain: bool,
+    /// The axes this scroll view scrolls.
+    pub scrolls_x: bool,
+    pub scrolls_y: bool,
+    /// `scrollbar: Hidden`.
+    pub bars_hidden: bool,
     /// The owner of the current gesture, decided at its start.
     latched: Option<Route>,
 }
@@ -221,11 +227,9 @@ fn decide(ev: Wheel, reach: Reach) -> Route {
     }
 }
 
-/// What `scroll_view` can scroll now: the axes it has scrollers for, and its
+/// What `scroll_view` can scroll now: the axes it scrolls, and its
 /// documentView against its clip view.
-fn reach_of(scroll_view: &NSScrollView) -> Reach {
-    let scrolls_x: bool = unsafe { msg_send![scroll_view, hasHorizontalScroller] };
-    let scrolls_y: bool = unsafe { msg_send![scroll_view, hasVerticalScroller] };
+fn reach_of(scroll_view: &NSScrollView, chain: ScrollChain) -> Reach {
     let doc: *mut NSView = unsafe { msg_send![scroll_view, documentView] };
     if doc.is_null() {
         return Reach::default();
@@ -237,8 +241,8 @@ fn reach_of(scroll_view: &NSScrollView) -> Reach {
     }
     let clip_bounds: CGRect = unsafe { msg_send![clip, bounds] };
     Reach::new(
-        scrolls_x,
-        scrolls_y,
+        chain.scrolls_x,
+        chain.scrolls_y,
         (doc_frame.size.width, doc_frame.size.height),
         (clip_bounds.size.width, clip_bounds.size.height),
     )
@@ -265,7 +269,7 @@ pub(crate) fn scroll_wheel(
     };
     let parent: *mut NSScrollView = unsafe { msg_send![scroll_view, enclosingScrollView] };
     let mut state = chain.get();
-    let route = state.route(ev, !parent.is_null(), || reach_of(scroll_view));
+    let route = state.route(ev, !parent.is_null(), || reach_of(scroll_view, chain.get()));
     chain.set(state);
     if route == Route::Own {
         return false;
@@ -285,6 +289,41 @@ pub(crate) fn set_contain(view: &NSView, contain: bool) {
         let mut state = chain.get();
         state.contain = contain;
         chain.set(state);
+    }
+}
+
+/// Set the axes a chained scroll view scrolls, and show their scrollers.
+pub(crate) fn set_axes(view: &NSView, x: bool, y: bool) {
+    if let Some(chain) = chain_of(view) {
+        let state = ScrollChain { scrolls_x: x, scrolls_y: y, ..chain.get() };
+        chain.set(state);
+        show_bars(view, state);
+    }
+}
+
+/// Hide or show a chained scroll view's scrollers (`scrollbar: Hidden`). It
+/// scrolls the same either way: an `NSScrollView` scrolls a document longer
+/// than it is with or without a scroller on that axis.
+pub(crate) fn set_bars_hidden(view: &NSView, hidden: bool) {
+    if let Some(chain) = chain_of(view) {
+        let state = ScrollChain { bars_hidden: hidden, ..chain.get() };
+        chain.set(state);
+        show_bars(view, state);
+    }
+}
+
+fn show_bars(view: &NSView, state: ScrollChain) {
+    let (x, y) = (state.scrolls_x && !state.bars_hidden, state.scrolls_y && !state.bars_hidden);
+    unsafe {
+        // Only on a change: the setters re-tile the scroll view.
+        let has_x: bool = msg_send![view, hasHorizontalScroller];
+        if has_x != x {
+            let _: () = msg_send![view, setHasHorizontalScroller: x];
+        }
+        let has_y: bool = msg_send![view, hasVerticalScroller];
+        if has_y != y {
+            let _: () = msg_send![view, setHasVerticalScroller: y];
+        }
     }
 }
 

@@ -224,18 +224,18 @@ declare_class!(
             true
         }
 
-        // Make views positioned by a translate (static px or percent, animated,
-        // presence) clickable where
-        // they VISUALLY render. AppKit hit-tests by frame and ignores the CALayer
-        // transform, so a transform-positioned view (e.g. a kanban card laid out
-        // purely by translate) would draw in place but keep its click target at
-        // its untransformed frame origin — web/iOS hit-test the transform, so
-        // without this the platforms diverge (CLAUDE.md §7). We shift the
-        // incoming point by the inverse of this view's translate, then defer to
-        // the default frame-based hitTest, which now resolves against the visual
-        // position. Composes through nesting: each translated ancestor subtracts
-        // its own translate. A no-op for the common untransformed view (translate
-        // is `(0, 0)`).
+        // Make a view moved by a layer transform (translate, scale, rotation;
+        // static, animated or presence) clickable where it paints. AppKit
+        // hit-tests by frame and ignores the CALayer transform, so a kanban
+        // card laid out purely by translate would draw in place but keep its
+        // click target at its untransformed frame origin — web/iOS hit-test
+        // the transform, so without this the platforms diverge (CLAUDE.md §7).
+        // The incoming point goes back through this view's transform, then
+        // the default frame-based hitTest resolves it. Composes through
+        // nesting: each transformed ancestor undoes its own. The point is
+        // unchanged for the common untransformed view. The whole matrix, not
+        // its translate: the pivot puts a (w, h) translate in the matrix of a
+        // view turned 180° in place.
         #[method_id(hitTest:)]
         fn hit_test(&self, point: CGPoint) -> Option<Retained<NSView>> {
             if self.ivars().layout_transparent.get() {
@@ -253,21 +253,19 @@ declare_class!(
                 };
                 walk_subviews_topmost_first(this, local)
             } else {
-                let (tx, ty) = crate::imp::animated::view_layer_translate(self);
-                let adjusted = CGPoint {
-                    x: point.x - tx,
-                    y: point.y - ty,
-                };
+                // `None`: collapsed to nothing by `scale: 0`, hit by nothing.
+                let adjusted = crate::imp::animated::unpainted_point(self, point);
                 // AppKit's default walk, reordered by sibling `z_index`
                 // when any subview is raised (`z_ordered_hit_test`).
-                let result: Option<Retained<NSView>> = match z_ordered_hit_test(self, adjusted) {
-                    Some(resolved) => resolved,
-                    None => unsafe { msg_send_id![super(self), hitTest: adjusted] },
-                };
+                let result: Option<Retained<NSView>> =
+                    adjusted.and_then(|p| match z_ordered_hit_test(self, p) {
+                        Some(resolved) => resolved,
+                        None => unsafe { msg_send_id![super(self), hitTest: p] },
+                    });
                 // A child standing out of this view's box (a tab hung off a
                 // card's edge, an absolute box placed by its containing
                 // block) takes clicks where it paints, as on web.
-                let result = result.or_else(|| overflow_hit_test(self, adjusted));
+                let result = result.or_else(|| adjusted.and_then(|p| overflow_hit_test(self, p)));
                 // `pointer-events: none` — this subtree is hit-transparent
                 // (return nil so AppKit resolves whatever renders behind it),
                 // EXCEPT descendants that explicitly re-enable with `Auto`.
@@ -894,7 +892,7 @@ pub(crate) fn z_ordered_hit_test(view: &NSView, point: CGPoint) -> Option<Option
 /// ancestor clips it; this follows that. Never answers with `view` itself
 /// (the point is outside it). `None` when `view` is hidden, clips
 /// (`masksToBounds`, `overflow: hidden`), or keeps every candidate inside its
-/// bounds, which is the common case and costs one frame check per child.
+/// bounds, which is the common case and costs one painted-frame check per child.
 ///
 /// A descendant reached only through a child that is itself inside the
 /// bounds (overflow two levels down, out of both) is not found: that needs
@@ -914,10 +912,9 @@ pub(crate) fn overflow_hit_test(view: &NSView, point: CGPoint) -> Option<Retaine
     }
     let bounds: CGRect = unsafe { msg_send![view, bounds] };
     let subs = hit_candidates(view);
-    let overflows = subs.iter().any(|sub| {
-        let f: CGRect = unsafe { msg_send![&**sub, frame] };
-        !rect_within(f, bounds)
-    });
+    // Where they paint: a child can stand out by its transform alone.
+    let overflows =
+        subs.iter().any(|sub| !rect_within(crate::imp::animated::painted_frame(sub), bounds));
     if !overflows {
         return None;
     }
@@ -1249,21 +1246,14 @@ impl FlippedView {
         // `FlippedView` is `isFlipped`, the result is top-left (dp), matching
         // Taffy frames and the canvas Scene — no density scaling on macOS.
         let win: CGPoint = unsafe { msg_send![event, locationInWindow] };
-        let local_raw: CGPoint =
-            unsafe { msg_send![self, convertPoint: win, fromView: std::ptr::null::<NSView>()] };
-        // `convertPoint:` is frame-based and ignores the CALayer transform, so for
-        // a view positioned by a translate (its own or an ancestor's) the result
-        // is relative to its untransformed frame, not its visual top-left.
-        // Subtract the translates so `position` is the point *within the visual
+        // `convertPoint:` is frame-based and ignores CALayer transforms, so for
+        // a view moved by one (its own or an ancestor's) it answers relative to
+        // the untransformed frame. `position` is the point *within the painted
         // view* — matching web/iOS. Without this the grab offset for a drag
         // preview comes out as ~the window position, flinging the ghost to the
         // top-left and offsetting it more the further the grabbed view sits from
         // the origin.
-        let (ltx, lty) = crate::imp::animated::visual_translate_in_window(self);
-        let local = CGPoint {
-            x: local_raw.x - ltx,
-            y: local_raw.y - lty,
-        };
+        let local = crate::imp::animated::point_in_painted_view(self, win);
 
         // True top-left WINDOW coords. We can't reuse `local` (it's relative to
         // THIS view) for `window_position`: a drag handler that moves its own

@@ -22,7 +22,7 @@ use runtime_shared::{TouchEvent, TouchHandler, TouchId, TouchPhase, TouchPoint};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_foundation::{CGFloat, CGPoint, MainThreadMarker, NSArray, NSSet};
+use objc2_foundation::{CGFloat, CGPoint, CGRect, MainThreadMarker, NSArray, NSSet};
 use objc2_ui_kit::{UIEvent, UIScrollView, UITouch, UIView};
 
 pub(crate) struct TouchViewIvars {
@@ -113,6 +113,10 @@ declare_class!(
                 Some(resolved) => resolved,
                 None => unsafe { msg_send_id![super(self), hitTest: point, withEvent: event] },
             };
+            // A child standing out of this view's box (a tab hung off a
+            // card's edge, an absolute box placed by its containing block)
+            // takes touches where it paints, as on web.
+            let result = result.or_else(|| overflow_hit_test(self, point, event));
             if matches!(
                 self.ivars().pointer_events.get(),
                 Some(runtime_shared::PointerEvents::None)
@@ -264,6 +268,61 @@ pub(crate) fn z_ordered_hit_test(
         unsafe { msg_send_id![sub, hitTest: p, withEvent: event] }
     });
     Some(hit.or_else(|| unsafe { Retained::retain(view as *const UIView as *mut UIView) }))
+}
+
+/// The hit for `point` (in `view`'s own space) among `view`'s children that
+/// stand out of its bounds, when the walk above found none.
+///
+/// UIKit hit-tests a subview only where its superview contains the point, so
+/// a child laid out past its parent's edge drew but took no touches. CSS
+/// hit-tests an overflowing descendant wherever it paints unless an ancestor
+/// clips it; this follows that. Never answers with `view` itself (the point
+/// is outside it). `None` when `view` takes no touches, clips
+/// (`clipsToBounds`, `overflow: hidden`), contains the point, or keeps every
+/// candidate inside its bounds, which is the common case and costs one frame
+/// check per child (a `UIView`'s `frame` is the box its transform paints).
+///
+/// A descendant reached only through a child that is itself inside the
+/// bounds (overflow two levels down, out of both) is not found: that needs
+/// subtree extents. Children standing out directly, at any depth of the
+/// walk, are.
+pub(crate) fn overflow_hit_test(
+    view: &UIView,
+    point: CGPoint,
+    event: Option<&UIEvent>,
+) -> Option<Retained<UIView>> {
+    let hidden: bool = unsafe { msg_send![view, isHidden] };
+    let interactive: bool = unsafe { msg_send![view, isUserInteractionEnabled] };
+    let alpha: CGFloat = unsafe { msg_send![view, alpha] };
+    if !backend_apple_core::z_order::uikit_accepts_hits(hidden, interactive, alpha as f64) {
+        return None;
+    }
+    let clips: bool = unsafe { msg_send![view, clipsToBounds] };
+    if clips {
+        return None;
+    }
+    // Inside and nothing hit: a descendant's `pointer_events` said no.
+    let inside: bool = unsafe { msg_send![view, pointInside: point, withEvent: event] };
+    if inside {
+        return None;
+    }
+    let bounds: CGRect = unsafe { msg_send![view, bounds] };
+    let overflows = hit_candidates(view).iter().any(|sub| {
+        let f: CGRect = unsafe { msg_send![&**sub, frame] };
+        !rect_within(f, bounds)
+    });
+    if !overflows {
+        return None;
+    }
+    walk_subviews_topmost_first(view, point, event)
+}
+
+/// Whether `inner` lies within `outer` (both in the same space).
+fn rect_within(inner: CGRect, outer: CGRect) -> bool {
+    inner.origin.x >= outer.origin.x
+        && inner.origin.y >= outer.origin.y
+        && inner.origin.x + inner.size.width <= outer.origin.x + outer.size.width
+        && inner.origin.y + inner.size.height <= outer.origin.y + outer.size.height
 }
 
 declare_class!(

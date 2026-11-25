@@ -132,6 +132,8 @@ mod imp {
         rows_by_key: Rc<RefCell<HashMap<u64, Retained<NSView>>>>,
         /// Keys whose item `item_changed` reports as changed.
         changed: Rc<RefCell<HashSet<u64>>>,
+        /// A Known list's size per key; `ESTIMATE` for the rest.
+        sizes: Rc<RefCell<HashMap<u64, f32>>>,
     }
 
     impl Mounted {
@@ -260,6 +262,7 @@ mod imp {
         let mounted_keys: Rc<RefCell<Vec<u64>>> = Rc::default();
         let rows_by_key: Rc<RefCell<HashMap<u64, Retained<NSView>>>> = Rc::default();
         let changed: Rc<RefCell<HashSet<u64>>> = Rc::default();
+        let sizes: Rc<RefCell<HashMap<u64, f32>>> = Rc::default();
         let item_key: Rc<dyn Fn(usize) -> u64> = {
             let keys = keys.clone();
             Rc::new(move |i| keys.borrow()[i])
@@ -299,10 +302,12 @@ mod imp {
         let item_size = {
             let overrides = overrides.clone();
             let count = count.clone();
+            let (sizes, item_key) = (sizes.clone(), item_key.clone());
             Rc::new(move |i: usize| {
                 // An author's size fn may index its data by `i`.
                 assert!(i < count.get(), "item_size asked past the end of the data");
-                overrides.borrow().get(&i).copied().unwrap_or(ESTIMATE)
+                let by_key = sizes.borrow().get(&item_key(i)).copied();
+                by_key.or_else(|| overrides.borrow().get(&i).copied()).unwrap_or(ESTIMATE)
             })
         };
         let set_measured_size = {
@@ -373,6 +378,7 @@ mod imp {
             mounted_keys,
             rows_by_key,
             changed,
+            sizes,
         };
         mounted.settle();
         mounted
@@ -593,6 +599,18 @@ mod imp {
         m.close();
     }
 
+    /// REGRESSION: the legacy scroller style ("Show scroll bars: Always")
+    /// reserves a gutter in the clip, so the rows' cross size no longer
+    /// matched the laid-out box. A list uses overlay scrollers whatever the
+    /// setting, as `scroll_view` does.
+    fn regression_a_list_uses_overlay_scrollers(mtm: MainThreadMarker) {
+        const OVERLAY: isize = 1;
+        let m = mount_list(mtm, vec![Some(SHORT); 3], false);
+        let style: isize = unsafe { msg_send![&view_of(&m.list), scrollerStyle] };
+        assert_eq!(style, OVERLAY);
+        m.close();
+    }
+
     fn ptr(v: &Retained<NSView>) -> usize {
         &**v as *const NSView as usize
     }
@@ -627,6 +645,51 @@ mod imp {
         assert_close(m.cell_frame_of_key(0).origin.y, ESTIMATE, "key 0 is second");
         assert_close(m.cell_frame_of_key(7).origin.y, 2.0 * ESTIMATE, "key 7 is third");
         assert_close(m.content_main(), 3.0 * ESTIMATE, "three rows");
+        m.close();
+    }
+
+    /// Rows of different Known sizes keep theirs through a keyed change, and
+    /// a size that changes under the same keys in the same order is picked up
+    /// (a raw `virtualizer()` has no item to compare, so no row is changed).
+    fn known_sizes_follow_their_keys_and_are_asked_again(mtm: MainThreadMarker) {
+        let m = mount_list(mtm, vec![Some(SHORT); 3], false);
+        m.sizes.borrow_mut().extend([(0, 30.0), (1, 60.0), (2, 90.0), (9, 45.0)]);
+        // Same keys: nothing to batch, the sizes alone changed.
+        m.change_keys(vec![0, 1, 2]);
+        m.settle();
+        assert_close(m.cell_frame_of_key(1).origin.y, 30.0, "row 0's new size is taken");
+        assert_close(m.content_main(), 180.0, "and the content's");
+        assert!(m.released.borrow().is_empty(), "no row is rebuilt for it");
+
+        // Reordered around an insert and a delete.
+        m.change_keys(vec![9, 2, 0]);
+        m.settle();
+        assert_close(m.cell_frame_of_key(9).size.height, 45.0, "the inserted row");
+        assert_close(m.cell_frame_of_key(2).origin.y, 45.0, "key 2 after it");
+        assert_close(m.cell_frame_of_key(2).size.height, 90.0, "with its own size");
+        assert_close(m.cell_frame_of_key(0).origin.y, 135.0, "key 0 last");
+        assert_close(m.content_main(), 165.0, "the content");
+        m.close();
+    }
+
+    /// REGRESSION: a Robot screenshot is asked for under the backend's borrow
+    /// and makes AppKit lay out, which mounts the rows a changed list now
+    /// shows. Their mount borrows the backend: an abort.
+    fn regression_a_screenshot_mounts_no_row_under_the_backend_borrow(mtm: MainThreadMarker) {
+        use runtime_vocabulary::caps::IntrospectionOps;
+        let m = mount_list(mtm, vec![Some(SHORT); 3], false);
+        m.mounted_keys.borrow_mut().clear();
+        let shot = Rc::new(Cell::new(None));
+        {
+            let slot = shot.clone();
+            let b = m.backend.borrow();
+            let _: () = unsafe { msg_send![&m.cv, reloadData] };
+            b.capture_screenshot(Box::new(move |r| slot.set(Some(r.is_ok()))));
+            assert!(m.mounted_keys.borrow().is_empty(), "nothing mounts under the borrow");
+        }
+        m.settle();
+        assert_eq!(shot.get(), Some(true), "the capture is delivered");
+        assert!(!m.mounted_keys.borrow().is_empty(), "the rows mount");
         m.close();
     }
 
@@ -741,7 +804,7 @@ mod imp {
         // SAFETY: checked just above — this is the main thread.
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         backend_macos::install_scheduler();
-        let tests: [(&str, fn(MainThreadMarker)); 14] = [
+        let tests: [(&str, fn(MainThreadMarker)); 17] = [
             (
                 "regression_measured_rows_are_spaced_by_their_rendered_size",
                 regression_measured_rows_are_spaced_by_their_rendered_size,
@@ -772,9 +835,18 @@ mod imp {
                 regression_removing_the_list_under_the_backend_borrow_releases_rows_later,
             ),
             ("regression_a_list_is_transparent", regression_a_list_is_transparent),
+            ("regression_a_list_uses_overlay_scrollers", regression_a_list_uses_overlay_scrollers),
             (
                 "regression_a_keyed_change_keeps_surviving_rows_mounted",
                 regression_a_keyed_change_keeps_surviving_rows_mounted,
+            ),
+            (
+                "regression_a_screenshot_mounts_no_row_under_the_backend_borrow",
+                regression_a_screenshot_mounts_no_row_under_the_backend_borrow,
+            ),
+            (
+                "known_sizes_follow_their_keys_and_are_asked_again",
+                known_sizes_follow_their_keys_and_are_asked_again,
             ),
             (
                 "a_changed_survivor_is_remounted_in_a_keyed_change",

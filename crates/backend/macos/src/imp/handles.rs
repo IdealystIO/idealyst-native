@@ -513,22 +513,21 @@ pub(crate) fn absolute_rect_of_node(node: &dyn Any) -> Option<ViewportRect> {
     } else {
         content
     };
-    let frame_in_window: CGRect = unsafe {
-        msg_send![view, convertRect: bounds, toView: to_view]
+    // `convertRect:` is frame-based and ignores CALayer transforms, so a view
+    // moved by one (its own or an ancestor's) reports where its frame is, not
+    // where it paints. The rect is the painted one, matching the touch
+    // `window_position` the SDK hit-tests it against (without this,
+    // drag-and-drop drops land offset by the transform — more the further the
+    // target sits from the origin).
+    let painted = match super::animated::painted_rect(view) {
+        Some(r) => r,
+        None => unsafe { msg_send![view, convertRect: bounds, toView: to_view] },
     };
-    // `convertRect:` is frame-based and ignores the CALayer transform — so a
-    // view positioned by a translate (its own or an ancestor's, px or percent,
-    // static or animated) reports its untransformed frame, not where it
-    // visually sits. Add the translates so the rect is the VISUAL window rect,
-    // matching the touch `window_position` the SDK hit-tests it against
-    // (without this, drag-and-drop drops land offset by the transform — more
-    // the further the target sits from the origin).
-    let (tx, ty) = super::animated::visual_translate_in_window(view);
     Some(ViewportRect {
-        x: frame_in_window.origin.x as f32 + tx as f32,
-        y: frame_in_window.origin.y as f32 + ty as f32,
-        width: frame_in_window.size.width as f32,
-        height: frame_in_window.size.height as f32,
+        x: painted.origin.x as f32,
+        y: painted.origin.y as f32,
+        width: painted.size.width as f32,
+        height: painted.size.height as f32,
     })
 }
 

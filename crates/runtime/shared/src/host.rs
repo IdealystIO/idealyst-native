@@ -97,10 +97,10 @@ pub struct VirtualizerCallbacks<N: Clone + 'static> {
     /// backend then keeps every survivor as-is. A pure read like
     /// `item_key`: no `World::enter` requirement, no flush.
     ///
-    /// Backends that rebuild every visible row on each data change
-    /// (`reloadData` on iOS) may ignore it: their rows are always fresh.
-    /// macOS asks it while building its batch update: a changed survivor
-    /// is deleted and inserted there
+    /// Backends that rebuild every visible row on each data change (GTK,
+    /// wgpu) may ignore it: their rows are always fresh. macOS and iOS ask
+    /// it while building their batch update: a changed survivor is deleted
+    /// and inserted there
     /// (`primitives::virtualizer_diff::diff_keys`).
     pub item_changed: Option<Rc<dyn Fn(usize) -> bool>>,
 }

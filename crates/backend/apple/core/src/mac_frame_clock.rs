@@ -91,7 +91,11 @@ pub(crate) fn subscribe_once(f: Box<dyn FnOnce() + 'static>) -> FrameSubscriptio
 /// Rebind the display link to `view`'s display. A running clock switches over
 /// at once; an idle one makes the link on its next start.
 pub(crate) fn set_owner(view: Retained<NSObject>) {
-    CLOCK.with(|c| c.with_source(|source, running| source.set_owner(view, running)));
+    // The old owner is released outside the clock's borrow: if this was its
+    // last reference, its views go with it, and one of them may hold a
+    // subscription that unsubscribes.
+    let old = CLOCK.with(|c| c.with_source(|source, running| source.set_owner(view, running)));
+    drop(old);
 }
 
 /// Whether the clock's source is started (nothing subscribed → `false`).
@@ -166,17 +170,22 @@ fn current_run_loop() -> Retained<NSObject> {
 }
 
 impl MacFrameSource {
-    fn set_owner(&mut self, view: Retained<NSObject>, running: bool) {
+    fn set_owner(
+        &mut self,
+        view: Retained<NSObject>,
+        running: bool,
+    ) -> Option<Retained<NSObject>> {
         if running {
             self.stop();
         }
         if let Some(link) = self.link.take() {
             let _: () = unsafe { msg_send![&*link, invalidate] };
         }
-        self.owner = Some(view);
+        let old = self.owner.replace(view);
         if running {
             self.start();
         }
+        old
     }
 
     /// Make the display link if the owner can vend one. Stays `None` on
@@ -284,6 +293,22 @@ impl FrameSource for MacFrameSource {
 }
 
 #[cfg(test)]
+declare_class!(
+    /// An owner holding a subscription, as a view's animation does.
+    struct SubscribedOwner;
+
+    unsafe impl ClassType for SubscribedOwner {
+        type Super = NSObject;
+        type Mutability = mutability::InteriorMutable;
+        const NAME: &'static str = "IdealystFrameClockTestOwner";
+    }
+
+    impl DeclaredClass for SubscribedOwner {
+        type Ivars = std::cell::RefCell<Option<FrameSubscription>>;
+    }
+);
+
+#[cfg(test)]
 mod tests {
     //! The real AppKit-free paths: this crate's test binary doesn't load
     //! AppKit, and libtest runs on worker threads, so these exercise the
@@ -291,6 +316,22 @@ mod tests {
     //! `backend-macos`'s `raf_display_rate` integration test.
     use super::*;
     use std::cell::Cell;
+
+    /// Replacing the owner may drop the last reference to it, and what it
+    /// holds may unsubscribe as it goes.
+    #[test]
+    fn a_replaced_owner_may_hold_a_subscription() {
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let owner = |sub: Option<FrameSubscription>| -> Retained<NSObject> {
+            let this = mtm.alloc::<SubscribedOwner>().set_ivars(std::cell::RefCell::new(sub));
+            let this: Retained<SubscribedOwner> = unsafe { msg_send_id![super(this), init] };
+            Retained::into_super(this)
+        };
+        set_owner(owner(Some(subscribe_every(Box::new(|| {})))));
+        assert!(is_running());
+        set_owner(owner(None));
+        assert!(!is_running(), "the old owner's subscription went with it");
+    }
 
     /// Start/stop against the real NSTimer source: no idle timer once the last
     /// subscriber leaves, and no display link off the main thread.

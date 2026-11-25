@@ -31,11 +31,16 @@ use crate::imp::MacosNode;
 ///
 /// Percent translates (`Transform::TranslateX(Length::Percent(_))`
 /// from `StyleRules`) are kept as percents and resolved against the
-/// view's own bounds every time the matrix is built
-/// ([`compose_layer_transform`]); the layout pass calls
-/// [`sync_transform_after_layout`] after each `setFrame:` so they follow
-/// the laid-out size. They live in the layer transform like every other
-/// translate, so a `transitions { transform }` animates them.
+/// view's own size. They rest in the view's FRAME, not its layer: AppKit's
+/// geometry (a control's mouse tracking, tracking areas, cursor rects,
+/// `convertPoint:`) walks frames and ignores layer transforms, so a button
+/// in a `translate(-50%, -50%)` box carried by the layer paints in one
+/// place and is clicked in another. The layer carries only what the frame
+/// does not hold ([`compose_layer_transform`]): nothing once the frame has
+/// the offset, all of it for a view whose frame origin something else owns
+/// (a placed portal panel, a virtualized row's root). A
+/// `transitions { transform }` still animates them: the frame moves at once
+/// and the layer plays the way there ([`apply_static_transform`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct AnimatedState {
     // STATIC transform components — written by `apply_static_transform` from
@@ -62,11 +67,16 @@ pub(crate) struct AnimatedState {
     /// value overrides the static `z_index`, as on web.
     pub(crate) anim_z_index: Option<f32>,
     /// Static percent translateX in 0..=100 units, `None` when the style
-    /// has none. Resolved against the view's width when the matrix is
-    /// built, and added to the px `translate_x` (CSS sums the entries of
-    /// a `translateX(100%) translateX(-24px)` list).
+    /// has none. Resolved against the view's width and added to the px
+    /// `translate_x` (CSS sums the entries of a
+    /// `translateX(100%) translateX(-24px)` list).
     pub(crate) static_translate_pct_x: Option<f32>,
     pub(crate) static_translate_pct_y: Option<f32>,
+    /// The part of the percent translate the view's frame origin holds.
+    pub(crate) frame_offset: (f64, f64),
+    /// A layout pass positions this view, so its frame origin may carry the
+    /// percent translate ([`take_frame_offset`]).
+    pub(crate) frame_owned: bool,
     /// The opacity the last style stated, `Some(1.0)` once it has been dropped;
     /// `None` while no style has stated one. See
     /// `backend_apple_core::style_reset::static_opacity_update`.
@@ -103,6 +113,8 @@ impl AnimatedState {
             anim_z_index: None,
             static_translate_pct_x: None,
             static_translate_pct_y: None,
+            frame_offset: (0.0, 0.0),
+            frame_owned: false,
             static_opacity: None,
             anim_opacity: false,
             presence_opacity: false,
@@ -139,10 +151,11 @@ pub(crate) fn apply_static_opacity(
 }
 
 /// Apply the static `transform: [...]` from a `StyleRules` to the
-/// view's transform state and its layer matrix. Called from
-/// `apply_style`. Percent translates resolve against the view's current
-/// bounds (0×0 before its first layout, which then resolves them in
-/// [`sync_transform_after_layout`]).
+/// view's transform state, its frame offset and its layer matrix. Called
+/// from `apply_style`. Percent translates resolve against the view's
+/// current bounds (0×0 before its first layout, which then places them).
+/// The frame moves here rather than in the next layout pass because a
+/// change of transform is not a change of layout, so no pass may follow.
 ///
 /// Resets the static slots first so removing the transform reverts
 /// to identity — matches the iOS behavior in
@@ -152,7 +165,7 @@ pub(crate) fn apply_static_transform(
     style: &runtime_shared::StyleRules,
     states: &mut AnimatedStateMap,
 ) {
-    use runtime_shared::{Length, Transform};
+    use runtime_shared::Transform;
     let view = node.as_view();
     let key = view as *const NSView as usize;
     let state = states
@@ -169,38 +182,28 @@ pub(crate) fn apply_static_transform(
         s.static_transform_seen = true;
         (seen, *s)
     };
-    let from_matrix = if seen_before && style.transform_transition.is_some() {
-        current_layer_transform(view)
+    let on_screen = if seen_before && style.transform_transition.is_some() {
+        OnScreen::of(view)
     } else {
         None
     };
     {
         let mut s = state.borrow_mut();
-        s.translate_x = 0.0;
-        s.translate_y = 0.0;
         s.scale_x = 1.0;
         s.scale_y = 1.0;
         s.rotate_z = 0.0;
-        s.static_translate_pct_x = None;
-        s.static_translate_pct_y = None;
+        let t = runtime_shared::StaticTranslate::of(style.transform.as_deref());
+        let (tx, ty) = (t.x.unwrap_or_default(), t.y.unwrap_or_default());
+        s.translate_x = tx.px;
+        s.translate_y = ty.px;
+        s.static_translate_pct_x = (tx.percent != 0.0).then_some(tx.percent);
+        s.static_translate_pct_y = (ty.percent != 0.0).then_some(ty.percent);
 
         if let Some(ops) = style.transform.as_ref() {
             for op in ops {
                 match op {
-                    Transform::TranslateX(Length::Px(v)) => s.translate_x = *v,
-                    Transform::TranslateY(Length::Px(v)) => s.translate_y = *v,
-                    Transform::TranslateX(Length::Percent(v)) => {
-                        s.static_translate_pct_x = Some(*v)
-                    }
-                    Transform::TranslateY(Length::Percent(v)) => {
-                        s.static_translate_pct_y = Some(*v)
-                    }
-                    // Neither `Auto` nor `Full` means anything on a
-                    // translate: `Auto` defers to layout, which a transform
-                    // has no part in, and `Full` is the corner-radius pill.
-                    // Both leave the identity translate.
-                    Transform::TranslateX(Length::Auto | Length::Full | Length::FitContent)
-                    | Transform::TranslateY(Length::Auto | Length::Full | Length::FitContent) => {}
+                    // Summed above.
+                    Transform::TranslateX(_) | Transform::TranslateY(_) => {}
                     Transform::Scale(v) => {
                         s.scale_x = *v;
                         s.scale_y = *v;
@@ -216,10 +219,11 @@ pub(crate) fn apply_static_transform(
             }
         }
     }
-    // Apply with current bounds (0×0 at mount — the layout pass
-    // resolves the percents again via `sync_transform_after_layout`).
-    let new_state = *state.borrow();
-    rebuild_transform(view, &new_state);
+    let (w, h) = view_size(view);
+    let changed = static_transform_changed(&old_state, &state.borrow(), w, h);
+    move_frame_offset(view, state, w, h);
+    let from_matrix = on_screen.map(|o| o.seen_from(view));
+    rebuild_transform(view, &state.borrow());
 
     // `transitions { transform: … }` — animate the change instead of
     // snapping, matching web's CSS `transition: transform` (the
@@ -227,40 +231,170 @@ pub(crate) fn apply_static_transform(
     // the final MODEL matrix; the CABasicAnimation drives the
     // presentation from the captured on-screen matrix to it.
     if let (Some(t), Some(from)) = (style.transform_transition.as_ref(), from_matrix) {
-        let (w, h) = view_size(view);
         if crate::transform_transition_policy::should_animate_static_transform(
             seen_before,
             true,
-            static_transform_changed(&old_state, &new_state, w, h),
+            changed,
         ) {
             animate_layer_transform(view, from, t);
         }
     }
 }
 
-/// Whether going from `old` to `new` moves the layer matrix of a `w`×`h`
-/// view. Compares the composed matrices, so a percent-only change
-/// (`translateX(100%)` → `translateX(0%)`) counts, and a percent change on
-/// a view with no size yet does not: both resolve to the same matrix, and
-/// the first layout places it without a slide.
+/// Whether going from `old` to `new` (with the frame not moved in between)
+/// moves a `w`×`h` view. Compares the composed matrices, so a percent-only
+/// change (`translateX(100%)` → `translateX(0%)`) counts, and a percent
+/// change on a view with no size yet does not: both resolve to the same
+/// matrix, and the first layout places it without a slide.
 fn static_transform_changed(old: &AnimatedState, new: &AnimatedState, w: f64, h: f64) -> bool {
     compose_layer_transform(old, w, h) != compose_layer_transform(new, w, h)
 }
+
+/// `state`'s percent translate on a `w`×`h` view.
+fn percent_offset(state: &AnimatedState, w: f64, h: f64) -> (f64, f64) {
+    (
+        state.static_translate_pct_x.map_or(0.0, |p| p as f64 / 100.0 * w),
+        state.static_translate_pct_y.map_or(0.0, |p| p as f64 / 100.0 * h),
+    )
+}
+
+/// `m` followed by a translate of `(dx, dy)` in the superview's space.
+fn translated_by(m: CATransform3D, dx: f64, dy: f64) -> CATransform3D {
+    CATransform3D { m41: m.m41 + dx, m42: m.m42 + dy, ..m }
+}
+
+/// The offset a layout pass adds to `view`'s laid-out origin: its percent
+/// translate against the `w`×`h` it is about to be given. Marks the frame as
+/// the translate's home. The pass then writes the frame and calls
+/// [`sync_transform_after_layout`].
+pub(crate) fn take_frame_offset(
+    view: &NSView,
+    states: &AnimatedStateMap,
+    w: f64,
+    h: f64,
+) -> (f64, f64) {
+    let key = view as *const NSView as usize;
+    let Some(state) = states.get(&key) else { return (0.0, 0.0) };
+    let mut s = state.borrow_mut();
+    s.frame_owned = true;
+    let next = percent_offset(&s, w, h);
+    let moved = (next.0 - s.frame_offset.0, next.1 - s.frame_offset.1);
+    s.frame_offset = next;
+    rebase_transition(view, moved);
+    next
+}
+
+/// `view`'s frame origin is not the layout pass's to place (a placed portal
+/// panel, a row's root): its percent translate stays in the layer.
+pub(crate) fn leave_frame_offset(view: &NSView, states: &AnimatedStateMap) {
+    let key = view as *const NSView as usize;
+    let Some(state) = states.get(&key) else { return };
+    let mut s = state.borrow_mut();
+    s.frame_owned = false;
+    s.frame_offset = (0.0, 0.0);
+}
+
+/// Move `view`'s frame origin to its current percent translate, when a layout
+/// pass placed it.
+fn move_frame_offset(view: &NSView, state: &RefCell<AnimatedState>, w: f64, h: f64) {
+    let moved = {
+        let mut s = state.borrow_mut();
+        if !s.frame_owned {
+            return;
+        }
+        let next = percent_offset(&s, w, h);
+        let moved = (next.0 - s.frame_offset.0, next.1 - s.frame_offset.1);
+        s.frame_offset = next;
+        moved
+    };
+    if moved == (0.0, 0.0) {
+        return;
+    }
+    let frame: objc2_foundation::CGRect = unsafe { msg_send![view, frame] };
+    let origin = objc2_foundation::CGPoint {
+        x: frame.origin.x + moved.0,
+        y: frame.origin.y + moved.1,
+    };
+    // No implicit position action: the transition, when there is one, is the
+    // layer's explicit animation.
+    unsafe {
+        let _: () = msg_send![objc2::class!(CATransaction), begin];
+        let _: () = msg_send![objc2::class!(CATransaction), setDisableActions: true];
+        let _: () = msg_send![view, setFrameOrigin: origin];
+        let _: () = msg_send![objc2::class!(CATransaction), commit];
+    }
+    rebase_transition(view, moved);
+}
+
+/// Keep a transform transition in flight on screen while `view`'s frame moves
+/// by `moved` under it: both its ends shift back by that much. Its end is the
+/// layer's model matrix, rebuilt by the caller; its start is shifted here. A
+/// copy keeps the begin time, so the timing carries on.
+fn rebase_transition(view: &NSView, moved: (f64, f64)) {
+    if moved == (0.0, 0.0) {
+        return;
+    }
+    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
+    let Some(layer) = layer else { return };
+    let key = objc2_foundation::NSString::from_str(TRANSITION_KEY);
+    let anim: Option<Retained<NSObject>> = unsafe { msg_send_id![&layer, animationForKey: &*key] };
+    let Some(anim) = anim else { return };
+    let from: Option<Retained<NSObject>> = unsafe { msg_send_id![&anim, fromValue] };
+    let Some(from) = from else { return };
+    let from: CATransform3D = unsafe { msg_send![&from, CATransform3DValue] };
+    let from_val: Option<Retained<NSObject>> = unsafe {
+        msg_send_id![
+            objc2::class!(NSValue),
+            valueWithCATransform3D: translated_by(from, -moved.0, -moved.1)
+        ]
+    };
+    let Some(from_val) = from_val else { return };
+    // An animation on a layer is read-only; a copy is not.
+    let anim: Retained<NSObject> = unsafe { msg_send_id![&anim, copy] };
+    unsafe {
+        let _: () = msg_send![&anim, setFromValue: &*from_val];
+        let _: () = msg_send![&layer, addAnimation: &*anim, forKey: &*key];
+    }
+}
+
+/// The layer animation key of a static transform transition.
+const TRANSITION_KEY: &str = "idealyst-transform-transition";
 
 fn view_size(view: &NSView) -> (f64, f64) {
     let bounds: objc2_foundation::CGRect = unsafe { msg_send![view, bounds] };
     (bounds.size.width as f64, bounds.size.height as f64)
 }
 
-/// Read the CURRENT on-screen transform of `view`'s layer: the
-/// presentation layer's matrix while an animation is in flight
-/// (drawer reversed mid-slide), else the model value.
-fn current_layer_transform(view: &NSView) -> Option<CATransform3D> {
-    let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
-    let layer = layer?;
-    let pres: Option<Retained<NSObject>> = unsafe { msg_send_id![&layer, presentationLayer] };
-    let src = pres.unwrap_or(layer);
-    Some(unsafe { msg_send![&src, transform] })
+/// Where `view` is on screen: the presentation layer's matrix and position
+/// while it has one (a drawer reversed mid-slide is where it was drawn), else
+/// the model's. The position is part of it because the frame holds the
+/// percent translate, and a frame moved earlier in this turn is not drawn
+/// there yet.
+struct OnScreen {
+    matrix: CATransform3D,
+    position: objc2_foundation::CGPoint,
+}
+
+impl OnScreen {
+    fn of(view: &NSView) -> Option<Self> {
+        let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
+        let layer = layer?;
+        let pres: Option<Retained<NSObject>> = unsafe { msg_send_id![&layer, presentationLayer] };
+        let src = pres.unwrap_or(layer);
+        Some(unsafe {
+            Self { matrix: msg_send![&src, transform], position: msg_send![&src, position] }
+        })
+    }
+
+    /// The matrix that paints the same place from `view`'s frame as it is now.
+    fn seen_from(&self, view: &NSView) -> CATransform3D {
+        let layer: *mut NSObject = unsafe { msg_send![view, layer] };
+        if layer.is_null() {
+            return self.matrix;
+        }
+        let now: objc2_foundation::CGPoint = unsafe { msg_send![layer, position] };
+        translated_by(self.matrix, self.position.x - now.x, self.position.y - now.y)
+    }
 }
 
 /// Attach a `CABasicAnimation(keyPath: "transform")` running `from` →
@@ -301,13 +435,14 @@ fn animate_layer_transform(
     if let Some(tf) = tf {
         let _: () = unsafe { msg_send![&anim, setTimingFunction: &*tf] };
     }
-    let key = NSString::from_str("idealyst-transform-transition");
+    let key = NSString::from_str(TRANSITION_KEY);
     let _: () = unsafe { msg_send![&layer, addAnimation: &*anim, forKey: &*key] };
 }
 
 /// Rebuild `view`'s layer matrix against the bounds the layout pass just
-/// gave it: percent translates resolve against the new size, and the
-/// scale/rotate center-pivot compensation follows the new center. Called
+/// gave it: what the frame does not hold of a percent translate resolves
+/// against the new size, and the scale/rotate center-pivot compensation
+/// follows the new center. Called
 /// after every `setFrame:` (see `sync_view_after_frame`). Writing the
 /// model value leaves an in-flight transition running toward it.
 pub(crate) fn sync_transform_after_layout(
@@ -552,15 +687,15 @@ fn center_pivot_offset(cx: f64, cy: f64, a: f64, b: f64, c: f64, d: f64) -> (f64
     (center_tx, center_ty)
 }
 
-/// The translate `state` places a `w`×`h` view at: px and percent
+/// The translate left to the layer of a `w`×`h` view: px and percent
 /// entries summed (percents resolve against the view's own size, CSS's
-/// reference box for `translate`), plus the animated translate.
+/// reference box for `translate`) plus the animated translate, less the
+/// part the frame holds.
 fn resolved_translate(state: &AnimatedState, w: f64, h: f64) -> (f64, f64) {
-    let pct_x = state.static_translate_pct_x.map_or(0.0, |p| p as f64 / 100.0 * w);
-    let pct_y = state.static_translate_pct_y.map_or(0.0, |p| p as f64 / 100.0 * h);
+    let (pct_x, pct_y) = percent_offset(state, w, h);
     (
-        (state.translate_x + state.anim_translate_x) as f64 + pct_x,
-        (state.translate_y + state.anim_translate_y) as f64 + pct_y,
+        (state.translate_x + state.anim_translate_x) as f64 + pct_x - state.frame_offset.0,
+        (state.translate_y + state.anim_translate_y) as f64 + pct_y - state.frame_offset.1,
     )
 }
 
@@ -726,9 +861,7 @@ pub(crate) fn restore_transforms_awaiting_layer_tree() {
 /// The center-pivot compensation mirrors `rebuild_transform`: AppKit
 /// layer-backed NSViews default `anchorPoint` to (0, 0), so without it a scale
 /// would grow from the top-left corner instead of the center (web / iOS pivot
-/// around the center). For a pure translate (`scale == 1`) the compensation is
-/// zero, so `m41`/`m42` are exactly the translate — and `view_layer_translate`
-/// (read by `hitTest:`) still reports the right offset.
+/// around the center).
 pub(crate) fn apply_presence_transform(view: &NSView, tx: f64, ty: f64, scale: f64) {
     let _: () = unsafe { msg_send![view, setWantsLayer: true] };
     let layer: Option<Retained<NSObject>> = unsafe { msg_send_id![view, layer] };
@@ -755,38 +888,176 @@ pub(crate) fn current_layer_scale(layer: &NSObject) -> f64 {
     t.m11
 }
 
-/// The `(x, y)` translate currently on `view`'s layer (`transform.m41`/`m42`):
-/// static px and percent translates, animated and presence translates alike.
-/// `hitTest:` uses this to make transform-positioned views clickable where they
-/// VISUALLY render instead of where their untransformed frame sits — AppKit
-/// hit-tests by frame and ignores the layer transform, unlike web/iOS. For a
-/// pure translate the center-pivot compensation is zero, so `m41`/`m42` are
-/// exactly the translate. Returns `(0, 0)` when the view isn't layer-backed.
-pub(crate) fn view_layer_translate(view: &NSView) -> (f64, f64) {
-    let layer: *mut objc2::runtime::AnyObject = unsafe { msg_send![view, layer] };
-    if layer.is_null() {
-        return (0.0, 0.0);
-    }
-    let t: CATransform3D = unsafe { msg_send![layer, transform] };
-    (t.m41, t.m42)
+/// `q` (from the view's frame origin, in its superview's space) through the
+/// layer matrix: where a point of the view paints.
+fn through(m: &CATransform3D, q: (f64, f64)) -> (f64, f64) {
+    (m.m11 * q.0 + m.m21 * q.1 + m.m41, m.m12 * q.0 + m.m22 * q.1 + m.m42)
 }
 
-/// The summed layer translates of `view` and every ancestor: how far the
-/// view paints from where its frame chain puts it. `convertRect:` /
-/// `convertPoint:` walk frames and ignore layer transforms, so a window
-/// rect or a local pointer position adds (or subtracts) this to land on
-/// the painted view — including when the translate is an ancestor's (a
-/// row inside a card slid by `translateX(100%)`).
-pub(crate) fn visual_translate_in_window(view: &NSView) -> (f64, f64) {
-    let (mut x, mut y) = view_layer_translate(view);
-    let mut cur: Option<Retained<NSView>> = unsafe { msg_send_id![view, superview] };
-    while let Some(v) = cur {
-        let (tx, ty) = view_layer_translate(&v);
-        x += tx;
-        y += ty;
-        cur = unsafe { msg_send_id![&*v, superview] };
+/// The inverse of [`through`]. A collapsed matrix (`scale: 0`) has none; its
+/// translate alone is undone.
+fn back_through(m: &CATransform3D, p: (f64, f64)) -> (f64, f64) {
+    let (x, y) = (p.0 - m.m41, p.1 - m.m42);
+    let det = m.m11 * m.m22 - m.m12 * m.m21;
+    if det.abs() < 1e-9 {
+        return (x, y);
     }
-    (x, y)
+    ((m.m22 * x - m.m21 * y) / det, (m.m11 * y - m.m12 * x) / det)
+}
+
+fn layer_transform(view: &NSView) -> CATransform3D {
+    let layer: *mut objc2::runtime::AnyObject = unsafe { msg_send![view, layer] };
+    if layer.is_null() {
+        return CATransform3D::IDENTITY;
+    }
+    unsafe { msg_send![layer, transform] }
+}
+
+/// The window's content view, when `view` is in a window.
+fn content_of(view: &NSView) -> Option<Retained<NSView>> {
+    let window: *mut objc2::runtime::AnyObject = unsafe { msg_send![view, window] };
+    if window.is_null() {
+        return None;
+    }
+    unsafe { msg_send_id![window, contentView] }
+}
+
+/// `p` (in `view`'s superview's space, by frames) through `view`'s layer
+/// transform: where it paints, still in the superview's space.
+fn painted_point(
+    m: &CATransform3D,
+    frame: objc2_foundation::CGRect,
+    p: objc2_foundation::CGPoint,
+) -> objc2_foundation::CGPoint {
+    let o = frame.origin;
+    let (x, y) = through(m, (p.x - o.x, p.y - o.y));
+    objc2_foundation::CGPoint { x: o.x + x, y: o.y + y }
+}
+
+/// The box holding four points (a rotated rect's corners).
+fn bounding_box(points: [objc2_foundation::CGPoint; 4]) -> objc2_foundation::CGRect {
+    let (mut x0, mut y0, mut x1, mut y1) =
+        (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in points {
+        x0 = x0.min(p.x);
+        y0 = y0.min(p.y);
+        x1 = x1.max(p.x);
+        y1 = y1.max(p.y);
+    }
+    objc2_foundation::CGRect {
+        origin: objc2_foundation::CGPoint { x: x0, y: y0 },
+        size: objc2_foundation::CGSize { width: x1 - x0, height: y1 - y0 },
+    }
+}
+
+fn corners(r: objc2_foundation::CGRect) -> [objc2_foundation::CGPoint; 4] {
+    let (x0, y0) = (r.origin.x, r.origin.y);
+    let (x1, y1) = (x0 + r.size.width, y0 + r.size.height);
+    let p = |x, y| objc2_foundation::CGPoint { x, y };
+    [p(x0, y0), p(x1, y0), p(x1, y1), p(x0, y1)]
+}
+
+/// `view`'s frame as it paints: the box its transformed frame covers, in its
+/// superview's space.
+pub(crate) fn painted_frame(view: &NSView) -> objc2_foundation::CGRect {
+    let frame: objc2_foundation::CGRect = unsafe { msg_send![view, frame] };
+    let m = layer_transform(view);
+    if m == CATransform3D::IDENTITY {
+        return frame;
+    }
+    bounding_box(corners(frame).map(|p| painted_point(&m, frame, p)))
+}
+
+/// The point of `view`'s superview's space that `view`'s untransformed frame
+/// chain has where `point` paints: the inverse of its layer transform, for a
+/// frame-based `hitTest:`. `None` when the view is collapsed to nothing
+/// (`scale: 0`) and so takes no point.
+pub(crate) fn unpainted_point(
+    view: &NSView,
+    point: objc2_foundation::CGPoint,
+) -> Option<objc2_foundation::CGPoint> {
+    let m = layer_transform(view);
+    if m == CATransform3D::IDENTITY {
+        return Some(point);
+    }
+    if (m.m11 * m.m22 - m.m12 * m.m21).abs() < 1e-9 {
+        return None;
+    }
+    let frame: objc2_foundation::CGRect = unsafe { msg_send![view, frame] };
+    let o = frame.origin;
+    let (x, y) = back_through(&m, (point.x - o.x, point.y - o.y));
+    Some(objc2_foundation::CGPoint { x: o.x + x, y: o.y + y })
+}
+
+/// Where `view` paints, in the window content view's space: the box its four
+/// corners cover, as `getBoundingClientRect` gives. `convertRect:` walks
+/// frames and ignores layer transforms, so each corner is mapped through
+/// every transform on the way up: a row inside a card slid by
+/// `translateX(-24px)`, or a button turned 180°, is found where it paints.
+/// `None` outside a window.
+pub(crate) fn painted_rect(view: &NSView) -> Option<objc2_foundation::CGRect> {
+    use objc2_foundation::{CGPoint, CGRect};
+    let content = content_of(view)?;
+    let bounds: CGRect = unsafe { msg_send![view, bounds] };
+    let mut pts = corners(bounds);
+    let mut cur: Retained<NSView> =
+        unsafe { Retained::retain(view as *const NSView as *mut NSView) }?;
+    while !std::ptr::eq(&*cur, &*content) {
+        // Under the window but not under its content view: the window's own
+        // chrome, which carries no transform of ours.
+        let sup = unsafe { cur.superview() };
+        let to: &NSView = sup.as_deref().unwrap_or(&content);
+        for p in &mut pts {
+            *p = unsafe { msg_send![&cur, convertPoint: *p, toView: to] };
+        }
+        let Some(sup) = sup.clone() else { break };
+        let m = layer_transform(&cur);
+        if m != CATransform3D::IDENTITY {
+            let frame: CGRect = unsafe { msg_send![&cur, frame] };
+            pts = pts.map(|p: CGPoint| painted_point(&m, frame, p));
+        }
+        cur = sup;
+    }
+    Some(bounding_box(pts))
+}
+
+/// The point of `view` (in its own space) painted at window-base `point`:
+/// the inverse of the walk in [`painted_rect`].
+pub(crate) fn point_in_painted_view(
+    view: &NSView,
+    point: objc2_foundation::CGPoint,
+) -> objc2_foundation::CGPoint {
+    use objc2_foundation::{CGPoint, CGRect};
+    let by_frames =
+        || -> CGPoint { unsafe { msg_send![view, convertPoint: point, fromView: std::ptr::null::<NSView>()] } };
+    let Some(content) = content_of(view) else { return by_frames() };
+    // Innermost first; walked back from the content view.
+    let mut chain: Vec<Retained<NSView>> = Vec::new();
+    let mut cur = unsafe { Retained::retain(view as *const NSView as *mut NSView) };
+    loop {
+        let Some(v) = cur else { return by_frames() };
+        if std::ptr::eq(&*v, &*content) {
+            break;
+        }
+        cur = unsafe { v.superview() };
+        chain.push(v);
+    }
+    if chain.iter().all(|v| layer_transform(v) == CATransform3D::IDENTITY) {
+        return by_frames();
+    }
+    let mut p: CGPoint = unsafe {
+        msg_send![&content, convertPoint: point, fromView: std::ptr::null::<NSView>()]
+    };
+    let mut sup: &NSView = &content;
+    for v in chain.iter().rev() {
+        let o: CGRect = unsafe { msg_send![&**v, frame] };
+        let (x, y) =
+            back_through(&layer_transform(v), (p.x - o.origin.x, p.y - o.origin.y));
+        let framed = CGPoint { x: o.origin.x + x, y: o.origin.y + y };
+        p = unsafe { msg_send![&**v, convertPoint: framed, fromView: sup] };
+        sup = v;
+    }
+    p
 }
 
 /// Apply a uniform scale (about the layer's anchor point) to `layer`'s
@@ -808,8 +1079,8 @@ mod tests {
     //! Pure transform math — no AppKit. The native `setTransform:` write and
     //! its transition are exercised by `tests/percent_translate_transition.rs`.
     use super::{
-        center_pivot_offset, compose_layer_transform, resolved_translate,
-        static_transform_changed, AnimatedState,
+        back_through, center_pivot_offset, compose_layer_transform, resolved_translate,
+        static_transform_changed, through, translated_by, AnimatedState,
     };
 
     fn translated(pct_x: Option<f32>, px_x: f32, pct_y: Option<f32>, px_y: f32) -> AnimatedState {
@@ -839,6 +1110,47 @@ mod tests {
         let s = translated(Some(-50.0), 0.0, Some(-50.0), 0.0);
         let m = compose_layer_transform(&s, 300.0, 120.0);
         assert_eq!((m.m41, m.m42), (-150.0, -60.0));
+    }
+
+    /// What the frame holds, the layer does not: a centred box whose frame
+    /// carries its whole percent translate has no layer translate, and a
+    /// style that drops the transform before the frame is moved back is
+    /// undone in the layer.
+    #[test]
+    fn the_layer_carries_only_what_the_frame_does_not_hold() {
+        let mut s = translated(Some(-50.0), 3.0, Some(-50.0), 0.0);
+        s.frame_offset = (-150.0, -60.0);
+        assert_eq!(resolved_translate(&s, 300.0, 120.0), (3.0, 0.0));
+        let mut dropped = translated(None, 0.0, None, 0.0);
+        dropped.frame_offset = (-150.0, -60.0);
+        assert_eq!(resolved_translate(&dropped, 300.0, 120.0), (150.0, 60.0));
+    }
+
+    /// A point through a translated, scaled and rotated matrix and back.
+    #[test]
+    fn a_painted_point_maps_back() {
+        let mut s = translated(None, 12.0, None, -7.0);
+        s.scale_x = 0.5;
+        s.scale_y = 2.0;
+        s.rotate_z = 30.0;
+        let m = compose_layer_transform(&s, 100.0, 40.0);
+        let q = (17.0, 23.0);
+        let b = back_through(&m, through(&m, q));
+        assert!((b.0 - q.0).abs() < 1e-9 && (b.1 - q.1).abs() < 1e-9, "{b:?}");
+        // A collapsed view has no inverse; nothing is NaN.
+        s.scale_x = 0.0;
+        let m = compose_layer_transform(&s, 100.0, 40.0);
+        let b = back_through(&m, (1.0, 1.0));
+        assert!(b.0.is_finite() && b.1.is_finite());
+    }
+
+    /// Shifting a transition's start by the frame's move keeps the point on
+    /// screen: frame + matrix is unchanged.
+    #[test]
+    fn a_moved_frame_shifts_the_matrix_back() {
+        let m = compose_layer_transform(&translated(None, 10.0, None, 0.0), 100.0, 40.0);
+        let shifted = translated_by(m, -300.0, 0.0);
+        assert_eq!(through(&shifted, (300.0, 0.0)), through(&m, (0.0, 0.0)));
     }
 
     /// An animated translate (`set_animated_f32`) adds on top of the static

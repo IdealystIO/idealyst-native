@@ -1,15 +1,15 @@
 //! Percent translates (`Transform::TranslateX(Length::Percent(_))`) against
-//! real AppKit: they resolve, against the view's laid-out size, into the
-//! layer transform (not the frame), compose with px translates, animate
-//! under `transitions { transform }`, land in the first commit that shows
-//! the view, and are hit-tested and measured where they paint.
+//! real AppKit: they resolve against the view's laid-out size into the
+//! frame, where AppKit's own geometry (control tracking, hover, cursors)
+//! sees them; compose with px translates; animate in the layer under
+//! `transitions { transform }`; are in place in the first commit that shows
+//! the view; and are hit-tested and measured where they paint.
 //!
 //! The app shape is a sliding card: `[TranslateX(Percent(100)),
 //! TranslateX(Px(-PEEK))]` ↔ `[TranslateX(Percent(0)), TranslateX(Px(0))]`
 //! with `transitions { transform: 200ms EaseOut }`, and a child that
-//! counter-slides with `TranslateX(Percent(-100))` + px. Web slides it; macOS
-//! put the percent part in the frame origin, which the layout pass writes
-//! with implicit actions off, so it snapped.
+//! counter-slides with `TranslateX(Percent(-100))` + px. Web slides it. The
+//! frame moves at once on macOS, so the layer has to play the way there.
 //!
 //! The windows are never ordered on screen. `harness = false`: AppKit views
 //! and windows are main-thread only, and libtest runs cases on worker threads.
@@ -98,6 +98,12 @@ mod imp {
         (t.m41, t.m42)
     }
 
+    /// Where `view` paints in its superview: its frame moved by its layer.
+    fn painted_at(view: &NSView) -> (f64, f64) {
+        let (f, t) = (frame_of(view), layer_translate(view));
+        (f.origin.x + t.0, f.origin.y + t.1)
+    }
+
     fn frame_of(view: &NSView) -> CGRect {
         unsafe { msg_send![view, frame] }
     }
@@ -120,7 +126,7 @@ mod imp {
     extern "C" fn after_commit(_o: *mut c_void, _a: usize, _i: *mut c_void) {
         WATCHED.with(|w| {
             if let Some(view) = w.borrow_mut().take() {
-                COMMITTED.with(|c| c.set(Some(layer_translate(&view))));
+                COMMITTED.with(|c| c.set(Some(painted_at(&view))));
             }
         });
     }
@@ -210,10 +216,12 @@ mod imp {
             )
         };
         unsafe { window.setReleasedWhenClosed(false) };
-        let content: Retained<NSView> =
-            unsafe { msg_send_id![mtm.alloc::<NSView>(), initWithFrame: rect] };
-        window.setContentView(Some(&content));
         let backend = Rc::new(RefCell::new(MacosBackend::new(mtm)));
+        // The backend's own (flipped) host root, so window rects are top-left.
+        let content = backend.borrow().create_host_root().expect("host root");
+        let bounds = CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: rect.size };
+        let _: () = unsafe { msg_send![&content, setFrame: bounds] };
+        window.setContentView(Some(&content));
         backend_macos::install_global_self(Rc::downgrade(&backend));
         let root = {
             let mut b = backend.borrow_mut();
@@ -250,6 +258,10 @@ mod imp {
         node
     }
 
+    fn restyle(m: &Mounted, node: &MacosNode, style: &Rc<StyleRules>) {
+        m.backend.borrow_mut().apply_style(node, style);
+    }
+
     fn restyle_and_layout(m: &Mounted, node: &MacosNode, style: &Rc<StyleRules>) {
         let mut b = m.backend.borrow_mut();
         b.apply_style(node, style);
@@ -263,11 +275,10 @@ mod imp {
     }
 
     /// REGRESSION (the Timely content card snapped on macOS, slid on web): a
-    /// percent + px translate under `transitions { transform }`. The percent
-    /// part sat in the frame origin, so the frame said x = 300 and the layer
-    /// only −40, and the change to `Percent(0)` animated the px part alone
-    /// while the frame jumped. The frame must be the layout box, the layer
-    /// must carry 300 − 40, and the change must animate the layer from there.
+    /// percent + px translate under `transitions { transform }`. Only the px
+    /// part is the layer's, so the change to `Percent(0)` animated that while
+    /// the frame jumped. The layer must start where the card painted, seen
+    /// from where the frame now is.
     fn regression_percent_translate_change_animates(m: &Mounted) {
         let card = create_styled(m, &boxed(0.0, 0.0, CARD_W, CARD_H, card_hidden(), true));
         insert_and_layout(m, &m.root, &card);
@@ -275,20 +286,105 @@ mod imp {
         let v = view_of(&card);
 
         let f = frame_of(&v);
-        assert!(close(f.origin.x, 0.0), "the frame is the layout box alone, got x = {}", f.origin.x);
+        assert!(close(f.origin.x, CARD_W as f64), "the frame holds the percent, got x = {}", f.origin.x);
         let t = model_transform(&v);
-        let hidden_x = (CARD_W - PEEK) as f64;
-        assert!(close(t.m41, hidden_x), "the layer carries 100% − PEEK = {hidden_x}, got {}", t.m41);
+        assert!(close(t.m41, -PEEK as f64), "the layer holds the px, got {}", t.m41);
 
-        restyle_and_layout(m, &card, &boxed(0.0, 0.0, CARD_W, CARD_H, card_shown(), true));
+        // No layout pass: a change of transform is not a change of layout.
+        restyle(m, &card, &boxed(0.0, 0.0, CARD_W, CARD_H, card_shown(), true));
+        let shown = |what: &str| {
+            let (key_path, from) = transition_animation(&v)
+                .expect("a percent translate change under `transitions { transform }` animates");
+            assert_eq!(key_path, "transform");
+            let hidden_x = (CARD_W - PEEK) as f64;
+            assert!(close(from.m41, hidden_x), "{what}: the slide starts where the card painted, got {}", from.m41);
+            let t = model_transform(&v);
+            assert!(close(t.m41, 0.0), "{what}: the model transform is the target, got m41 = {}", t.m41);
+            assert!(close(frame_of(&v).origin.x, 0.0), "{what}: the frame is at the target");
+        };
+        shown("after the restyle");
+        m.backend.borrow_mut().run_layout_pass_now();
+        shown("after a layout pass");
+        remove(m, &card);
+    }
 
-        let (key_path, from) = transition_animation(&v)
-            .expect("a percent translate change under `transitions { transform }` animates");
-        assert_eq!(key_path, "transform");
-        assert!(close(from.m41, hidden_x), "the slide starts where the card painted, got {}", from.m41);
-        let t = model_transform(&v);
-        assert!(close(t.m41, 0.0), "the model transform is the target, got m41 = {}", t.m41);
-        assert!(close(frame_of(&v).origin.x, 0.0), "the frame stays the layout box");
+    /// A slide in flight stays where it is on screen when its card is
+    /// reversed, and when a layout pass resizes the card under it.
+    fn a_slide_in_flight_survives_a_reversal_and_a_resize(m: &Mounted) {
+        // The frame's x plus the matrix's is where the card starts from.
+        let pct = |p: f32| vec![Transform::TranslateX(Length::Percent(p))];
+        let card = create_styled(m, &boxed(0.0, 0.0, CARD_W, CARD_H, pct(100.0), true));
+        insert_and_layout(m, &m.root, &card);
+        spin(0.05);
+        let v = view_of(&card);
+        restyle(m, &card, &boxed(0.0, 0.0, CARD_W, CARD_H, pct(0.0), true));
+        // Resting at 50% is the frame moving under the animation.
+        restyle(m, &card, &boxed(0.0, 0.0, CARD_W, CARD_H, pct(50.0), true));
+        let (_, from) = transition_animation(&v).expect("retargeted");
+        let painted = frame_of(&v).origin.x + from.m41;
+        assert!(close(painted, CARD_W as f64), "still starts at 100%, got {painted}");
+        // Twice as wide: 50% is now CARD_W, and the start has not moved.
+        restyle_and_layout(m, &card, &boxed(0.0, 0.0, CARD_W * 2.0, CARD_H, pct(50.0), true));
+        assert!(close(frame_of(&v).origin.x, CARD_W as f64), "50% of twice the width");
+        let (_, from) = transition_animation(&v).expect("still in flight");
+        let painted = frame_of(&v).origin.x + from.m41;
+        assert!(close(painted, CARD_W as f64), "the start holds across the resize, got {painted}");
+        assert!(close(model_transform(&v).m41, 0.0), "at rest the layer holds nothing");
+
+        // Reversed after some frames were drawn: it turns around where it is.
+        spin(0.05);
+        let drawn = {
+            let layer: *mut AnyObject = unsafe { msg_send![layer_of(&v), presentationLayer] };
+            let t: CATransform3D = unsafe { msg_send![layer, transform] };
+            let p: CGPoint = unsafe { msg_send![layer, position] };
+            p.x + t.m41
+        };
+        restyle(m, &card, &boxed(0.0, 0.0, CARD_W * 2.0, CARD_H, pct(-100.0), true));
+        let (_, from) = transition_animation(&v).expect("reversed");
+        let painted = frame_of(&v).origin.x + from.m41;
+        // The slide ran on for the instant between the two reads.
+        assert!((painted - drawn).abs() < 5.0, "turns around at {drawn}, got {painted}");
+        remove(m, &card);
+    }
+
+    /// A style that drops its percent transform goes back to its layout box,
+    /// with or without a layout pass after it.
+    fn dropping_the_transform_restores_the_layout_box(m: &Mounted) {
+        let pct = vec![Transform::TranslateX(Length::Percent(100.0))];
+        let card = create_styled(m, &boxed(20.0, 0.0, CARD_W, CARD_H, pct, false));
+        insert_and_layout(m, &m.root, &card);
+        let v = view_of(&card);
+        assert!(close(frame_of(&v).origin.x, 20.0 + CARD_W as f64));
+        restyle(m, &card, &boxed(20.0, 0.0, CARD_W, CARD_H, Vec::new(), false));
+        assert!(close(frame_of(&v).origin.x, 20.0), "at once");
+        m.backend.borrow_mut().run_layout_pass_now();
+        assert!(close(frame_of(&v).origin.x, 20.0), "and after a pass");
+        assert!(close(model_transform(&v).m41, 0.0));
+        remove(m, &card);
+    }
+
+    /// Inside a scaled ancestor a view is found where it paints: its offset
+    /// from the ancestor's centre scales with it.
+    fn regression_a_child_of_a_scaled_view_reports_its_painted_origin(m: &Mounted) {
+        let card = create_styled(
+            m,
+            &boxed(0.0, 0.0, 200.0, 100.0, vec![Transform::Scale(0.5)], false),
+        );
+        // Flush with the card's right edge: paints at 100 + 0.5 * (200 - 100).
+        let inner = create_styled(m, &boxed(200.0, 100.0, 20.0, 20.0, Vec::new(), false));
+        {
+            let mut b = m.backend.borrow_mut();
+            let mut parent = card.clone();
+            b.insert(&mut parent, inner.clone());
+        }
+        insert_and_layout(m, &m.root, &card);
+        let r = m.backend.borrow().absolute_frame(&inner).expect("mounted in a window");
+        assert!(
+            (r.x - 150.0).abs() < 0.01 && (r.y - 75.0).abs() < 0.01,
+            "the card's corner paints at (150, 75), got ({}, {})",
+            r.x,
+            r.y
+        );
         remove(m, &card);
     }
 
@@ -324,8 +420,8 @@ mod imp {
 
     /// The card's child counter-slides with `Percent(-100)` + PEEK, so it
     /// paints at the card's layout origin. Its window rect (overlay anchoring,
-    /// drag-and-drop, the robot's click point) must sum both translates;
-    /// `convertRect:` sees neither.
+    /// drag-and-drop, the robot's click point) must count both translates;
+    /// `convertRect:` sees only the percent parts.
     fn regression_counter_slid_child_reports_its_painted_rect(m: &Mounted) {
         let card = create_styled(m, &boxed(0.0, 0.0, CARD_W, CARD_H, card_hidden(), true));
         let inner = create_styled(
@@ -363,6 +459,90 @@ mod imp {
         remove(m, &card);
     }
 
+    /// What a click at root `(x, y)` lands on.
+    fn hit(m: &Mounted, x: f64, y: f64) -> Option<Retained<NSView>> {
+        let pt = CGPoint { x, y };
+        let root_v = view_of(&m.root);
+        let in_content: CGPoint =
+            unsafe { msg_send![&*m.content, convertPoint: pt, fromView: &*root_v] };
+        let in_super: CGPoint = match unsafe { m.content.superview() } {
+            Some(sup) => unsafe {
+                msg_send![&sup, convertPoint: in_content, fromView: &*m.content]
+            },
+            None => in_content,
+        };
+        unsafe { msg_send_id![&*m.content, hitTest: in_super] }
+    }
+
+    fn hits(m: &Mounted, x: f64, y: f64, node: &MacosNode) -> bool {
+        hit(m, x, y).is_some_and(|h| std::ptr::eq(&*h, &*view_of(node)))
+    }
+
+    /// REGRESSION (Timely's calendar button, turned 180°, couldn't be
+    /// pressed): the hit test undid only the translate of the layer's matrix.
+    /// Turning in place is translate · rotate · translate back, so a 36pt
+    /// button turned 180° has a (36, 36) translate and its clicks landed 36pt
+    /// off. Its rect was off by as much.
+    fn regression_a_rotated_or_scaled_view_is_hit_where_it_paints(m: &Mounted) {
+        let check = |what: &str, t: Vec<Transform>, inside: &[(f64, f64)], outside: &[(f64, f64)], rect: [f32; 4]| {
+            // A 40×20 box centred on (120, 110).
+            let v = create_styled(m, &boxed(100.0, 100.0, 40.0, 20.0, t, false));
+            insert_and_layout(m, &m.root, &v);
+            for &(x, y) in inside {
+                assert!(hits(m, x, y, &v), "{what}: ({x}, {y}) is on it, got {:?}", hit(m, x, y));
+            }
+            for &(x, y) in outside {
+                assert!(!hits(m, x, y, &v), "{what}: ({x}, {y}) is off it");
+            }
+            let r = m.backend.borrow().absolute_frame(&v).expect("in a window");
+            let got = [r.x, r.y, r.width, r.height];
+            assert!(
+                got.iter().zip(rect).all(|(a, b)| (a - b).abs() < 0.01),
+                "{what}: paints at {rect:?}, reports {got:?}"
+            );
+            remove(m, &v);
+        };
+        check(
+            "turned 180°",
+            vec![Transform::Rotate(180.0)],
+            &[(102.0, 102.0), (138.0, 118.0), (120.0, 110.0)],
+            &[(98.0, 110.0), (142.0, 110.0), (142.0, 122.0)],
+            [100.0, 100.0, 40.0, 20.0],
+        );
+        check(
+            "turned 90°",
+            vec![Transform::Rotate(90.0)],
+            &[(112.0, 92.0), (128.0, 128.0)],
+            &[(102.0, 110.0), (138.0, 110.0)],
+            [110.0, 90.0, 20.0, 40.0],
+        );
+        check(
+            "halved",
+            vec![Transform::Scale(0.5)],
+            &[(111.0, 106.0), (129.0, 114.0)],
+            &[(105.0, 110.0), (120.0, 103.0)],
+            [110.0, 105.0, 20.0, 10.0],
+        );
+        check("collapsed", vec![Transform::Scale(0.0)], &[], &[(120.0, 110.0)], [120.0, 110.0, 0.0, 0.0]);
+    }
+
+    /// A child moved out of its parent by its transform alone takes clicks
+    /// where it paints, as one laid out past the edge does.
+    fn a_child_translated_out_of_its_parent_takes_the_click(m: &Mounted) {
+        let card = create_styled(m, &boxed(100.0, 100.0, 40.0, 40.0, Vec::new(), false));
+        let t = vec![Transform::TranslateX(Length::Px(-60.0))];
+        let tab = create_styled(m, &boxed(0.0, 0.0, 40.0, 40.0, t, false));
+        {
+            let mut b = m.backend.borrow_mut();
+            let mut parent = card.clone();
+            b.insert(&mut parent, tab.clone());
+        }
+        insert_and_layout(m, &m.root, &card);
+        assert!(hits(m, 50.0, 120.0, &tab), "got {:?}", hit(m, 50.0, 120.0));
+        assert!(!hits(m, 120.0, 120.0, &tab), "not where it was laid out");
+        remove(m, &card);
+    }
+
     /// A click goes to the view where it paints: at `translateX(100%)` the
     /// card covers x in [300, 600), not its layout box [0, 300).
     fn percent_translated_view_is_hit_where_it_paints(m: &Mounted) {
@@ -371,19 +551,7 @@ mod imp {
         insert_and_layout(m, &m.root, &card);
         spin(0.05);
         let v = view_of(&card);
-        let root_v = view_of(&m.root);
-        let hit = |x: f64, y: f64| -> Option<Retained<NSView>> {
-            let pt = CGPoint { x, y };
-            let in_content: CGPoint =
-                unsafe { msg_send![&*m.content, convertPoint: pt, fromView: &*root_v] };
-            let in_super: CGPoint = match unsafe { m.content.superview() } {
-                Some(sup) => unsafe {
-                    msg_send![&sup, convertPoint: in_content, fromView: &*m.content]
-                },
-                None => in_content,
-            };
-            unsafe { msg_send_id![&*m.content, hitTest: in_super] }
-        };
+        let hit = |x: f64, y: f64| hit(m, x, y);
         let painted = hit(CARD_W as f64 + 50.0, 100.0);
         assert!(
             painted.as_deref().is_some_and(|h| std::ptr::eq(h, &*v)),
@@ -397,7 +565,7 @@ mod imp {
         remove(m, &card);
     }
 
-    /// A static `translate(-50%, -50%)` (idea-ui's centering) with no
+    /// A static `translate(-50%, -50%)` (centring a box on a point) with no
     /// transition is in place in the Core Animation commit that first shows
     /// the view, though AppKit builds the layer into the tree in that commit.
     /// The view mounts the way the scene mounts it: off the main queue.
@@ -438,20 +606,118 @@ mod imp {
             waited += 1;
         }
         let got = COMMITTED.with(|c| c.get()).expect("the commit probe fired");
+        let want = (300.0 - W as f64 / 2.0, 200.0 - H as f64 / 2.0);
         assert!(
-            close(got.0, -(W as f64) / 2.0) && close(got.1, -(H as f64) / 2.0),
-            "the first commit carries translate(-50%, -50%) = ({}, {}), got {got:?}",
-            -W / 2.0,
-            -H / 2.0
+            close(got.0, want.0) && close(got.1, want.1),
+            "the first commit paints the box centred at {want:?}, got {got:?}"
         );
         let node = watched.borrow_mut().take().expect("mounted");
         let f = frame_of(&view_of(&node));
         assert!(
-            close(f.origin.x, 300.0) && close(f.origin.y, 200.0),
-            "the frame is the layout box, got {:?}",
+            close(f.origin.x, want.0) && close(f.origin.y, want.1),
+            "the frame holds the percent, got {:?}",
             f.origin
         );
         remove(m, &node);
+    }
+
+    /// REGRESSION: a native control in a box centred with
+    /// `translate(-50%, -50%)` works where it paints. AppKit's own geometry
+    /// (an NSButton's tracking, hover tracking areas, cursor rects) walks
+    /// frames and ignores layer transforms, so with the percent in the layer
+    /// the button paints in one place and tracks the mouse in another.
+    fn regression_a_control_in_a_percent_centred_box_takes_the_click(m: &Mounted, transition: bool) {
+        use runtime_vocabulary::caps::ButtonOps;
+        const W: f32 = 200.0;
+        const H: f32 = 100.0;
+        let centre = vec![
+            Transform::TranslateX(Length::Percent(-50.0)),
+            Transform::TranslateY(Length::Percent(-50.0)),
+        ];
+        let boxed_node = create_styled(m, &boxed(300.0, 200.0, W, H, centre, transition));
+        let clicks = Rc::new(Cell::new(0u32));
+        let button = {
+            let clicks = clicks.clone();
+            let action = runtime_shared::Action {
+                method: "",
+                inputs: Vec::new(),
+                initial: Vec::new(),
+                output: None,
+                fire: Rc::new(move || clicks.set(clicks.get() + 1)),
+            };
+            let mut b = m.backend.borrow_mut();
+            let button =
+                b.create_button("Go", &action, None, None, &AccessibilityProps::default());
+            b.apply_style(&button, &boxed(0.0, 0.0, 80.0, 30.0, Vec::new(), false));
+            let mut parent = boxed_node.clone();
+            b.insert(&mut parent, button.clone());
+            button
+        };
+        insert_and_layout(m, &m.root, &boxed_node);
+        spin(0.05);
+
+        // Where AppKit's frame chain puts the box is where it paints.
+        let v = view_of(&boxed_node);
+        let bounds: CGRect = unsafe { msg_send![&v, bounds] };
+        let tracked: CGRect = unsafe { msg_send![&v, convertRect: bounds, toView: &*m.content] };
+        assert!(
+            close(tracked.origin.x, 300.0 - W as f64 / 2.0)
+                && close(tracked.origin.y, 200.0 - H as f64 / 2.0),
+            "hover and cursor rects sit on the painted box, got {:?}",
+            tracked.origin
+        );
+
+        // A real click at the button's painted centre.
+        let r = m.backend.borrow().absolute_frame(&button).expect("mounted in a window");
+        let at = CGPoint { x: (r.x + r.width / 2.0) as f64, y: (r.y + r.height / 2.0) as f64 };
+        let in_window: CGPoint =
+            unsafe { msg_send![&m.content, convertPoint: at, toView: std::ptr::null::<NSView>()] };
+        click(m, in_window);
+        assert_eq!(clicks.get(), 1, "the button fires where it paints");
+        remove(m, &boxed_node);
+    }
+
+    /// Mouse down at `at` (window space), with the up already queued for the
+    /// control's tracking loop.
+    fn click(m: &Mounted, at: CGPoint) {
+        use objc2::class;
+        const DOWN: usize = 1;
+        const UP: usize = 2;
+        let app: Retained<AnyObject> =
+            unsafe { msg_send_id![class!(NSApplication), sharedApplication] };
+        let number: isize = unsafe { msg_send![&m._window, windowNumber] };
+        let event = |kind: usize| -> Retained<AnyObject> {
+            unsafe {
+                msg_send_id![
+                    class!(NSEvent),
+                    mouseEventWithType: kind,
+                    location: at,
+                    modifierFlags: 0usize,
+                    timestamp: 0.0f64,
+                    windowNumber: number,
+                    context: std::ptr::null_mut::<AnyObject>(),
+                    eventNumber: 0isize,
+                    clickCount: 1isize,
+                    pressure: 1.0f32,
+                ]
+            }
+        };
+        let (down, up) = (event(DOWN), event(UP));
+        let in_super: CGPoint = unsafe {
+            match m.content.superview() {
+                Some(sup) => {
+                    msg_send![&sup, convertPoint: at, fromView: std::ptr::null::<NSView>()]
+                }
+                None => at,
+            }
+        };
+        let hit: Option<Retained<NSView>> =
+            unsafe { msg_send_id![&*m.content, hitTest: in_super] };
+        let hit = hit.expect("the click lands on a view");
+        unsafe {
+            let _: () = msg_send![&*app, postEvent: &*up, atStart: false];
+            let _: () = msg_send![&hit, mouseDown: &*down];
+        }
     }
 
     pub fn run() {
@@ -466,6 +732,13 @@ mod imp {
         regression_counter_slid_child_reports_its_painted_rect(&m);
         percent_translated_view_is_hit_where_it_paints(&m);
         regression_static_percent_translate_lands_in_first_commit(&m);
-        println!("percent_translate_transition: 6 passed");
+        regression_a_rotated_or_scaled_view_is_hit_where_it_paints(&m);
+        a_child_translated_out_of_its_parent_takes_the_click(&m);
+        a_slide_in_flight_survives_a_reversal_and_a_resize(&m);
+        dropping_the_transform_restores_the_layout_box(&m);
+        regression_a_child_of_a_scaled_view_reports_its_painted_origin(&m);
+        regression_a_control_in_a_percent_centred_box_takes_the_click(&m, false);
+        regression_a_control_in_a_percent_centred_box_takes_the_click(&m, true);
+        println!("percent_translate_transition: 13 passed");
     }
 }

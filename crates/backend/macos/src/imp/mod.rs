@@ -91,8 +91,8 @@ pub struct MacosBackend {
     /// host (e.g. mid-build) survive the layout walk.
     pub(crate) view_to_layout:
         HashMap<usize, (Retained<NSView>, runtime_layout::LayoutNode)>,
-    /// Last frame (origin + size) applied to each view by the apply-frames
-    /// pass, keyed by view pointer.
+    /// Last frame (origin + size, the percent-translate offset included)
+    /// applied to each view by the apply-frames pass, keyed by view pointer.
     /// The pass skips `setFrame:` + `sync_view_after_frame` for any view whose
     /// computed frame is unchanged since the previous pass — so a reactive event
     /// that reflows one subtree re-frames only that subtree, not all N views on
@@ -1301,9 +1301,16 @@ impl MacosBackend {
             };
             let origin = if pinned.contains(&key) || (keep_root_origin && key == root_key) {
                 let live: CGRect = unsafe { msg_send![&**view, frame] };
+                animated::leave_frame_offset(view, &self.animated_states);
                 live.origin
             } else {
-                CGPoint { x: frame.x as f64, y: frame.y as f64 }
+                let (dx, dy) = animated::take_frame_offset(
+                    view,
+                    &self.animated_states,
+                    frame.width as f64,
+                    frame.height as f64,
+                );
+                CGPoint { x: frame.x as f64 + dx, y: frame.y as f64 + dy }
             };
             let rect = CGRect {
                 origin,
@@ -2669,7 +2676,7 @@ impl MacosBackend {
         // Same for a dashed / dotted border's `CAShapeLayer` path and its
         // perimeter-fitted dash pattern — also after `sync_corner_radius`.
         border::sync_border_dash(view);
-        // Re-resolve percent transforms against the real bounds.
+        // Re-resolve transforms against the real bounds.
         animated::sync_transform_after_layout(view, &self.animated_states);
         // Feed `.container()` inline-size subscribers (container queries).
         handles::fire_layout_for_view(handles::view_key(&**view), w, h);
@@ -2799,15 +2806,20 @@ impl MacosBackend {
             let Some((view, _)) = self.view_to_layout.get(&key) else {
                 continue;
             };
-            // The frame is the layout box alone. Translates, percent ones
-            // included, live in the layer transform, which
-            // `sync_view_after_frame` resolves against this frame's size,
-            // so a `transitions { transform }` animates them; a frame
-            // write here would snap (implicit actions are off).
+            // The layout box, moved by the view's percent translate. That
+            // rests in the frame so AppKit's own geometry (control tracking,
+            // hover, cursors) follows it; a `transitions { transform }`
+            // plays in the layer. See `animated::AnimatedState`.
+            let (offset_x, offset_y) = animated::take_frame_offset(
+                view,
+                &self.animated_states,
+                frame.width as f64,
+                frame.height as f64,
+            );
             let rect = CGRect {
                 origin: objc2_foundation::CGPoint {
-                    x: frame.x as f64,
-                    y: frame.y as f64,
+                    x: frame.x as f64 + offset_x,
+                    y: frame.y as f64 + offset_y,
                 },
                 size: CGSize {
                     width: frame.width as f64,
@@ -3165,11 +3177,14 @@ impl MacosBackend {
         &self,
         done: Box<dyn FnOnce(Result<runtime_shared::Screenshot, String>)>,
     ) {
-        let result = match self.host_root.as_ref() {
-            Some(view) => screenshot::capture(view),
-            None => Err("no host root installed yet".into()),
+        let Some(view) = self.host_root.clone() else {
+            return done(Err("no host root installed yet".into()));
         };
-        done(result);
+        // On a later turn: the caller holds the backend's borrow, and a
+        // capture makes AppKit lay out, which mounts the rows a list then shows.
+        // Their mount borrows the backend ("RefCell already borrowed", an
+        // abort out of AppKit's frame).
+        runtime_shared::scheduling::schedule_microtask(move || done(screenshot::capture(&view)));
     }
 
     pub(crate) fn url_opener_impl(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
@@ -4412,14 +4427,10 @@ impl MacosBackend {
         // (`sync_scroll_document_views`), so a `Both` scroller pans in two
         // dimensions with no further setup. NSScrollView's API:
         //  - setHasVerticalScroller: / setHasHorizontalScroller:
+        //    (`set_axes`)
         //  - setAutohidesScrollers: true so the scrollers fade
         //    when not actively scrolling (modern macOS feel).
-        let _: () = unsafe {
-            msg_send![&scroll_view, setHasVerticalScroller: axis.scrolls_y()]
-        };
-        let _: () = unsafe {
-            msg_send![&scroll_view, setHasHorizontalScroller: axis.scrolls_x()]
-        };
+        scroll_chain::set_axes(&scroll_view, axis.scrolls_x(), axis.scrolls_y());
         let _: () = unsafe { msg_send![&scroll_view, setAutohidesScrollers: true] };
         // Force OVERLAY scrollers (NSScrollerStyleOverlay = 1) regardless of the
         // user's "Show scroll bars" system pref. With the legacy style the clip
@@ -5200,6 +5211,12 @@ impl MacosBackend {
                     Some(OverscrollBehavior::Contain | OverscrollBehavior::None)
                 );
                 scroll_chain::set_contain(view, contain);
+                // `scrollbar: Hidden`, unconditionally too, so a flip back to
+                // `Auto` shows the bars again.
+                scroll_chain::set_bars_hidden(
+                    view,
+                    matches!(style.scrollbar, Some(runtime_shared::ScrollbarVisibility::Hidden)),
+                );
             }
         }
 
@@ -5263,10 +5280,9 @@ impl MacosBackend {
             virtualizer::sync_item_z_for_child(view);
         }
 
-        // Static `transform: [...]` from the style, into the CALayer
-        // transform. Percent translates resolve against the current
-        // bounds (0×0 before the first layout); `sync_transform_after_layout`
-        // in the layout pass re-resolves them once frames are computed.
+        // Static `transform: [...]` from the style: percent translates into
+        // the frame origin (once a layout pass has placed the view), the
+        // rest into the CALayer transform.
         animated::apply_static_transform(node, style, &mut self.animated_states);
 
         // Push the framework's style into Taffy so flex props
