@@ -6022,6 +6022,7 @@ dependencies = [
  "render-wgpu",
  "runtime-server-shell-native",
  "runtime-shared",
+ "runtime-world",
  "wgpu",
  "winit",
 ]

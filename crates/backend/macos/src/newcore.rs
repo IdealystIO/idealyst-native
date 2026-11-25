@@ -221,8 +221,8 @@ impl NewCoreApp {
     /// Unmount: unhooks the flush driver (dispatch hook + world
     /// reference) and the viewport sink, then drops the `Realized`
     /// (cleanups fire, views detach from the live tree's point of view)
-    /// and the world. Primarily for tests; a windowed app forgets the
-    /// value instead.
+    /// and the world. A windowed app has [`stop_at_quit`](Self::stop_at_quit)
+    /// call it.
     pub fn stop(self) {
         // Never leave the user's cursor frozen or hidden past the app: drop
         // the pointer source (releases a held lock, shows the cursor).
@@ -233,6 +233,52 @@ impl NewCoreApp {
         set_viewport_sink(None);
         set_flush_world(None);
         drop(self);
+    }
+
+    /// Keep the app mounted until it is told to terminate, then [`stop`]
+    /// it: at `NSApplicationWillTerminateNotification`, the last point
+    /// before `exit` where everything the teardown reaches is alive. `exit`
+    /// destroys the main thread's thread-locals one at a time, and cleanups
+    /// run from there abort on the first one already gone.
+    ///
+    /// A quit asked for from inside a flush (an effect calling it) can't
+    /// tear down the world that is running it; that one ends without
+    /// cleanups, as a process killed by the system does.
+    ///
+    /// [`stop`]: Self::stop
+    pub fn stop_at_quit(self) {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send, msg_send_id};
+        use objc2_foundation::{NSNotification, NSString};
+        use std::ptr::NonNull;
+
+        runtime_world::leave_worlds_at_thread_end();
+        let app = RefCell::new(Some(self));
+        let block = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+            let busy = app.borrow().as_ref().is_some_and(|a| {
+                runtime_world::is_flushing() || a._backend.try_borrow_mut().is_err()
+            });
+            if busy {
+                return;
+            }
+            let Some(app) = app.borrow_mut().take() else { return };
+            backend_apple_core::crash::abort_on_panic("app teardown at quit", || app.stop());
+        });
+        let name = NSString::from_str("NSApplicationWillTerminateNotification");
+        // The center retains the token, and the token the block, for as long
+        // as the observation stands, which is the process's life.
+        unsafe {
+            let center: Retained<AnyObject> =
+                msg_send_id![class!(NSNotificationCenter), defaultCenter];
+            let _token: Option<Retained<AnyObject>> = msg_send_id![
+                &center,
+                addObserverForName: &*name,
+                object: std::ptr::null::<AnyObject>(),
+                queue: std::ptr::null::<AnyObject>(),
+                usingBlock: &*block
+            ];
+        }
     }
 }
 

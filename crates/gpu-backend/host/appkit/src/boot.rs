@@ -158,8 +158,8 @@ where
     backend_apple_core::scheduler::begin_mount_buffering();
     let app_state: NewCoreApp = backend_macos::newcore::start(backend, register, build);
     backend_apple_core::scheduler::end_mount_buffering();
-    // The app lives until the process exits with the run loop.
-    std::mem::forget(app_state);
+    // The app lives until it is told to terminate, and is unmounted then.
+    app_state.stop_at_quit();
     // Scheduler installed, app mounted, buffering closed: the point a
     // wrapper's deferred start (the Robot bridge) can schedule its poll.
     crate::run_main_loop_start_hooks();

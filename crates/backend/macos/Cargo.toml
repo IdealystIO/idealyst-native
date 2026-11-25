@@ -332,3 +332,10 @@ harness = false
 [[test]]
 name = "raf_display_rate"
 harness = false
+
+# Quitting with the app still mounted: re-runs itself as a child process that
+# exits for real and reads how it ended. No window on screen. Main-thread
+# only, like `focus_attach`.
+[[test]]
+name = "quit_teardown"
+harness = false

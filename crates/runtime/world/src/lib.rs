@@ -892,6 +892,19 @@ pub fn is_flushing() -> bool {
     Active::is_flushing()
 }
 
+/// Let the worlds still registered when this thread ends go with it: no
+/// cleanup runs and nothing is dropped.
+///
+/// For a windowed host's main thread, whose end is the process's. A thread's
+/// thread-locals are destroyed one at a time, so by the time the kernel's is
+/// reached others are gone, and any cleanup or captured value that reaches
+/// one panics inside a destructor: the app aborts as it quits. A host runs
+/// the app's teardown itself, before the process exits; this is what is left
+/// when it can't (`std::process::exit` from author code).
+pub fn leave_worlds_at_thread_end() {
+    native::leave_worlds_at_thread_end();
+}
+
 /// True while a live world is ambient on this thread (inside
 /// [`World::enter`]) — i.e. while creation-side APIs (`signal()`,
 /// `effect()`, `provide()`/`inject()`) are legal.

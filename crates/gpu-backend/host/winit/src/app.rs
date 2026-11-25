@@ -392,7 +392,9 @@ where
         // `start` installs the flush driver (dispatch hook +
         // FLUSH_WORLD) + the viewport sink and returns the retained
         // app, which lives until the process exits with the event loop
-        // (window close calls `process::exit`).
+        // (window close calls `process::exit`), so nothing is torn down from
+        // the thread-locals' destructors, where a cleanup can abort.
+        runtime_world::leave_worlds_at_thread_end();
         let app = render_wgpu::newcore::start(host.backend().clone(), register, build);
         std::mem::forget(app);
     });

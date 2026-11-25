@@ -96,6 +96,9 @@ struct Tls {
     /// lookups take.
     cached_id: Cell<WorldId>,
     cached_arena: RefCell<Option<Rc<WorldArena>>>,
+    /// The thread's end is the process's: see
+    /// [`leave_worlds_at_thread_end`].
+    leave_at_end: bool,
 }
 
 impl Tls {
@@ -127,6 +130,11 @@ impl Tls {
 /// destroyed, as it was at a post-teardown drop.
 impl Drop for Tls {
     fn drop(&mut self) {
+        if self.leave_at_end {
+            std::mem::forget(std::mem::take(&mut self.worlds));
+            std::mem::forget(self.cached_arena.take());
+            return;
+        }
         let worlds: Vec<Rc<WorldArena>> = self.worlds.values().cloned().collect();
         for arena in worlds {
             let datas: Vec<Rc<EffectData>> =
@@ -150,7 +158,13 @@ runtime_tls::thread_local! {
         flush_depth: 0,
         cached_id: Cell::new(0),
         cached_arena: RefCell::new(None),
+        leave_at_end: false,
     });
+}
+
+/// See the crate root's `leave_worlds_at_thread_end`.
+pub(crate) fn leave_worlds_at_thread_end() {
+    with_tls(|t| t.leave_at_end = true);
 }
 
 /// Short-lived TLS access. Never call user code inside `f` — the RefCell

@@ -3001,6 +3001,49 @@ fn regression_world_dropped_during_thread_teardown_is_quiet() {
     assert_eq!(cleaned.load(Ordering::SeqCst), 1, "the effect's cleanup ran, once");
 }
 
+/// A windowed host's main thread ends with the process: nothing is run from
+/// the kernel thread-local's destructor, where a cleanup that reaches a
+/// thread-local already destroyed panics and aborts the quitting app.
+///
+/// The app's thread-local is touched after the kernel's, so it is destroyed
+/// first. Natively only: the bridged engine's worlds are the host's.
+#[cfg(not(feature = "loopback-engine"))]
+#[test]
+fn regression_worlds_left_at_thread_end_run_nothing() {
+    runtime_tls::thread_local! {
+        static APP: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    }
+    struct Held(std::sync::Arc<AtomicU32>);
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let ran = std::sync::Arc::new(AtomicU32::new(0));
+    let c2 = ran.clone();
+    let joined = std::thread::spawn(move || {
+        let w = World::new();
+        w.enter(|| {
+            effect(move || {
+                APP.with(|a| a.borrow_mut().push(1));
+                let held = Held(c2.clone());
+                on_cleanup(move || {
+                    c2_note(&held);
+                });
+            });
+        });
+        crate::leave_worlds_at_thread_end();
+        std::mem::forget(w);
+    })
+    .join();
+    fn c2_note(held: &Held) {
+        held.0.fetch_add(1, Ordering::SeqCst);
+        APP.with(|a| a.borrow_mut().push(2));
+    }
+    assert!(joined.is_ok());
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "no cleanup, no drop");
+}
+
 /// Regression: on the bridged engine a context type's `Clone` ran under the
 /// bundle-side table borrow, so a `Clone` that reads a signal it holds
 /// panicked "already borrowed" — on the bridge only; natively it works.
