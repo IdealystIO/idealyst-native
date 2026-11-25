@@ -188,7 +188,10 @@ fn dev_env_vars(
     // macOS / terminal / iOS-sim (they share the host's network stack);
     // run-android `adb reverse`s the port, so the device's loopback
     // reaches it too.
-    if let Ok(m) = parse_manifest(project_dir) {
+    // `--server-url` is an address the caller chose.
+    if let Some(url) = &args.server_url {
+        out.push(("IDEALYST_SERVER_URL".to_string(), url.trim_end_matches('/').to_string()));
+    } else if let Ok(m) = parse_manifest(project_dir) {
         if m.app.server_bin.is_some() || m.app.server_manifest.is_some() {
             out.push((
                 "IDEALYST_SERVER_URL".to_string(),
@@ -573,6 +576,21 @@ pub struct Args {
     /// into swap. Use this there; keep the default on a laptop.
     #[arg(long)]
     pub shared_target: bool,
+
+    /// The project's server (`server_bin` / `server_manifest`) already runs
+    /// elsewhere, in a container or another terminal: don't build or start
+    /// it. Apps still get `IDEALYST_SERVER_URL`, at `--port` or the manifest's
+    /// `server_port` on this machine; `--server-url` names another address.
+    /// Not with `--web`, whose page the server serves.
+    #[arg(long)]
+    pub no_server: bool,
+
+    /// The address of the project's server, for apps to call: advertised as
+    /// `IDEALYST_SERVER_URL`, and no server is built or started
+    /// (`--no-server`). A simulator or emulator app reaches a loopback
+    /// address of this machine as is.
+    #[arg(long, value_name = "URL")]
+    pub server_url: Option<String>,
 
     /// Run beside this project's own session instead of being refused by
     /// it: everything the session writes moves under `isolated/<KEY>/` —
@@ -1074,6 +1092,9 @@ pub fn run(mut args: Args) -> Result<()> {
     // shape ("missing targets") regardless of how they invoked.
     let manifest = parse_manifest(&dir)?;
     let active_targets = resolve_targets(&args, &manifest.app.targets)?;
+    if let Some(why) = server_flags_refused(&args, &active_targets) {
+        anyhow::bail!(why);
+    }
     if let Some(why) = isolation_refused(&args, &manifest, &active_targets) {
         anyhow::bail!(why);
     }
@@ -1155,7 +1176,7 @@ pub fn run(mut args: Args) -> Result<()> {
             Err(e) => crate::dlog!("dev", "cannot write {}: {e}", server_log.display()),
         }
     }
-    let server_owner = session_server_owner(backend_declared, &active_targets);
+    let server_owner = session_server_owner(backend_declared, server_elsewhere(&args), &active_targets);
     let session_server = (server_owner == ServerOwner::WebLauncher).then(|| {
         dev_events::SessionServer::named(server_display_name(&dir, &manifest))
             .with_log_file(server_log.display().to_string())
@@ -1681,20 +1702,22 @@ pub fn run(mut args: Args) -> Result<()> {
     if let Some(pid) = *macos_app_pid.lock().unwrap() {
         watch_pids.push(pid);
     }
-    // Native-only backend server (web-inclusive sessions run it inside
-    // the blocking web worker instead). Its exit ends the dev session.
-    if let Some(pid) = backend_pid {
-        watch_pids.push(pid);
-    }
-    if !watch_pids.is_empty() {
-        wait_for_any_child_exit(&children, &watch_pids);
+    // Native-only backend server (web-inclusive sessions run it inside the
+    // blocking web worker instead). Its exit is reported, and ends the dev
+    // session only when nothing else holds it: the apps and the robot relay
+    // are still worth having, and the server may run elsewhere.
+    let robot_held = robot_relay.is_some();
+    let server = backend_pid.filter(|_| robot_held || !watch_pids.is_empty());
+    watch_pids.extend(backend_pid.filter(|_| server.is_none()));
+    if !watch_pids.is_empty() || server.is_some() {
+        wait_for_any_child_exit(&children, &watch_pids, server);
         if let Ok(mut guard) = children.lock() {
             for mut child in guard.drain(..) {
                 let _ = child.kill();
                 let _ = child.wait();
             }
         }
-    } else if robot_relay.is_some() {
+    } else if robot_held {
         // A local-mode iOS/Android session launches-and-returns with nothing to
         // wait on, but the dev-process-hosted robot relay must outlive the
         // launch so the sim/emulator app can dial in and stay introspectable.
@@ -1720,7 +1743,7 @@ pub fn run(mut args: Args) -> Result<()> {
 /// server for that reason — they only hand their app the URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServerOwner {
-    /// No server declared (or none to run).
+    /// No server declared, or it runs elsewhere (`--no-server`).
     None,
     /// The web launcher ([`launch_web_with_backend`]): the server serves
     /// the page's bundle and API same-origin, and is rebuilt and restarted
@@ -1731,8 +1754,32 @@ enum ServerOwner {
     Session,
 }
 
-fn session_server_owner(backend_declared: bool, targets: &[Target]) -> ServerOwner {
-    if !backend_declared {
+/// Whether the project's server runs outside this session (`--no-server`,
+/// `--server-url`).
+fn server_elsewhere(args: &Args) -> bool {
+    args.no_server || args.server_url.is_some()
+}
+
+/// Why `--no-server` / `--server-url` cannot run this session, if they
+/// cannot.
+fn server_flags_refused(args: &Args, targets: &[Target]) -> Option<String> {
+    if !server_elsewhere(args) {
+        return None;
+    }
+    let flag = if args.server_url.is_some() { "--server-url" } else { "--no-server" };
+    if targets.contains(&Target::Web) {
+        return Some(format!(
+            "`{flag}` can't run a `--web` session: the project's server serves the page, so the \
+             session has to run it. Use it for native targets, beside the server you already run."
+        ));
+    }
+    let url = args.server_url.as_deref()?;
+    (!url.starts_with("http://") && !url.starts_with("https://"))
+        .then(|| format!("`--server-url {url}` is not an http:// or https:// address"))
+}
+
+fn session_server_owner(backend_declared: bool, elsewhere: bool, targets: &[Target]) -> ServerOwner {
+    if !backend_declared || elsewhere {
         ServerOwner::None
     } else if targets.contains(&Target::Web) {
         ServerOwner::WebLauncher
@@ -1870,11 +1917,12 @@ fn forward_child_output(child: &mut Child, source: &'static str) {
 ///
 /// The watched pids are the long-lived "session anchors" — the
 /// runtime-server host and/or the macOS app. The first to exit ends the
-/// wait, and the caller then drains+kills the rest. Returns early if a
+/// wait, and the caller then drains+kills the rest. `server` is not one: its
+/// exit is reported once and the wait goes on. Returns early if a
 /// watched pid is no longer tracked in `children` at all — that means the
 /// Ctrl-C handler already drained the vec (the process is exiting
 /// underneath us).
-fn wait_for_any_child_exit(children: &Arc<Mutex<Vec<Child>>>, watch_pids: &[u32]) {
+fn wait_for_any_child_exit(children: &Arc<Mutex<Vec<Child>>>, watch_pids: &[u32], mut server: Option<u32>) {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(250));
         let mut guard = match children.lock() {
@@ -1883,6 +1931,23 @@ fn wait_for_any_child_exit(children: &Arc<Mutex<Vec<Child>>>, watch_pids: &[u32]
             // nothing more we can sensibly wait on; let `main` return.
             Err(_) => return,
         };
+        if let Some(pid) = server {
+            match guard.iter_mut().find(|c| c.id() == pid).map(|c| c.try_wait()) {
+                Some(Ok(Some(status))) => {
+                    server = None;
+                    dev_events::global().error(
+                        "dev backend",
+                        format!(
+                            "the server exited ({status}); the session goes on without it. Where it \
+                             runs elsewhere, start the session with --no-server (or --server-url)."
+                        ),
+                    );
+                }
+                Some(Ok(None)) => {}
+                // Drained by the Ctrl-C handler.
+                Some(Err(_)) | None => return,
+            }
+        }
         for pid in watch_pids {
             match guard.iter_mut().find(|c| c.id() == *pid) {
                 // Still tracked — check whether it has exited.
@@ -5847,6 +5912,8 @@ impl Args {
             features: self.features.clone(),
             inspect: false,
             shared_target: self.shared_target,
+            no_server: self.no_server,
+            server_url: self.server_url.clone(),
             isolated: self.isolated.clone(),
             stream_port: self.stream_port,
             headless_client: self.headless_client,
@@ -6673,6 +6740,38 @@ mod tests {
         assert_eq!(url, "http://127.0.0.1:9123");
     }
 
+    /// A server that runs elsewhere is not started, and the apps get its
+    /// address: the port's, or the one given.
+    #[test]
+    fn a_server_elsewhere_is_advertised_and_not_started() {
+        use Target::*;
+        let (tmp, _manifest) = manifest_with(
+            "[package.metadata.idealyst.app]\nserver_bin = \"server\"\nserver_port = 3000\n",
+        );
+        let url_of = |args: &Args| {
+            dev_env_vars(tmp.path(), args, "demo-app", None, None)
+                .into_iter()
+                .find(|(k, _)| k == "IDEALYST_SERVER_URL")
+                .map(|(_, v)| v)
+        };
+        for (flags, url) in [
+            (&["--no-server"][..], "http://127.0.0.1:3000"),
+            (&["--no-server", "--port", "3100"], "http://127.0.0.1:3100"),
+            (&["--server-url", "http://10.0.0.5:8000/"], "http://10.0.0.5:8000"),
+        ] {
+            let args = parse_dev(&[&["idealyst", "dev", "--ios", "--local"][..], flags].concat());
+            assert_eq!(session_server_owner(true, server_elsewhere(&args), &[Ios]), ServerOwner::None);
+            assert_eq!(url_of(&args).as_deref(), Some(url), "{flags:?}");
+            assert_eq!(url_of(&args.shallow_clone()).as_deref(), Some(url), "each platform launches from a clone");
+            assert!(server_flags_refused(&args, &[Ios]).is_none());
+            assert!(server_flags_refused(&args, &[Web, Ios]).is_some(), "the server serves the page");
+        }
+        let bad = parse_dev(&["idealyst", "dev", "--ios", "--server-url", "localhost:3000"]);
+        assert!(server_flags_refused(&bad, &[Ios]).is_some());
+        let plain = parse_dev(&["idealyst", "dev", "--web"]);
+        assert!(server_flags_refused(&plain, &[Web]).is_none());
+    }
+
     /// Regression (CrewForge, CLI 1.23.0): `dev --ios --local --port 3620`
     /// advertised `IDEALYST_SERVER_URL` but the simulator launch passed only
     /// the relay URL and the test-driver flag, so the app's
@@ -6716,11 +6815,11 @@ mod tests {
     #[test]
     fn regression_one_session_builds_one_server_for_every_platform() {
         use Target::*;
-        assert_eq!(session_server_owner(true, &[Web, Ios]), ServerOwner::WebLauncher);
-        assert_eq!(session_server_owner(true, &[Ios, Web, Android]), ServerOwner::WebLauncher);
-        assert_eq!(session_server_owner(true, &[Ios, Android]), ServerOwner::Session);
-        assert_eq!(session_server_owner(true, &[Ios]), ServerOwner::Session);
-        assert_eq!(session_server_owner(false, &[Web, Ios]), ServerOwner::None);
+        assert_eq!(session_server_owner(true, false, &[Web, Ios]), ServerOwner::WebLauncher);
+        assert_eq!(session_server_owner(true, false, &[Ios, Web, Android]), ServerOwner::WebLauncher);
+        assert_eq!(session_server_owner(true, false, &[Ios, Android]), ServerOwner::Session);
+        assert_eq!(session_server_owner(true, false, &[Ios]), ServerOwner::Session);
+        assert_eq!(session_server_owner(false, false, &[Web, Ios]), ServerOwner::None);
 
         let src = include_str!("dev.rs");
         let body = |name: &str| -> &str {
@@ -7467,7 +7566,7 @@ mod tests {
         let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(vec![child]));
 
         let start = Instant::now();
-        wait_for_any_child_exit(&children, &[pid]);
+        wait_for_any_child_exit(&children, &[pid], None);
         let elapsed = start.elapsed();
 
         assert!(
@@ -7488,11 +7587,26 @@ mod tests {
     fn wait_for_host_exit_returns_when_host_not_tracked() {
         let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(Vec::new()));
         let start = Instant::now();
-        wait_for_any_child_exit(&children, &[999_999]);
+        wait_for_any_child_exit(&children, &[999_999], None);
         assert!(
             start.elapsed() < Duration::from_secs(2),
             "a missing host pid must return promptly, not hang",
         );
+    }
+
+    /// REGRESSION (Timely): a server that could not start (its database is
+    /// only reachable inside a container) ended the whole session, and the
+    /// robot relay with it, though the app had built and launched. The
+    /// session outlives the server and ends with its anchor.
+    #[test]
+    fn regression_the_session_outlives_its_server() {
+        let server = Command::new("sleep").arg("0.1").spawn().expect("spawn sleep");
+        let anchor = Command::new("sleep").arg("1.2").spawn().expect("spawn sleep");
+        let (server_pid, anchor_pid) = (server.id(), anchor.id());
+        let children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(vec![server, anchor]));
+        let start = Instant::now();
+        wait_for_any_child_exit(&children, &[anchor_pid], Some(server_pid));
+        assert!(start.elapsed() >= Duration::from_millis(1000), "ended with the server: {:?}", start.elapsed());
     }
 
     /// Regression guard for the dev-bundle-in-production bug: `idealyst
