@@ -2625,3 +2625,96 @@ fn exit_hold_is_released_when_the_region_is_destroyed() {
     assert!(rig.take_ops().iter().any(|o| o == "cleanup held"), "the held scope was freed");
     clock.fire();
 }
+
+// ---------------------------------------------------------------------------
+// Region liveness and teardown brackets
+// ---------------------------------------------------------------------------
+
+/// What a branch's build sees as its enclosing region outlives the branch
+/// being switched out, and ends when the region itself goes.
+#[test]
+fn an_enclosing_region_outlives_its_swaps_and_ends_with_its_owner() {
+    for splice in [false, true] {
+        let rig = Rig::new(splice);
+        let seen: Rc<RefCell<Vec<crate::RegionAlive>>> = Rc::new(RefCell::new(Vec::new()));
+        let (s, shown) = rig.world.enter(|| (signal(true), signal(true)));
+        let seen_b = seen.clone();
+        let shell = rig.realize(v(vec![dyn_keyed(
+            move || shown.get(),
+            move |&on| {
+                if !on {
+                    return t("gone");
+                }
+                let seen_b = seen_b.clone();
+                dyn_keyed(
+                    move || s.get(),
+                    move |&on| {
+                        seen_b.borrow_mut().push(crate::enclosing_region().expect("built inside a region"));
+                        t(if on { "on" } else { "off" })
+                    },
+                )
+            },
+        )]));
+        s.set(false);
+        rig.flush();
+        let first = seen.borrow()[0].clone();
+        assert!(first.is_alive(), "a swap does not end the region (splice {splice})");
+        shown.set(false);
+        rig.flush();
+        assert!(!first.is_alive(), "dropping the region does (splice {splice})");
+        drop(shell);
+    }
+}
+
+/// An isolated build sees no region around it.
+#[test]
+fn an_isolated_build_sees_no_enclosing_region() {
+    let rig = Rig::new(true);
+    let seen: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let seen_b = seen.clone();
+    let _shell = rig.realize(v(vec![dyn_keyed(
+        move || (),
+        move |_| {
+            seen_b.borrow_mut().push(crate::enclosing_region().is_some());
+            crate::isolated(|| seen_b.borrow_mut().push(crate::enclosing_region().is_some()));
+            seen_b.borrow_mut().push(crate::enclosing_region().is_some());
+            t("x")
+        },
+    )]));
+    assert_eq!(*seen.borrow(), [true, false, true]);
+}
+
+/// A swap drops the old branch as one teardown: a retention taken by a
+/// cleanup in it keeps the branch's signals writable, until released.
+#[test]
+fn a_swap_drops_its_old_branch_as_one_retainable_teardown() {
+    for splice in [false, true] {
+        let rig = Rig::new(splice);
+        let held: Rc<RefCell<Option<runtime_world::TeardownRetention>>> = Rc::new(RefCell::new(None));
+        let branch_state: Rc<RefCell<Option<runtime_world::Signal<u32>>>> = Rc::new(RefCell::new(None));
+        let s = rig.world.enter(|| signal(true));
+        let (held_b, state_b) = (held.clone(), branch_state.clone());
+        let _shell = rig.realize(v(vec![dyn_keyed(
+            move || s.get(),
+            move |&on| {
+                if on {
+                    *state_b.borrow_mut() = Some(signal(0));
+                    let held_b = held_b.clone();
+                    effect(move || {
+                        let held_b = held_b.clone();
+                        runtime_world::on_cleanup(move || *held_b.borrow_mut() = runtime_world::retain_teardown());
+                    });
+                }
+                t(if on { "on" } else { "off" })
+            },
+        )]));
+        let state = branch_state.borrow().expect("built");
+        s.set(false);
+        rig.flush();
+        assert!(held.borrow().is_some(), "the swap ran as a teardown (splice {splice})");
+        assert!(state.is_alive(), "the retained branch keeps its signal (splice {splice})");
+        rig.world.enter(|| state.set(1));
+        held.borrow_mut().take();
+        assert!(!state.is_alive(), "until released (splice {splice})");
+    }
+}

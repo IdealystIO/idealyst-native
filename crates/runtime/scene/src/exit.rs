@@ -60,6 +60,10 @@ runtime_tls::thread_local! {
     /// One frame per `Dyn` region currently building its content;
     /// innermost last.
     static COLLECTING: RefCell<Vec<Vec<ExitRequest>>> = const { RefCell::new(Vec::new()) };
+    /// The liveness of each `Dyn` region currently building its content,
+    /// innermost last. `None` is a barrier: a build that must not see the
+    /// regions around it (see [`isolated`]).
+    static REGIONS: RefCell<Vec<Option<RegionAlive>>> = const { RefCell::new(Vec::new()) };
     static DEFER: RefCell<Option<ExitDefer>> = const { RefCell::new(None) };
 }
 
@@ -94,6 +98,64 @@ pub fn hold_on_exit(ms: u32, start: impl FnOnce() + 'static) {
     }
 }
 
+/// Whether a `Dyn` region (an `if` / `match` in `ui!`, `when`,
+/// `switch`) is still mounted: `true` until the scope that holds the
+/// region drops, `false` forever after. Swapping the region's content
+/// does not end it.
+#[derive(Clone)]
+pub struct RegionAlive(Rc<Cell<bool>>);
+
+impl RegionAlive {
+    /// A new region's flag, cleared when the ambient scope (the one that
+    /// owns the region's driver) drops.
+    pub(crate) fn new() -> Self {
+        let flag = Rc::new(Cell::new(true));
+        let clear = flag.clone();
+        runtime_world::on_owned_drop(move || clear.set(false));
+        Self(flag)
+    }
+
+    /// Is the region still mounted?
+    pub fn is_alive(&self) -> bool {
+        self.0.get()
+    }
+}
+
+/// The nearest `Dyn` region building the code that calls this: alive
+/// while that region stays mounted, through its content being switched
+/// out. `None` outside any region's build, or behind an [`isolated`]
+/// build.
+///
+/// An overlay takes it in its body to learn how long whatever opened it
+/// lives: `if open.get() { Menu(…) }` builds the Menu inside the `if`,
+/// and the `if` lives as long as the component that wrote it.
+pub fn enclosing_region() -> Option<RegionAlive> {
+    REGIONS.with(|r| r.borrow().last().cloned().flatten())
+}
+
+/// Run `f` as a build that does not belong to the regions around it: an
+/// [`enclosing_region`] inside sees none of them. A navigator realizing a
+/// screen uses it — the screen lives until the navigator drops it, not as
+/// long as whatever `if` the navigator happened to be first mounted in.
+pub fn isolated<R>(f: impl FnOnce() -> R) -> R {
+    REGIONS.with(|r| r.borrow_mut().push(None));
+    let _frame = RegionFrame;
+    f()
+}
+
+/// Pops the region frame even if the build unwinds.
+struct RegionFrame;
+
+impl Drop for RegionFrame {
+    fn drop(&mut self) {
+        let _ = REGIONS.try_with(|r| {
+            if let Ok(mut r) = r.try_borrow_mut() {
+                r.pop();
+            }
+        });
+    }
+}
+
 /// Pops the collecting frame even if the build unwinds.
 struct Frame;
 
@@ -108,11 +170,15 @@ impl Drop for Frame {
 }
 
 /// Run a region's content build, collecting the exit holds requested
-/// inside it (and not inside a nested region, which collects its own).
-pub(crate) fn collecting<R>(build: impl FnOnce() -> R) -> (R, Vec<ExitRequest>) {
+/// inside it (and not inside a nested region, which collects its own),
+/// with `region` as the [`enclosing_region`] of the code it builds.
+pub(crate) fn collecting<R>(region: &RegionAlive, build: impl FnOnce() -> R) -> (R, Vec<ExitRequest>) {
     COLLECTING.with(|c| c.borrow_mut().push(Vec::new()));
+    REGIONS.with(|r| r.borrow_mut().push(Some(region.clone())));
     let frame = Frame;
+    let region_frame = RegionFrame;
     let out = build();
+    drop(region_frame);
     let requests = COLLECTING.with(|c| c.borrow_mut().pop()).unwrap_or_default();
     std::mem::forget(frame);
     (out, requests)

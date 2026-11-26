@@ -1197,6 +1197,9 @@ fn drive_dyn_anchored<H: Host>(
     // Captured NOW, while the mount's ambient state is intact; every
     // later run realizes inside it (see `region_context`).
     let region = crate::region_context::capture();
+    // Whether this region is still mounted, for the code it builds (see
+    // `exit::enclosing_region`). Cleared with the scope that owns it.
+    let alive = crate::exit::RegionAlive::new();
     // Exit holds (see `crate::exit`): what the mounted subtree asked for,
     // and the swapped-out subtrees still attached while they animate away.
     // Owned by the driver effect, so destroying the region drops both.
@@ -1255,12 +1258,16 @@ fn drive_dyn_anchored<H: Host>(
                                     host.remove_child(&anchor, node);
                                 }
                             }
-                            drop(old);
+                            runtime_world::teardown(|| drop(old));
                             release_discarded(&b, &old_nodes);
                         });
                     }
                     None => {
-                        drop(old);
+                        // One teardown: a reply still owed to a control in
+                        // the old subtree may keep its signals allocated
+                        // (`runtime_world::retain_teardown`). Every swap
+                        // drop below does the same.
+                        runtime_world::teardown(|| drop(old));
                         release_discarded(&backend, &old_nodes);
                         let mut host = backend.borrow_mut();
                         if held.any() {
@@ -1276,7 +1283,7 @@ fn drive_dyn_anchored<H: Host>(
                 },
             }
         }
-        let (realized, requested) = crate::exit::collecting(|| {
+        let (realized, requested) = crate::exit::collecting(&alive, || {
             region.enter(|| match &kind {
                 // Plain: the closure runs TRACKED inside the fresh scope —
                 // its reads are the rebuild deps.
@@ -1356,6 +1363,7 @@ fn drive_dyn_spliced<H: Host>(
     let DynSpec { kind, mut retire } = spec;
     // See `drive_dyn_anchored`.
     let region = crate::region_context::capture();
+    let alive = crate::exit::RegionAlive::new();
     // Exit holds, as in `drive_dyn_anchored`. Held nodes stay in the parent
     // AFTER the region's current ones (new content splices in at `base`,
     // ahead of them), so the count this region publishes is
@@ -1416,7 +1424,7 @@ fn drive_dyn_spliced<H: Host>(
                             // cleanups, as the immediate path does.
                             held_len.set(held_len.get() - old_nodes.len());
                             count.set(current_len.get() + held_len.get());
-                            drop(old);
+                            runtime_world::teardown(|| drop(old));
                             release_discarded(&b, &old_nodes);
                         });
                     }
@@ -1431,7 +1439,7 @@ fn drive_dyn_spliced<H: Host>(
                         // the scope drop runs arbitrary cleanups.
                         current_len.set(0);
                         count.set(held_len.get());
-                        drop(old);
+                        runtime_world::teardown(|| drop(old));
                         release_discarded(&backend, &old_nodes);
                     }
                 },
@@ -1440,7 +1448,7 @@ fn drive_dyn_spliced<H: Host>(
         // Build detached, then splice every top node at the region's
         // CURRENT start — resolved now, so an earlier sibling region that
         // grew or shrank since mount is accounted for.
-        let ((nodes, realized), requested) = crate::exit::collecting(|| {
+        let ((nodes, realized), requested) = crate::exit::collecting(&alive, || {
             region.enter(|| match &kind {
                 DynKind::Plain(f) => {
                     // Tracked producer — see build_realized's tracking split.
