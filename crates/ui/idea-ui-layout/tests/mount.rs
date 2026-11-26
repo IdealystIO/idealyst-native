@@ -865,6 +865,10 @@ mod toolbar {
         m.h.flush();
         let open = m.log();
         assert!(open.contains("text_input"), "{open}");
+        // Under the glyph, not in a sheet: a sheet's scrim would cover the
+        // list the search narrows. A sheet is a `Modal`, which keeps
+        // itself clear of the keyboard.
+        assert!(!open.contains("mark_keyboard_avoiding"), "a phone's search stays under its glyph:\n{open}");
     }
 
     /// Ctrl-F (⌘F on a Mac) opens the glyph's field and takes the key

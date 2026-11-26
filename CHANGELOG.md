@@ -3967,6 +3967,10 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **`ToolbarSearch` keeps its field under the glyph on a phone** (`idea-ui-layout` patch). idea-ui's
+  `Popover` opens as a bottom sheet below `Sm`, whose scrim would cover the list the search narrows.
+  `AdaptivePopover` keeps `sheet_serves()` as its one switch.
+
 - **A `presence` releases what it animated out** (`runtime-vocabulary` patch). It detached the
   exiting nodes and dropped their scope but never told the host they were discarded, so every
   `Modal` that closed left its views behind: on iOS a retained view and a layout node per view, on

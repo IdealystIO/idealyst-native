@@ -204,6 +204,9 @@ pub fn ToolbarSearch(props: &ToolbarSearchProps) -> Element {
                     // the field's own box, lifted by the popover's
                     // shadow.
                     styles = PopoverSlotStyles::default().surface(bare_surface()),
+                    // Under the glyph on a phone too: a sheet's scrim
+                    // would cover the list the search is narrowing.
+                    sheet_on_phone = false,
                 ) {
                     view(style = SearchPopoverBody()) {
                         Field(

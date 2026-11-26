@@ -520,6 +520,10 @@ handlers do not.**
 | menu with submenus | sheet whose rows push panes | `DrillSheet` |
 | top-anchored dialog card | bottom sheet | `Dialog` |
 
+idea-ui's `Select`, `Autocomplete`, date pickers and `Popover` make the
+same move on their own. `ToolbarSearch` does not: its field stays under
+the glyph, where the list it narrows stays in view.
+
 A panel anchored to a small trigger is not reachable with a thumb, and
 it lands wherever the trigger happens to be. A sheet always arrives in
 the same place, with room for full labels. A tablet keeps the anchored

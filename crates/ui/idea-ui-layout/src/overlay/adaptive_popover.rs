@@ -116,6 +116,9 @@ pub fn AdaptivePopover(props: &AdaptivePopoverProps) -> Element {
                                 side = side,
                                 align = align,
                                 on_dismiss = Some(dismiss.clone()),
+                                // `sheet_serves` above is the one switch;
+                                // the Popover never picks a sheet itself.
+                                sheet_on_phone = false,
                             ) {
                                 { content.build() }
                             }
