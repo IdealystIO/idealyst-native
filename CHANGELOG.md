@@ -1463,6 +1463,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`ActionBar(phone = PhoneActions::Row)`** (`idea-ui-layout` minor). A phone's verbs stay on
+  one line, the primary last with twice the width of each other, for a walk's Back / Skip / Next.
+  `PhoneActions::Stacked` (the default) keeps them full width and stacked. From `Sm` both are the
+  same right-aligned row. Rule `action-bar`.
+
 - **`idealyst dev --no-server` / `--server-url <URL>`** (`idealyst-cli` minor). The project's server
   already runs elsewhere: it is not built or started, and apps get its address. Native targets only.
 
@@ -3612,6 +3617,13 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   preminted) or `TableInset::Px(f32)` for an exact margin.
 
 ### Changed
+
+- **A pinned `ActionBar` stays at the screen's foot while the keyboard is up** (`idea-ui-layout`
+  minor). It folds away under the keyboard instead of riding on it inside a
+  `keyboard_avoiding_view`, where it read as the next field. Rule `action-bar`.
+
+- **A `Flow` step's heading sits closer to the page header, and a step without a description
+  draws no line for one** (`idea-ui-layout` minor). `FlowHead` is padded `sm` above, not `lg`.
 
 - **idea-ui's Alert, Tag and Toast are redesigned** (`idea-ui` minor).
   - **Alert** draws a leading icon picked from its tone (a check for Success, a triangle for

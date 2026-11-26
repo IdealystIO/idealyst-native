@@ -322,6 +322,127 @@ mod flow {
             }
         }
     }
+
+    /// A step with no description draws no text for one.
+    #[test]
+    fn a_step_without_a_description_draws_no_line_for_it() {
+        let log = mount_at(PHONE, || {
+            ui! {
+                Flow(
+                    header = ui! { PageHeader(title = "New project".to_string()) },
+                    steps = vec![FlowStep::new("Basics"), FlowStep::new("Shifts")],
+                    current = 1_usize,
+                    body = ui! { Typography(content = "STEP BODY".to_string()) },
+                    actions = ui! { ActionBar(primary = Some(Action::new("Next", noop()))) },
+                )
+            }
+        })
+        .log();
+        assert!(log.contains("\"STEP BODY\""), "{log}");
+        // A reactive text is created empty and filled in; one never filled
+        // is a blank line on the screen.
+        for line in log.lines().filter(|l| l.ends_with(" text \"\"")) {
+            let node = line.split_whitespace().nth(1).unwrap_or_default();
+            let filled = log
+                .lines()
+                .any(|l| l.starts_with(&format!("update_text {node} ")) && !l.ends_with(" \"\""));
+            assert!(filled, "{node} stays empty:\n{log}");
+        }
+    }
+}
+
+mod action_bar {
+    use super::*;
+    use idea_ui_layout::{ActionBar, PhoneActions};
+
+    /// Mount a Back / Skip / Next bar `width` wide, logging each node's
+    /// direction and grow.
+    fn walk(width: f32, phone: PhoneActions) -> String {
+        host_mock::pump::install_scheduler();
+        let h = Harness::new();
+        h.set_style_line(|node, rules| {
+            let grow = rules.flex_grow.as_ref().map(|t| *t.value()).unwrap_or(0.0);
+            format!("apply_style n{node} dir={:?} grow={grow}", rules.flex_direction)
+        });
+        let tree = h.world.enter(|| {
+            install_idea_theme(light_theme());
+            viewport_size().set(ViewportSize::new(width, 800.0));
+            ui! {
+                ActionBar(
+                    primary = Some(Action::new("Next", noop())),
+                    secondary = vec![Action::new("Skip", noop()), Action::new("Back", noop())],
+                    phone = phone,
+                )
+            }
+        });
+        h.flush();
+        let _realized = h.mount(tree);
+        h.flush();
+        h.take_log().join("\n")
+    }
+
+    /// The bar's own line: the last node styled, the row that holds the
+    /// verbs' seats.
+    fn bar_line(log: &str) -> String {
+        log.lines().filter(|l| l.starts_with("apply_style")).last().unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn a_phone_stacks_its_verbs_unless_asked_for_a_row() {
+        let stacked = walk(PHONE, PhoneActions::Stacked);
+        assert!(bar_line(&stacked).contains("dir=Some(Column)"), "stacked:\n{stacked}");
+        assert!(!stacked.contains("grow=2"), "a stack shares no width:\n{stacked}");
+
+        let row = walk(PHONE, PhoneActions::Row);
+        assert!(bar_line(&row).contains("dir=Some(RowReverse)"), "row:\n{row}");
+        // The primary's seat takes two shares, each other verb's one.
+        assert_eq!(row.matches("grow=2").count(), 1, "{row}");
+        assert_eq!(row.matches("grow=1").count(), 2, "{row}");
+    }
+
+    /// A pinned bar stays at the screen's foot under the keyboard: it
+    /// gives up its height while the keyboard is up and takes it back
+    /// when the keyboard goes.
+    #[test]
+    fn a_pinned_bar_does_not_ride_on_the_keyboard() {
+        host_mock::pump::install_scheduler();
+        let h = Harness::new();
+        h.set_style_line(|node, rules| format!("apply_style n{node} max_height={:?}", rules.max_height));
+        let tree = h.world.enter(|| {
+            install_idea_theme(light_theme());
+            viewport_size().set(ViewportSize::new(PHONE, 800.0));
+            ui! { ActionBar(primary = Some(Action::new("Next", noop())), pinned = true) }
+        });
+        h.flush();
+        let _realized = h.mount(tree);
+        h.flush();
+        let resting = h.take_log().join("\n");
+        assert!(!resting.contains("max_height=Some"), "no keyboard, full height:\n{resting}");
+
+        let keyboard = |height: f32| {
+            runtime_vocabulary::keyboard::push(runtime_shared::KeyboardInset::new(
+                height,
+                runtime_shared::keyboard::WEB_KEYBOARD_ESTIMATE,
+            ));
+            h.flush();
+            h.take_log().join("\n")
+        };
+        let up = keyboard(300.0);
+        assert!(up.contains("max_height=Some"), "keyboard up, the bar folds away:\n{up}");
+        let down = keyboard(0.0);
+        assert!(down.contains("max_height=None"), "keyboard down, the bar is back:\n{down}");
+    }
+
+    /// From `Sm` the verbs take their own width whichever arrangement a
+    /// phone was given.
+    #[test]
+    fn a_wide_bar_is_one_unshared_row_either_way() {
+        for phone in [PhoneActions::Stacked, PhoneActions::Row] {
+            let log = walk(TABLET, phone);
+            assert!(bar_line(&log).contains("dir=Some(RowReverse)"), "{phone:?}:\n{log}");
+            assert!(!log.contains("grow=2") && !log.contains("grow=1"), "{phone:?}:\n{log}");
+        }
+    }
 }
 
 mod app_frame {

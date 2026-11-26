@@ -11,7 +11,7 @@ mod section;
 mod stat_grid;
 mod state_message;
 
-pub use action_bar::{ActionBar, ActionBarProps, ACTION_BAR_MAX_SECONDARY, ACTION_BAR_NOTE_MIN};
+pub use action_bar::{ActionBar, ActionBarProps, PhoneActions, ACTION_BAR_MAX_SECONDARY, ACTION_BAR_NOTE_MIN};
 pub use bottom_inset::BottomInset;
 pub use field_grid::{FieldGrid, FieldGridProps, FieldGridRow, FieldGridRowProps};
 pub use help_hint::{HelpHint, HelpHintProps};

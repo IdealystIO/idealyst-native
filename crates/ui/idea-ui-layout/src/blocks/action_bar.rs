@@ -4,7 +4,7 @@ use idea_ui::{tone, typography_kind, variant, Button, Typography};
 use runtime_core::Tokens as _;
 use runtime_core::{
     component, rx, stylesheet, ui, AlignItems, Element, FlexDirection, FlexWrap, IdealystSchema, JustifyContent,
-    Length, PointerEvents, Position, SafeAreaSides,
+    Length, Overflow, PointerEvents, Position, SafeAreaSides,
 };
 
 use crate::width::is_phone;
@@ -19,6 +19,18 @@ pub const ACTION_BAR_MAX_SECONDARY: usize = 2;
 /// line. Below it the note wraps onto a line of its own above them.
 pub const ACTION_BAR_NOTE_MIN: f32 = 240.0;
 
+/// How an [`ActionBar`]'s verbs sit on a phone. From `Sm` up they are
+/// one right-aligned row either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, IdealystSchema)]
+pub enum PhoneActions {
+    /// Full width and stacked, the primary first, where the thumb starts.
+    #[default]
+    Stacked,
+    /// One row across the width, the primary last and twice the width of
+    /// each other verb: a walk's Back / Skip / Next, read as a line.
+    Row,
+}
+
 #[runtime_core::props]
 #[derive(IdealystSchema, Default)]
 pub struct ActionBarProps {
@@ -29,18 +41,23 @@ pub struct ActionBarProps {
     #[prop(static)]
     pub secondary: Vec<Action>,
     /// Pinned to the foot of a [`Flow`](crate::Flow) or a decision
-    /// screen: a rule above it, on the page's surface.
+    /// screen: a rule above it, on the page's surface. A pinned bar stays
+    /// at the screen's foot while the keyboard is up, under it.
     #[prop(static)]
     pub pinned: bool,
     /// A sentence at the bar's start saying what the primary records. A
     /// phone has no room for it and draws the verbs alone.
     #[prop(static)]
     pub note: Option<String>,
+    /// How the verbs sit on a phone. Default [`PhoneActions::Stacked`].
+    #[prop(static)]
+    pub phone: PhoneActions,
 }
 
 /// A screen's closing actions: right-aligned with the primary last from
-/// `Sm` up, after the `note` if there is one; full width and stacked on
-/// a phone with the primary first, where the thumb starts.
+/// `Sm` up, after the `note` if there is one. On a phone, full width and
+/// stacked with the primary first, where the thumb starts — or, with
+/// `phone = PhoneActions::Row`, one row with the primary last and widest.
 ///
 /// ```ignore
 /// ActionBar(
@@ -58,9 +75,25 @@ pub fn ActionBar(props: &ActionBarProps) -> Element {
     let primary = props.primary.clone();
     let secondary = props.secondary.clone();
     let note = props.note.clone();
+    let in_row = props.phone == PhoneActions::Row;
+    let bar_style = move || {
+        ActionBarRow()
+            .phone(if in_row { ActionBarRowPhone::Row } else { ActionBarRowPhone::Stacked })
+            .into_style_application()
+    };
+    // Each verb's share of a phone's row; nothing from `Sm`, where the
+    // verbs take their own width. Read live, so crossing `Sm` restyles.
+    let share = move |weight: ActionBarSlotShare| {
+        move || {
+            ActionBarSlot()
+                .share(if in_row && is_phone() { weight } else { ActionBarSlotShare::None })
+                .into_style_application()
+        }
+    };
     let row = ui! {
-        view(style = ActionBarRow()) {
+        view(style = bar_style) {
             if let Some(a) = primary {
+                view(style = share(ActionBarSlotShare::Primary)) {
                 Button(
                     label = a.label.clone(),
                     on_click = a.on_press.clone(),
@@ -71,8 +104,10 @@ pub fn ActionBar(props: &ActionBarProps) -> Element {
                     leading_icon = a.icon,
                     test_id = a.test_id,
                 )
+                }
             }
             for a in secondary.iter(), key = a.label.clone() {
+                view(style = share(ActionBarSlotShare::Other)) {
                 Button(
                     label = a.label.clone(),
                     on_click = a.on_press.clone(),
@@ -84,6 +119,7 @@ pub fn ActionBar(props: &ActionBarProps) -> Element {
                     leading_icon = a.icon,
                     test_id = a.test_id,
                 )
+                }
             }
             // Last in the source, so the reversed row puts it first.
             if let Some(note) = note {
@@ -95,8 +131,21 @@ pub fn ActionBar(props: &ActionBarProps) -> Element {
     };
     if props.pinned {
         // The bar's surface runs to the screen's bottom edge and its
-        // verbs stand clear of the home indicator.
-        ui! { view(style = ActionBarPinned(), safe_area = SafeAreaSides::BOTTOM) { row } }
+        // verbs stand clear of the home indicator. While the keyboard is
+        // up the bar stays at that edge, under the keyboard, and gives its
+        // space to the content: riding on the keyboard, it reads as the
+        // next thing to type into.
+        let keyboard = runtime_core::keyboard_inset();
+        let pinned_style = move || {
+            ActionBarPinned()
+                .keyboard(if keyboard.get().is_visible() {
+                    ActionBarPinnedKeyboard::Up
+                } else {
+                    ActionBarPinnedKeyboard::Down
+                })
+                .into_style_application()
+        };
+        ui! { view(style = pinned_style, safe_area = SafeAreaSides::BOTTOM) { row } }
     } else {
         row
     }
@@ -113,6 +162,18 @@ stylesheet! {
             align_items: AlignItems::Stretch,
             gap: t.spacing.sm(),
         }
+        // A phone's arrangement. `row` is the `sm` row's own values, so
+        // it reads the same whichever of the two the cascade puts last.
+        variant phone {
+            #[default]
+            stacked(_t) {}
+            row(_t) {
+                flex_direction: FlexDirection::RowReverse,
+                flex_wrap: FlexWrap::WrapReverse,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::FlexStart,
+            }
+        }
         // A bar too narrow for the note beside the verbs wraps it onto
         // a line of its own ABOVE them (`WrapReverse` stacks later lines
         // upward) rather than squeezing it into a sliver.
@@ -121,6 +182,30 @@ stylesheet! {
             flex_wrap: FlexWrap::WrapReverse,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::FlexStart,
+        }
+    }
+}
+
+stylesheet! {
+    // A verb's seat. In a phone's row the primary takes two shares of the
+    // width and each other verb one; elsewhere the seat is its verb.
+    ActionBarSlot<idea_ui::IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+        }
+        variant share {
+            #[default]
+            none(_t) {}
+            primary(_t) {
+                flex_grow: 2.0,
+                flex_basis: Length::Px(0.0),
+                min_width: Length::Px(0.0),
+            }
+            other(_t) {
+                flex_grow: 1.0,
+                flex_basis: Length::Px(0.0),
+                min_width: Length::Px(0.0),
+            }
         }
     }
 }
@@ -137,6 +222,17 @@ stylesheet! {
             border_top_width: 1.0,
             border_top_color: t.color.border(),
             background: t.color.surface(),
+        }
+        variant keyboard {
+            #[default]
+            down(_t) {}
+            up(_t) {
+                max_height: Length::Px(0.0),
+                overflow: Overflow::Hidden,
+                padding_top: Length::Px(0.0),
+                padding_bottom: Length::Px(0.0),
+                border_top_width: 0.0,
+            }
         }
         breakpoint sm(t) {
             padding_left: LayoutTheme::tokens().gutter.tablet(),

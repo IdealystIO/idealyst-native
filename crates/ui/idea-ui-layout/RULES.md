@@ -467,10 +467,17 @@ row; more than eight is a table.
 
 ### action-bar
 **A screen's closing actions sit right-aligned when wide; on a phone
-they are full width and stacked, the primary first.**
+they are full width and stacked, the primary first — or, for a walk,
+one row.**
 
 At most one primary and two others; a fourth goes in the header's ⋮.
-`pinned = true` at the foot of a `Flow` or a decision screen.
+`pinned = true` at the foot of a `Flow` or a decision screen; it stays
+at the screen's foot while the keyboard is up, under it, and never rides
+on the keyboard where it would read as the next field.
+`phone = PhoneActions::Row` keeps a phone's verbs on one line, the
+primary last with twice the width of each other: a walk's Back / Skip /
+Next reads as a line, where a stack of three would take a fifth of the
+screen.
 
 ## What a list shows when it has no rows
 

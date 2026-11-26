@@ -212,6 +212,10 @@ pub fn Flow(props: FlowProps) -> Element {
         let at = at.clone();
         move || at().0.subtitle.unwrap_or_default()
     };
+    let has_subtitle = {
+        let at = at.clone();
+        move || at().0.subtitle.is_some_and(|s| !s.is_empty())
+    };
     let progress = {
         let at = at.clone();
         move || {
@@ -305,7 +309,10 @@ pub fn Flow(props: FlowProps) -> Element {
                             Typography(content = rx!(count_line()), kind = typography_kind::BodySm, muted = true)
                         }
                         Typography(content = rx!(title()), kind = typography_kind::H2)
-                        Typography(content = rx!(subtitle()), muted = true)
+                        // A step without one draws no line for it.
+                        if has_subtitle() {
+                            Typography(content = { let subtitle = subtitle.clone(); rx!(subtitle()) }, muted = true)
+                        }
                         if let Some(notice) = notice {
                             { notice }
                         }
@@ -609,7 +616,7 @@ stylesheet! {
             flex_shrink: 0.0,
             padding_left: LayoutTheme::tokens().gutter.phone(),
             padding_right: LayoutTheme::tokens().gutter.phone(),
-            padding_top: t.spacing.lg(),
+            padding_top: t.spacing.sm(),
             padding_bottom: t.spacing.md(),
         }
         breakpoint sm(t) {
