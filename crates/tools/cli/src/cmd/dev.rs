@@ -2849,7 +2849,7 @@ fn sync_dev_web_overlay(
             // Spawn the SVG watcher. The block carries already-canonical
             // paths to the source/foreground SVGs; rerun the same sync on
             // change and rebuild the resolved block fresh each time.
-            if let Some(signal) = reload_signal {
+            if let Some(signal) = reload_signal.clone() {
                 let mut watch_paths = Vec::new();
                 if let Some(p) = block.source.as_ref() {
                     watch_paths.push(p.clone());
@@ -2884,11 +2884,66 @@ fn sync_dev_web_overlay(
         }
     }
 
+    // ── Service worker (optional) — what the dependency graph contributes ──
+    // The same composed `idealyst-sw.js` `build-web` stages into a deployed
+    // bundle, served from the overlay at the root, plus the marker that has
+    // the page register it. Recomposed when a contributed handler file
+    // changes, so editing one doesn't need a dev restart.
+    let manifest = parse_manifest(project_dir)?;
+    let registration = build_web::service_worker::Registration::parse(
+        manifest.app.web.service_worker_registration.as_deref(),
+    )?;
+    let contributions = build_web::service_worker::discover(&project_dir.join("Cargo.toml"))?;
+    std::fs::create_dir_all(&overlay_dir)
+        .with_context(|| format!("create {}", overlay_dir.display()))?;
+    if build_web::service_worker::stage(&overlay_dir, &contributions)? {
+        have_overlay = true;
+        if registration == build_web::service_worker::Registration::Auto {
+            let marker = build_web::service_worker::marker_script_tag();
+            head = Some(match head.take() {
+                Some(mut h) => {
+                    h.html.push_str(&marker);
+                    h
+                }
+                None => dev_http::HeadInjectionContext { html: marker },
+            });
+        }
+        crate::dlog!(
+            "dev web",
+            "service worker → {} ({} handler file(s))",
+            overlay_dir.join(build_web::service_worker::FILE_NAME).display(),
+            contributions.len()
+        );
+        if let Some(signal) = reload_signal.clone() {
+            let mut watch_paths: Vec<PathBuf> = contributions.iter().map(|c| c.path.clone()).collect();
+            watch_paths.push(project_dir.join("Cargo.toml"));
+            let project_owned = project_dir.to_path_buf();
+            let overlay_owned = overlay_dir.clone();
+            let (handle, control) = dev_reload::start_watch_with(
+                watch_paths,
+                signal,
+                "service-worker",
+                dev_events::global(),
+                crate::dev_log::no_watch(),
+                move || {
+                    let contributions =
+                        build_web::service_worker::discover(&project_owned.join("Cargo.toml"))?;
+                    build_web::service_worker::stage(&overlay_owned, &contributions)?;
+                    Ok(dev_reload::Rebuilt::Changed)
+                },
+            )?;
+            crate::dev_log::register_rebuilder(
+                "service-worker",
+                std::sync::Arc::new(move |n| control.request_rebuild_numbered(n)),
+            );
+            std::mem::forget(handle);
+        }
+    }
+
     // ── Fonts (optional) — stage `[web].font_dirs` into the overlay ──────
     // Mirrors what `build-web` stages into the deployed bundle, so a library
     // can own its typeface's font files and `idealyst dev` serves `/fonts/*`
     // without a per-app copy or symlink. Each dir → `<overlay>/<final-name>/`.
-    let manifest = parse_manifest(project_dir)?;
     for d in &manifest.app.web.font_dirs {
         let src = project_dir.join(d);
         if !src.is_dir() {

@@ -8,6 +8,10 @@
 //!   (the dev HTTP server injects it into every served page) and
 //!   connect a caps-driven replay client over WebSocket. The browser
 //!   becomes a thin replayer and the runtime lives in the dev sidecar.
+//!
+//! On both paths, when the build marked the page with
+//! `window.IDEALYST_SERVICE_WORKER`, the composed service worker is
+//! registered (`web_glue::service_worker`).
 
 use runtime_scene::Element;
 
@@ -64,6 +68,23 @@ pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     backend_web::install_logger();
     backend_web::install_async_executor();
     backend_web::install_render_loop();
+
+    // The service worker the web build composed from the dependency
+    // graph's contributions (`build_web::service_worker`), when it marked
+    // this page — both boot paths, since the worker serves the page, not
+    // the runtime. Registration settles on its own; a failure is logged,
+    // never fatal to the app. The global's name is a contract with the
+    // build, which pins it in `the_marker_names_the_global_the_boot_path_reads`.
+    if let Some(url) = web_glue::JsValue::global().get("IDEALYST_SERVICE_WORKER").ok().and_then(|v| v.as_string()) {
+        web_glue::spawn_local(async move {
+            if let Err(e) = web_glue::service_worker::register(&url).await {
+                web_glue::dom::console::error_2(
+                    &"[idealyst] service worker registration failed:".into(),
+                    &web_glue::JsValue::from_str(&e.message()),
+                );
+            }
+        });
+    }
     // NOTE: the viewport observer is deliberately NOT installed here.
     // Its timing differs per path — after mount when hydrating (so the
     // first render uses the SSR-assumed viewport) vs before mount on a

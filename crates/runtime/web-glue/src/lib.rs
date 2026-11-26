@@ -56,6 +56,7 @@ mod mock;
 pub mod record;
 pub mod string;
 pub mod task;
+pub mod service_worker;
 pub mod value;
 pub mod worker;
 

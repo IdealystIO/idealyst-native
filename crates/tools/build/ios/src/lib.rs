@@ -362,6 +362,14 @@ pub struct WebMetadata {
     /// `<bundle>/<dir-final-name>/` (so `../whiteboard/fonts` →
     /// `<bundle>/fonts/`, matching the `/fonts/...` `@font-face` URLs).
     pub font_dirs: Vec<String>,
+
+    /// Who registers the service worker the build composes from the
+    /// dependency graph's `[package.metadata.idealyst.web] service_worker`
+    /// handlers (`build-web`'s `service_worker` module): `"auto"` (the
+    /// default — the page registers `idealyst-sw.js` at boot) or
+    /// `"import"` (the app ships its own worker, which calls
+    /// `importScripts("idealyst-sw.js")`). Validated by the web build.
+    pub service_worker_registration: Option<String>,
 }
 
 impl AppMetadata {
@@ -599,6 +607,8 @@ struct RawWebMetadata {
     assets: Option<Vec<String>>,
     #[serde(default)]
     font_dirs: Option<Vec<String>>,
+    #[serde(default)]
+    service_worker_registration: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -679,6 +689,7 @@ pub fn parse_manifest(project_dir: &Path) -> Result<Manifest> {
         preload_fonts: raw_web.preload_fonts.unwrap_or_default(),
         assets: raw_web.assets.unwrap_or_default(),
         font_dirs: raw_web.font_dirs.unwrap_or_default(),
+        service_worker_registration: raw_web.service_worker_registration,
     };
 
     let raw_macos = app_raw.macos.unwrap_or_default();

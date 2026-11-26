@@ -94,6 +94,11 @@ If you're new to the codebase, read the docs in this order:
   kiosk attributes, background keep-alive, release signing), system Back
   (`on_back`), the manifest fragments and resources an SDK can contribute,
   and device-owner QR provisioning.
+- [`service-worker.md`](./service-worker.md). The one service worker a web
+  app gets: how SDKs and the app contribute handler scripts
+  (`[package.metadata.idealyst.web] service_worker`), how the build composes
+  and the page registers `idealyst-sw.js`, and how an app with its own
+  worker imports it instead.
 - [`windows.md`](./windows.md). The Windows backend's two renderers (GDI+,
   the default, and the opt-in Direct2D one) and how to choose between them;
   running Windows builds on a Mac with Wine, including the Wine-Staging +

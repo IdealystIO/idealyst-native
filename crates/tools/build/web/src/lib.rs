@@ -47,6 +47,7 @@ use build_ios::{
 };
 
 mod premint;
+pub mod service_worker;
 pub use premint::PREMINT_CSS_NAME;
 
 pub mod hotpatch_additive;
@@ -1327,6 +1328,10 @@ fn build_inner(project_dir: &Path, opts: BuildOptions, run_cargo: bool) -> Resul
             opts.runtime_server_url.as_deref(),
         )?;
         stage_head_script(&staged.join("index.html"), opts.head_script.as_deref())?;
+        // The service worker composed from the dependency graph's
+        // contributions, and the marker that has the page register it.
+        // Before gzip, like the injections above.
+        stage_service_worker(&project_dir, &staged, &manifest.app.web, &reporter)?;
         // Stage any EXTERNAL dirs the app links in (e.g. a component
         // library's `fonts/`), copied under their final path component so
         // `../whiteboard/fonts` → `<bundle>/fonts/`. Lets a library own the
@@ -1814,6 +1819,46 @@ fn stage_head_script(index_path: &Path, script: Option<&str>) -> Result<()> {
 /// picked up a dev machine's relay port would ship an app that dials a
 /// developer's laptop, and every `idealyst build` path relies on this
 /// staying a no-op.
+/// Compose `idealyst-sw.js` into the staged bundle from what the app's
+/// dependency graph contributes, and mark `index.html` so the page
+/// registers it (unless the app imports it into its own worker). See
+/// [`service_worker`].
+fn stage_service_worker(
+    project_dir: &Path,
+    staged: &Path,
+    web: &build_ios::WebMetadata,
+    reporter: &dev_events::Reporter,
+) -> Result<()> {
+    let registration = service_worker::Registration::parse(web.service_worker_registration.as_deref())?;
+    let contributions = service_worker::discover(&project_dir.join("Cargo.toml"))?;
+    if !service_worker::stage(staged, &contributions)? {
+        return Ok(());
+    }
+    let from: Vec<&str> =
+        contributions.iter().map(|c| c.package.as_str()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    reporter.log(
+        "build-web",
+        format!(
+            "service worker: {} handler file(s) from {} → {}{}",
+            contributions.len(),
+            from.join(", "),
+            service_worker::FILE_NAME,
+            if registration == service_worker::Registration::Import {
+                " (not registered: the app's own worker imports it)"
+            } else {
+                ""
+            },
+        ),
+    );
+    if registration == service_worker::Registration::Auto {
+        let index = staged.join("index.html");
+        let html = fs::read_to_string(&index).with_context(|| format!("read {}", index.display()))?;
+        fs::write(&index, inject_into_head(html, &service_worker::marker_script_tag()))
+            .with_context(|| format!("write {}", index.display()))?;
+    }
+    Ok(())
+}
+
 fn stage_robot_relay_url(index_path: &Path, url: Option<&str>) -> Result<()> {
     let Some(url) = url else { return Ok(()) };
     inject_robot_relay_url_into_staged_index(index_path, url)

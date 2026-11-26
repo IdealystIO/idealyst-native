@@ -12,7 +12,7 @@
 
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 use web_glue::dom::*;
-use web_glue::js::{Array, ArrayBuffer, Function, Map, Object, Promise, Set, Uint32Array, Uint8Array};
+use web_glue::js::{Array, ArrayBuffer, Function, Map, Object, Promise, Set, Uint32Array, Uint8Array, WeakSet};
 use web_glue::worker::Worker;
 use web_glue::{JsCast, JsValue};
 
@@ -139,6 +139,7 @@ classes! {
     Uint32Array: Object = "Uint32Array";
     Set: Object = "Set";
     Map: Object = "Map";
+    WeakSet: Object = "WeakSet";
     Worker: EventTarget = "Worker";
 }
 
