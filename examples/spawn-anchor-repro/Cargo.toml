@@ -1,0 +1,25 @@
+[package]
+name = "spawn-anchor-repro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A press that closes its own dialog or menu loses the reply to the work it started: four cards side by side."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+idealyst = { workspace = true }
+runtime-core = { workspace = true, features = ["async-driver"] }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+idea-ui = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Spawn Anchor Repro"
+bundle_id = "io.idealyst.spawnanchorrepro"
+version   = "0.0.1"
+targets   = ["web", "macos", "ios", "android"]

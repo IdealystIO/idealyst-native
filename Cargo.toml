@@ -447,6 +447,7 @@ members = [
     "examples/keyboard-avoid",
     "examples/user-activity",
     "examples/press-down-demo",
+    "examples/spawn-anchor-repro",
     "examples/virtual-table-demo",
     "examples/virtual-table-reorder-demo",
     "examples/nav-showcase",

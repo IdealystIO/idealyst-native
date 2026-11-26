@@ -321,6 +321,11 @@ intended.
 
   idea-ui's `Button` already does this for its `on_click`; the
   `spawn-then-handler-anchor` lint flags the unanchored shape elsewhere.
+  A press that closes its own dialog, menu or popover needs nothing: those
+  overlays call `mark_overlay`, so the reply still runs while whatever
+  opened the overlay is mounted, and writes to the closed overlay's own
+  state land harmlessly. A custom overlay built from primitives calls
+  `runtime_core::mark_overlay()` in its body to get the same.
 - **Never `.set()` inside a `Ref::with` / `handle.with` closure.** That closure
   holds the arena borrow; a signal write inside it aborts with *"RefCell already
   borrowed"* (the `is_reactive_busy` guard does **not** catch this). Read the
