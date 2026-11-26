@@ -407,6 +407,7 @@ mod action_bar {
     fn a_pinned_bar_does_not_ride_on_the_keyboard() {
         host_mock::pump::install_scheduler();
         let h = Harness::new();
+        h.record_all();
         h.set_style_line(|node, rules| format!("apply_style n{node} max_height={:?}", rules.max_height));
         let tree = h.world.enter(|| {
             install_idea_theme(light_theme());
@@ -429,6 +430,14 @@ mod action_bar {
         };
         let up = keyboard(300.0);
         assert!(up.contains("max_height=Some"), "keyboard up, the bar folds away:\n{up}");
+        // The bottom inset is padding, which holds a box open against a
+        // zero height: the fold must clip a view outside the padded one.
+        assert!(resting.contains("apply_safe_area_padding"), "the bar clears the home indicator:\n{resting}");
+        let folded = up.lines().find(|l| l.contains("max_height=Some")).and_then(|l| l.split_whitespace().nth(1)).unwrap();
+        assert!(
+            !resting.contains(&format!("apply_safe_area_padding {folded}")),
+            "the folding view is not the one padded by the safe area:\n{resting}",
+        );
         let down = keyboard(0.0);
         assert!(down.contains("max_height=None"), "keyboard down, the bar is back:\n{down}");
     }

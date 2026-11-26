@@ -135,17 +135,24 @@ pub fn ActionBar(props: &ActionBarProps) -> Element {
         // up the bar stays at that edge, under the keyboard, and gives its
         // space to the content: riding on the keyboard, it reads as the
         // next thing to type into.
+        // The fold is a view of its own around the bar: the bottom inset
+        // is padding on the bar, and padding holds a box open against a
+        // zero height, so the clip has to sit outside it.
         let keyboard = runtime_core::keyboard_inset();
-        let pinned_style = move || {
-            ActionBarPinned()
+        let fold_style = move || {
+            ActionBarFold()
                 .keyboard(if keyboard.get().is_visible() {
-                    ActionBarPinnedKeyboard::Up
+                    ActionBarFoldKeyboard::Up
                 } else {
-                    ActionBarPinnedKeyboard::Down
+                    ActionBarFoldKeyboard::Down
                 })
                 .into_style_application()
         };
-        ui! { view(style = pinned_style, safe_area = SafeAreaSides::BOTTOM) { row } }
+        ui! {
+            view(style = fold_style) {
+                view(style = ActionBarPinned(), safe_area = SafeAreaSides::BOTTOM) { row }
+            }
+        }
     } else {
         row
     }
@@ -211,6 +218,24 @@ stylesheet! {
 }
 
 stylesheet! {
+    // Around a pinned bar: folds it to nothing while the keyboard is up.
+    ActionBarFold<idea_ui::IdeaThemeRef> {
+        base(_t) {
+            flex_direction: FlexDirection::Column,
+            flex_shrink: 0.0,
+        }
+        variant keyboard {
+            #[default]
+            down(_t) {}
+            up(_t) {
+                max_height: Length::Px(0.0),
+                overflow: Overflow::Hidden,
+            }
+        }
+    }
+}
+
+stylesheet! {
     ActionBarPinned<idea_ui::IdeaThemeRef> {
         base(t) {
             flex_direction: FlexDirection::Column,
@@ -222,17 +247,6 @@ stylesheet! {
             border_top_width: 1.0,
             border_top_color: t.color.border(),
             background: t.color.surface(),
-        }
-        variant keyboard {
-            #[default]
-            down(_t) {}
-            up(_t) {
-                max_height: Length::Px(0.0),
-                overflow: Overflow::Hidden,
-                padding_top: Length::Px(0.0),
-                padding_bottom: Length::Px(0.0),
-                border_top_width: 0.0,
-            }
         }
         breakpoint sm(t) {
             padding_left: LayoutTheme::tokens().gutter.tablet(),

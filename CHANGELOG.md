@@ -3985,6 +3985,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 - **A date picker's calendar sits centred in its phone sheet** (`idea-ui` patch). Its cells are a
   fixed size, so the grid is narrower than the sheet and sat against its start.
 
+- **A pinned `ActionBar` folds under the keyboard on a phone with a home indicator**
+  (`idea-ui-layout` patch). The bottom safe-area inset is padding on the bar, which held it open
+  against the fold's zero height, so the verbs still rode on the keyboard. The fold now clips a
+  view around the bar.
+
 - **A press that closes its own dialog, menu or popover keeps its `spawn_then` reply**
   (`runtime-vocabulary` minor, `idea-ui`). A "Hand in" that closed its confirmation dialog lost
   its reply, because the reply was tied to the pressed control and the control left with the dialog:
