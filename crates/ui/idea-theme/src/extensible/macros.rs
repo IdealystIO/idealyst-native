@@ -232,24 +232,16 @@ macro_rules! tone {
         }
 
         // Optional inherent `tokens()` — emitted only when the
-        // `tokens = [...]` block is present. Returns the token
-        // entries this tone introduces, so they can be aggregated by
-        // an app theme's `ThemeTokens::tokens()` implementation.
-        //
-        // ```ignore
-        // impl ThemeTokens for MyTheme {
-        //     fn tokens(&self) -> Vec<TokenEntry> {
-        //         let mut t = IdeaThemeRef::new(self.idea.clone()).tokens();
-        //         t.extend(Hype::tokens());  // <- emitted by this macro arm
-        //         t
-        //     }
-        // }
-        // ```
+        // `tokens = [...]` block is present: the token entries this tone
+        // introduces. `app_theme!`'s `tones: [...]` returns them from the
+        // theme's `IdeaTheme::extension_tokens`, which installing the
+        // theme registers; a hand-written theme returns them from its own.
         $(
             impl $name {
-                /// Color tokens this tone introduces. Aggregate via
-                /// `ThemeTokens::tokens()` so they flow into the
-                /// runtime token registry on theme install/swap.
+                /// Color tokens this tone introduces. Return them from the
+                /// theme's `IdeaTheme::extension_tokens` (`app_theme!`'s
+                /// `tones: [...]` does) and installing the theme registers
+                /// them.
                 pub fn tokens() -> ::std::vec::Vec<$crate::TokenEntry> {
                     ::std::vec![
                         $(
@@ -274,8 +266,9 @@ macro_rules! tone {
 ///
 /// - The struct definition with an `idea: IdeaThemeDefaults` field.
 /// - `impl IdeaTheme` — every method delegates to `self.idea`.
-/// - `impl ThemeTokens` — concatenates `idea`'s built-in tokens with
-///   each listed extension's `tokens()` output.
+/// - `IdeaTheme::extension_tokens` — each listed extension's `tokens()`
+///   output, which installing the theme registers beside idea's tokens.
+/// - `impl ThemeTokens` — idea's built-in tokens plus those.
 ///
 /// ```ignore
 /// app_theme! {
@@ -352,22 +345,22 @@ macro_rules! app_theme {
                 // tone-aware component draws them.
                 ::std::vec![$($( $crate::extensible::ToneRef::from(<$tone as ::core::default::Default>::default()), )*)?]
             }
+            fn extension_tokens(&self) -> ::std::vec::Vec<$crate::TokenEntry> {
+                // Each listed tone's `tokens = [...]` block, one
+                // `.extend()` per type in `tones: [...]`. Installing the
+                // theme registers them.
+                #[allow(unused_mut)]
+                let mut tokens = <$idea_ty as $crate::theme::IdeaTheme>::extension_tokens(&self.idea);
+                $($( tokens.extend(<$tone>::tokens()); )*)?
+                tokens
+            }
         }
 
         impl $crate::ThemeTokens for $name {
             fn tokens(&self) -> ::std::vec::Vec<$crate::TokenEntry> {
-                // Built-in tokens (Idea defaults: 7 intents × 6 slots
-                // + 11 neutrals + spacing + radius + typography sizes).
-                let mut tokens = $crate::theme::IdeaThemeRef::new(self.idea.clone()).tokens();
-                // Extension tones each contribute their declared
-                // tokens. The macro emits one `.extend()` per type
-                // listed in `tones: [...]`.
-                $(
-                    $(
-                        tokens.extend(<$tone>::tokens());
-                    )*
-                )?
-                tokens
+                // idea's tokens plus this theme's `extension_tokens`, the
+                // same set installing the theme registers.
+                $crate::theme::IdeaThemeRef::new(self.clone()).tokens()
             }
         }
     };

@@ -480,6 +480,16 @@ pub trait IdeaTheme: Any + 'static {
     fn extension_tones(&self) -> Vec<crate::extensible::ToneRef> {
         Vec::new()
     }
+
+    /// Tokens this theme adds beyond idea's own vocabulary: the app's
+    /// brand colours, a tone's `tokens = [...]` block. Installing the theme
+    /// registers them beside idea's tokens, and swapping themes swaps their
+    /// values, so a light and a dark theme may give one name two values.
+    /// `app_theme! { …, tones: [Brand] }` fills this in from its tones.
+    /// Default: none.
+    fn extension_tokens(&self) -> Vec<TokenEntry> {
+        Vec::new()
+    }
 }
 
 // =============================================================================
@@ -562,6 +572,9 @@ impl IdeaTheme for IdeaThemeRef {
     }
     fn extension_tones(&self) -> Vec<crate::extensible::ToneRef> {
         self.inner.extension_tones()
+    }
+    fn extension_tokens(&self) -> Vec<TokenEntry> {
+        self.inner.extension_tokens()
     }
 }
 
@@ -1126,10 +1139,12 @@ impl ThemeTokens for IdeaThemeRef {
     ///
     /// Plus the soft fills' hover and press steps ([`soft_state_entries`]),
     /// computed from this theme's own values, so a theme swap recomputes
-    /// them with everything else.
+    /// them with everything else, and the theme's own
+    /// [`extension_tokens`](IdeaTheme::extension_tokens).
     fn tokens(&self) -> Vec<TokenEntry> {
         let mut entries = IdeaThemeDefaults::from_theme(self).token_entries();
         entries.extend(soft_state_entries(self));
+        entries.extend(self.extension_tokens());
         entries
     }
 }
@@ -2004,6 +2019,76 @@ mod tests {
 
             SCHEMES.with(|s| *s.borrow_mut() = None);
             runtime_core::host::reset_color_scheme_for_tests();
+        });
+    }
+
+    /// Regression: installing a theme read only idea's derived fields, so
+    /// a tone's `tokens = [...]` and any token a theme added of its own
+    /// were never registered: a sheet naming one drew its fallback, and a
+    /// value that differed between light and dark never swapped.
+    #[test]
+    fn regression_a_themes_own_tokens_install_and_swap() {
+        crate::testing::with_test_world(|| {
+            crate::tone! {
+                Brand using self, theme {
+                    key = "brand_tokens_test",
+                    fill_bg = theme.colors().text.clone(),
+                    fill_fg = theme.colors().background.clone(),
+                    soft_bg = theme.colors().surface_alt.clone(),
+                    soft_fg = theme.colors().text.clone(),
+                    stroke_color = theme.colors().border.clone(),
+                    stroke_fg = theme.colors().text.clone(),
+                    ghost_fg = theme.colors().text.clone(),
+                    disabled = theme.colors().text_muted.clone(),
+                    focus_ring = theme.colors().focus_ring.clone(),
+                    tokens = ["brand-tokens-test-fill" => "#ff0000"],
+                }
+            }
+            crate::app_theme! {
+                BrandTheme { idea: IdeaThemeDefaults, tones: [Brand] }
+            }
+            let read = |name: &'static str| Tokenized::token(name, Color("fallback".into())).resolve().0;
+
+            install_idea_theme(BrandTheme { idea: light_theme() });
+            assert_eq!(read("brand-tokens-test-fill"), "#ff0000", "a tone's tokens install with the theme");
+
+            /// A theme whose own token differs per instance, as a light and
+            /// a dark theme's would.
+            #[derive(Clone)]
+            struct Marked {
+                idea: IdeaThemeDefaults,
+                mark: &'static str,
+            }
+            impl IdeaTheme for Marked {
+                fn colors(&self) -> &Colors {
+                    IdeaTheme::colors(&self.idea)
+                }
+                fn intents(&self) -> &Intents {
+                    IdeaTheme::intents(&self.idea)
+                }
+                fn palette(&self) -> &Palette {
+                    IdeaTheme::palette(&self.idea)
+                }
+                fn effects(&self) -> &Effects {
+                    IdeaTheme::effects(&self.idea)
+                }
+                fn spacing(&self) -> &Spacing {
+                    IdeaTheme::spacing(&self.idea)
+                }
+                fn radius(&self) -> &Radius {
+                    IdeaTheme::radius(&self.idea)
+                }
+                fn typography(&self) -> &Typography {
+                    IdeaTheme::typography(&self.idea)
+                }
+                fn extension_tokens(&self) -> Vec<TokenEntry> {
+                    vec![TokenEntry { name: "brand-tokens-test-mark", value: TokenValue::Color(Color(self.mark.into())) }]
+                }
+            }
+            install_idea_theme(Marked { idea: light_theme(), mark: "#111111" });
+            assert_eq!(read("brand-tokens-test-mark"), "#111111");
+            set_idea_theme(Marked { idea: dark_theme(), mark: "#222222" });
+            assert_eq!(read("brand-tokens-test-mark"), "#222222", "swapping the theme swaps its token's value");
         });
     }
 

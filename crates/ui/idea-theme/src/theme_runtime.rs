@@ -26,9 +26,11 @@ pub use runtime_core::{
 pub(crate) fn install_idea(theme: crate::theme::IdeaThemeRef) {
     let data = crate::theme::IdeaThemeDefaults::from_theme(&theme);
     let tokens = runtime_core::Tokens::token_entries(&data);
+    let theme_ext = crate::theme::IdeaTheme::extension_tokens(&theme);
     crate::extensible::register_theme_tones(&theme);
     runtime_core::stash_active_theme(Rc::new(theme));
     <crate::theme::IdeaThemeDefaults as runtime_core::Tokens>::install(data);
+    install_extension_tokens(&theme_ext, false);
     runtime_core::apply_host_surface_tokens(&tokens);
 }
 
@@ -37,10 +39,30 @@ pub(crate) fn install_idea(theme: crate::theme::IdeaThemeRef) {
 pub(crate) fn set_idea(theme: crate::theme::IdeaThemeRef) {
     let data = crate::theme::IdeaThemeDefaults::from_theme(&theme);
     let tokens = runtime_core::Tokens::token_entries(&data);
+    let theme_ext = crate::theme::IdeaTheme::extension_tokens(&theme);
     crate::extensible::register_theme_tones(&theme);
     runtime_core::stash_active_theme(Rc::new(theme));
     <crate::theme::IdeaThemeDefaults as runtime_core::Tokens>::set(data);
+    install_extension_tokens(&theme_ext, true);
     runtime_core::apply_host_surface_tokens(&tokens);
+}
+
+/// Register the theme's own tokens ([`IdeaTheme::extension_tokens`]) beside
+/// idea's: the first install creates them, a swap pushes the new values.
+/// They are not fields of [`IdeaThemeDefaults`], so its derived install
+/// never names them.
+///
+/// [`IdeaTheme::extension_tokens`]: crate::theme::IdeaTheme::extension_tokens
+/// [`IdeaThemeDefaults`]: crate::theme::IdeaThemeDefaults
+fn install_extension_tokens(entries: &[TokenEntry], swap: bool) {
+    if entries.is_empty() {
+        return;
+    }
+    if swap {
+        runtime_core::update_tokens(entries);
+    } else {
+        runtime_core::install_tokens(entries);
+    }
 }
 
 /// The active idea-theme's default body [`FontFamily`](runtime_core::FontFamily).
