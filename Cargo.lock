@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "9.3.2"
+version = "9.3.3"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "9.5.2"
+version = "9.5.3"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "backend-macos"
-version = "9.5.0"
+version = "9.5.1"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -6605,7 +6605,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.7.1"
+version = "2.8.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -6865,7 +6865,7 @@ dependencies = [
 
 [[package]]
 name = "ios-navigator-helpers"
-version = "9.0.0"
+version = "9.0.1"
 dependencies = [
  "backend-ios-core",
  "backend-ios-mobile",
@@ -12659,7 +12659,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svg"
-version = "10.0.0"
+version = "10.0.1"
 dependencies = [
  "backend-android-core",
  "backend-android-mobile",
