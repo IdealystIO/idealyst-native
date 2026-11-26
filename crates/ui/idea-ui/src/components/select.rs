@@ -316,6 +316,16 @@ fn transparent_backdrop_sheet() -> std::rc::Rc<StyleSheet> {
 // `stylesheet!` (LINK-time), not `premint_as`: the dropdown constructs on
 // OPEN, which the premint dump's crawl never does — see `popover.rs`.
 stylesheet! {
+    // The sheet's rows run its full width.
+    SelectSheetRows<()> {
+        base(_t) {
+            flex_direction: runtime_core::FlexDirection::Column,
+            align_items: runtime_core::AlignItems::Stretch,
+        }
+    }
+}
+
+stylesheet! {
     SelectBackdropSheet<()> {
         base(_t) {
             position: Position::Absolute,
@@ -634,6 +644,11 @@ pub struct SelectProps {
     /// that opens the menu). Each option's row takes its own
     /// [`SelectOption::test_id`]. Inert outside a robot build.
     pub test_id: Option<&'static str>,
+    /// Below `Sm`, open the options in a bottom sheet rather than a menu
+    /// anchored to the trigger. Default `true`; `false` keeps the anchored
+    /// menu at every width.
+    #[prop(static)]
+    pub sheet_on_phone: bool,
 }
 
 impl Default for SelectProps {
@@ -648,6 +663,7 @@ impl Default for SelectProps {
             disabled: Reactive::Static(false),
             max_width: None,
             test_id: None,
+            sheet_on_phone: true,
             styles: Default::default(),
         }
     }
@@ -674,6 +690,10 @@ pub fn Select(props: SelectProps) -> Element {
     let icon_data = props.icon.get().unwrap_or(CHEVRON_DOWN);
 
     let open: Signal<bool> = signal(false);
+    // Open as a sheet: decided at each open by the width, and held until
+    // the sheet closes.
+    let sheet_open: Signal<bool> = signal(false);
+    let sheet_choice = super::picker_sheet::SheetChoice::new(props.sheet_on_phone);
     let trigger_ref: Ref<PressableHandle> = Ref::new();
 
     let label_placeholder = placeholder.clone();
@@ -708,7 +728,10 @@ pub fn Select(props: SelectProps) -> Element {
     // Open on press; the menu's dismiss backdrop handles close — clicking
     // away OR clicking the trigger again lands on the (invisible) backdrop
     // and dismisses, so an open Select closes on the next click anywhere.
-    let on_open: Rc<dyn Fn()> = Rc::new(move || open.set(true));
+    let on_open: Rc<dyn Fn()> = Rc::new(move || {
+        sheet_open.set(sheet_choice.now());
+        open.set(true);
+    });
     let trigger = runtime_core::pressable(vec![label_child, chevron], move || (on_open)())
         .with_style(trigger_style)
         .bind(trigger_ref);
@@ -730,6 +753,7 @@ pub fn Select(props: SelectProps) -> Element {
             effect!({
                 if close_on_disable.get() {
                     open.set(false);
+                    sheet_open.set(false);
                 }
             });
             trigger.disabled(move || live.get())
@@ -739,13 +763,24 @@ pub fn Select(props: SelectProps) -> Element {
 
     let menu_on_change = on_change.clone();
     let styles = props.styles.clone();
-    let menu_close: Rc<dyn Fn()> = Rc::new(move || open.set(false));
-    // The menu exists only while open: each open builds it fresh (rows
-    // reflect the current `value`), each close tears it down.
+    let menu_close: Rc<dyn Fn()> = Rc::new(move || {
+        open.set(false);
+        sheet_open.set(false);
+    });
+    // The anchored menu exists only while open: each open builds it fresh
+    // (rows reflect the current `value`), each close tears it down. The
+    // sheet is mounted once and plays its own entry and exit.
+    let sheet = sheet_choice.allowed().then(|| {
+        let (rows_change, rows_close, rows_styles) = (on_change.clone(), menu_close.clone(), props.styles.clone());
+        let dismiss = menu_close.clone();
+        super::picker_sheet::picker_sheet(sheet_open, dismiss, move || {
+            sheet_rows(value, options, rows_change.clone(), rows_close.clone(), &rows_styles)
+        })
+    });
     ui! {
         view {
             trigger
-            if open.get() {
+            if open.get() && !sheet_open.get() {
                 {
                     menu_build(
                         value,
@@ -757,6 +792,9 @@ pub fn Select(props: SelectProps) -> Element {
                         &styles,
                     )
                 }
+            }
+            if let Some(sheet) = sheet {
+                { sheet }
             }
         }
     }
@@ -791,21 +829,19 @@ fn menu_row(
     with_test_id!(row, opt_test_id).into_element()
 }
 
-fn menu_build(
+/// The option rows, headed by group: the anchored menu's and the sheet's.
+/// Keyed by option id so a list that changes while open (rows loaded after
+/// mount) adds and drops rows in place instead of rebuilding the panel.
+fn option_rows(
     value: Signal<String>,
     options: runtime_core::ReadSignal<OptionList>,
     on_change: Rc<dyn Fn(String)>,
     menu_close: Rc<dyn Fn()>,
-    trigger_ref: Ref<PressableHandle>,
-    max_width: Option<f32>,
     styles: &SelectSlotStyles,
 ) -> Element {
-    // Keyed by option id so a list that changes while the menu is open
-    // (rows loaded after mount) adds and drops rows in place instead of
-    // rebuilding the panel.
-    let row_close = menu_close.clone();
+    let row_close = menu_close;
     let row_styles = styles.clone();
-    let rows = each_keyed(move || {
+    each_keyed(move || {
         let options = options.get();
         let shown: Vec<usize> = (0..options.len()).collect();
         menu_entries(&options, &shown)
@@ -842,7 +878,32 @@ fn menu_build(
                 (EachKey::new(option.id.clone()), build)
             })
             .collect()
-    });
+    })
+}
+
+/// The sheet's body: the option rows, at the sheet's width.
+fn sheet_rows(
+    value: Signal<String>,
+    options: runtime_core::ReadSignal<OptionList>,
+    on_change: Rc<dyn Fn(String)>,
+    menu_close: Rc<dyn Fn()>,
+    styles: &SelectSlotStyles,
+) -> Element {
+    runtime_core::view(vec![option_rows(value, options, on_change, menu_close, styles)])
+        .with_style(SelectSheetRows::sheet())
+        .into_element()
+}
+
+fn menu_build(
+    value: Signal<String>,
+    options: runtime_core::ReadSignal<OptionList>,
+    on_change: Rc<dyn Fn(String)>,
+    menu_close: Rc<dyn Fn()>,
+    trigger_ref: Ref<PressableHandle>,
+    max_width: Option<f32>,
+    styles: &SelectSlotStyles,
+) -> Element {
+    let rows = option_rows(value, options, on_change, menu_close.clone(), styles);
 
     // Click-away + re-press-to-close: a FULLSCREEN, transparent dismiss
     // backdrop. An anchored overlay's own backdrop only fills its small

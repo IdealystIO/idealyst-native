@@ -200,6 +200,7 @@ fn select_menu_exists_only_while_open() {
                 value = val,
                 on_change = Rc::new(move |s: String| val.set(s)) as Rc<dyn Fn(String)>,
                 options = vec![SelectOption::new("a", "Alpha"), SelectOption::new("b", "Beta")],
+                sheet_on_phone = false,
             )
         }
     });

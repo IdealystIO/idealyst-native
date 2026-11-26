@@ -153,6 +153,7 @@ use idea_theme::compat::SignalModify as _;
 use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
+use runtime_core::{effect, stylesheet};
 use runtime_core::{
     component, each_keyed, memo, on_defer, pressable, signal, text, text_input, ui, view,
     EachKey, EachRowBuild, Element, IdealystSchema, IntoElement, Reactive, ReadSignal, Ref, Signal,
@@ -512,6 +513,11 @@ pub struct AutocompleteProps {
     /// takes its own [`SelectOption::test_id`]. Inert outside a robot
     /// build.
     pub test_id: Option<&'static str>,
+    /// Below `Sm`, search and pick in a bottom sheet — its own input at the
+    /// top, the matches under it — rather than a menu anchored to the
+    /// field. Default `true`; `false` keeps the anchored menu at every width.
+    #[prop(static)]
+    pub sheet_on_phone: bool,
 }
 
 impl Default for AutocompleteProps {
@@ -536,6 +542,7 @@ impl Default for AutocompleteProps {
             clearable: false,
             max_width: None,
             test_id: None,
+            sheet_on_phone: true,
             styles: Default::default(),
         }
     }
@@ -712,6 +719,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // `anchor_to_component`).
     let on_change = super::anchor_to_component(props.on_change.clone());
     let size = props.size.clone();
+    let sheet_size = props.size.clone();
     // TODO(reactive-sweep): `empty_text` is snapshotted here and moved into the
     // `when`/`each_keyed` dropdown closures that build the empty-state row
     // (structural list content). Routing a live `empty_text` would need the
@@ -779,6 +787,11 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     }
     let query: Signal<String> = signal(initial_query);
     let open: Signal<bool> = signal(false);
+    // This open is a sheet: decided at each open by the width, held until
+    // it closes. While it is, the field's own input gives up focus to the
+    // sheet's, and its blur is not a close.
+    let sheet_choice = super::picker_sheet::SheetChoice::new(props.sheet_on_phone);
+    let sheet_mode: Signal<bool> = signal(false);
     // Keyboard highlight as a position into the *current* filtered list. Rows
     // only: group headings aren't in that list, so the cursor can't land on one.
     let highlight: Signal<usize> = signal(0usize);
@@ -894,6 +907,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // the top instead, because the filter just changed.
     let open_menu: Rc<dyn Fn()> = {
         Rc::new(move || {
+            if !open.peek() {
+                sheet_mode.set(sheet_choice.now());
+            }
             open.set(true);
             cursor_engaged.set(!free_text);
             // Multi mode seeds on the FIRST pick — there is no single
@@ -962,7 +978,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let key_commit_typed = commit_typed.clone();
     let blur_revert = revert.clone();
     let blur_commit_typed = commit_typed.clone();
-    let input = text_input(query, move |v: String| {
+    let on_type: Rc<dyn Fn(String)> = Rc::new(move |v: String| {
         query.set(v.clone());
         open.set(true);
         highlight.set(0);
@@ -970,7 +986,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         if let Some(cb) = &on_query {
             (cb)(v);
         }
-    })
+    });
+    let field_type = on_type.clone();
+    let input = text_input(query, move |v: String| (field_type)(v))
     .bind(input_ref)
     // `placeholder` is routed LIVE: a reactive source updates the native
     // placeholder in place; a `Static` one sets it once.
@@ -991,7 +1009,19 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
             let open_menu = open_menu.clone();
             move |focused: bool| {
                 if focused {
+                    // Decided before opening: `open_menu` only stages the
+                    // mode, and this turn would read the old one.
+                    let as_sheet = if open.peek() { sheet_mode.peek() } else { sheet_choice.now() };
                     (open_menu)();
+                    // A sheet takes the typing: the field lets go of focus
+                    // so the keyboard serves the sheet's input.
+                    if as_sheet {
+                        if let Some(h) = input_ref.get() {
+                            h.blur();
+                        }
+                    }
+                } else if sheet_mode.peek() {
+                    // Focus went to the sheet; the sheet closes itself.
                 } else {
                     open.set(false);
                     if free_text {
@@ -1075,9 +1105,12 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
             if open.get() {
                 open.set(false);
             } else {
+                let as_sheet = sheet_choice.now();
                 (open_menu)();
-                if let Some(h) = input_ref.get() {
-                    h.focus();
+                if !as_sheet {
+                    if let Some(h) = input_ref.get() {
+                        h.focus();
+                    }
                 }
             }
         }
@@ -1134,13 +1167,14 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let footer_slot = props.footer.clone();
     let empty_style = styles.empty.clone();
     let loading_text = props.loading_text.clone();
-    let build_panel = move || {
+    // The matches, headed by group: the anchored menu's and the sheet's.
+    let build_rows = move || {
         let snapshot_commit = menu_commit.clone();
         let empty_text = empty_text.clone();
         let empty_style = empty_style.clone();
         let loading = loading.clone();
         let loading_text = loading_text.clone();
-        let rows = each_keyed(move || {
+        each_keyed(move || {
             let idxs = filtered.get();
             let note = |key: &str, content: String| -> (EachKey, EachRowBuild) {
                 let empty_style = empty_style.clone();
@@ -1179,7 +1213,13 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 rows.push(note("__loading", loading_text.get().unwrap_or_else(|| crate::labels::ui_labels().loading.clone())));
             }
             rows
-        });
+        })
+    };
+    let panel_rows = build_rows.clone();
+    let panel_revert = menu_revert.clone();
+    let build_panel = move || {
+        let menu_revert = panel_revert.clone();
+        let rows = panel_rows();
         // Cap + scroll the filtered list so a long set of matches scrolls
         // within a bounded panel instead of running off the viewport. The
         // combobox shape additionally floors the panel's width at the
@@ -1213,12 +1253,61 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     };
 
 
+    let sheet = sheet_choice.allowed().then(|| {
+        let sheet_open: Signal<bool> = signal(false);
+        // Open while an open is a sheet; a pick or a dismissal closes both.
+        effect!({
+            sheet_open.set(open.get() && sheet_mode.get());
+        });
+        let dismiss_revert = menu_revert.clone();
+        let dismiss_commit_typed = commit_typed.clone();
+        let on_dismiss: Rc<dyn Fn()> = Rc::new(move || {
+            open.set(false);
+            sheet_mode.set(false);
+            if free_text {
+                (dismiss_commit_typed)();
+            } else {
+                (dismiss_revert)();
+            }
+        });
+        let sheet_rows = build_rows.clone();
+        let sheet_styles = styles.clone();
+        let sheet_placeholder = props.placeholder.clone();
+        super::picker_sheet::picker_sheet(sheet_open, on_dismiss, move || {
+            let typing = on_type.clone();
+            let style = AutocompleteStyles::input()
+                .set(sheet_size.clone().map(AutocompleteSize::from))
+                .overridden(sheet_styles.input.as_ref());
+            let search = text_input(query, move |v: String| (typing)(v))
+                .placeholder_reactive(sheet_placeholder.clone())
+                .placeholder_color(crate::components::placeholder_ink())
+                .autofocus(true)
+                .with_style(style)
+                .into_element();
+            view(vec![search, sheet_rows()]).with_style(AutocompleteSheetBody::sheet()).into_element()
+        })
+    });
+
     ui! {
         view {
             wrapper
-            if open.get() {
+            if open.get() && !sheet_mode.get() {
                 build_panel()
             }
+            if let Some(sheet) = sheet {
+                { sheet }
+            }
+        }
+    }
+}
+
+stylesheet! {
+    // The sheet's search input over its matches, each the sheet's width.
+    AutocompleteSheetBody<()> {
+        base(_t) {
+            flex_direction: runtime_core::FlexDirection::Column,
+            align_items: runtime_core::AlignItems::Stretch,
+            gap: runtime_core::Length::Px(8.0),
         }
     }
 }
@@ -1818,7 +1907,7 @@ mod tests {
             };
             match classify(Autocomplete(props)) {
                 P::View { children, .. } => {
-                    assert_eq!(children.len(), 2, "wrapper view + dropdown panel");
+                    assert_eq!(children.len(), 3, "wrapper view + dropdown panel + phone sheet");
                 }
                 _ => panic!("Autocomplete renders a view wrapper"),
             }
@@ -1830,8 +1919,8 @@ mod tests {
     // chevron, `when` panel, external-value `on_defer`) must build without
     // panicking. Guards against a regression where any of those wiring steps
     // touches the arena/scope in a way that aborts at construction. Renders
-    // to the closed (`open == false`) state: a wrapper view + the `when`
-    // panel placeholder.
+    // to the closed (`open == false`) state: a wrapper view, the `when`
+    // panel placeholder and the phone sheet's.
     #[test]
     fn builds_collapsed_tree() {
         with_test_world(|| {
@@ -1849,7 +1938,7 @@ mod tests {
             let tree = Autocomplete(props);
             match classify(tree) {
                 P::View { children, .. } => {
-                    assert_eq!(children.len(), 2, "wrapper view + dropdown panel");
+                    assert_eq!(children.len(), 3, "wrapper view + dropdown panel + phone sheet");
                 }
                 _ => panic!("Autocomplete renders a view wrapper"),
             }

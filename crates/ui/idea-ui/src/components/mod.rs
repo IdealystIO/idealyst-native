@@ -303,6 +303,7 @@ pub(crate) mod menu_panel;
 /// Press-drag-release picking for menu rows. Internal — see the module docs.
 pub(crate) mod press_drag;
 /// The shared open animation of anchored surfaces. Internal — see the module docs.
+pub(crate) mod picker_sheet;
 pub(crate) mod pop_in;
 pub mod pagination;
 pub mod progress;

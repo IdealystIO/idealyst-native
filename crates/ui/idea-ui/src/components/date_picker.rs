@@ -113,13 +113,23 @@ pub(crate) fn picker_trigger(
 }
 
 /// The open panel: fullscreen dismiss catcher + a `menu`-slot
-/// column anchored below the trigger. `content` builds the panel body
-/// fresh per open.
+/// column anchored below the trigger — or, below `Sm` when
+/// `sheet_on_phone`, a bottom sheet holding the same `content`. Built
+/// fresh per open, so the width at the open decides.
 pub(crate) fn anchored_panel(
     anchor: AnchorTarget,
     content: Vec<Element>,
     close: Rc<dyn Fn()>,
+    sheet_on_phone: bool,
 ) -> Element {
+    if super::picker_sheet::SheetChoice::new(sheet_on_phone).now() {
+        // The panel exists only while open, so the sheet does too: it
+        // opens as it mounts and closes through `close`.
+        let body = std::cell::RefCell::new(Some(content));
+        return super::picker_sheet::picker_sheet(runtime_core::signal(true), close, move || {
+            view(body.borrow_mut().take().unwrap_or_default()).with_style(DateSheetBody::sheet()).into_element()
+        });
+    }
     let catcher_close = close.clone();
     let catcher = overlay(Vec::new())
         .placement(ViewportPlacement::FullScreen)
@@ -146,6 +156,17 @@ pub(crate) fn anchored_panel(
         .into_element();
 
     view(vec![catcher, anchored]).into_element()
+}
+
+stylesheet! {
+    // The sheet's calendar and its rows, each the sheet's width.
+    DateSheetBody<()> {
+        base(_t) {
+            flex_direction: runtime_core::FlexDirection::Column,
+            align_items: runtime_core::AlignItems::Stretch,
+            gap: runtime_core::Length::Px(8.0),
+        }
+    }
 }
 
 /// A quiet footer action row (`Clear`), drawn by the `option` slot so it
@@ -200,6 +221,11 @@ pub struct DatePickerProps {
     /// Optional robot/E2E test id, forwarded to the trigger (the pressable
     /// that opens the popup). Inert outside a robot build.
     pub test_id: Option<&'static str>,
+    /// Below `Sm`, open the calendar in a bottom sheet rather than a panel
+    /// anchored to the field. Default `true`; `false` keeps the anchored
+    /// panel at every width.
+    #[prop(static)]
+    pub sheet_on_phone: bool,
 }
 
 impl Default for DatePickerProps {
@@ -217,6 +243,7 @@ impl Default for DatePickerProps {
             size: Reactive::Static(SelectSize::default()),
             clearable: Reactive::Static(false),
             test_id: None,
+            sheet_on_phone: true,
         }
     }
 }
@@ -224,6 +251,7 @@ impl Default for DatePickerProps {
 /// Popup single-date picker. See the module docs.
 #[component]
 pub fn DatePicker(props: DatePickerProps) -> Element {
+    let sheet_on_phone = props.sheet_on_phone;
     let value = props.value;
     // Re-anchored: a pick closes the popup that fired it (see
     // `anchor_to_component`).
@@ -282,7 +310,7 @@ pub fn DatePicker(props: DatePickerProps) -> Element {
                 (clear_close)();
             }));
         }
-        anchored_panel(AnchorTarget::from(trigger_ref), content, close)
+        anchored_panel(AnchorTarget::from(trigger_ref), content, close, sheet_on_phone)
     };
 
 
@@ -338,6 +366,11 @@ pub struct DateTimePickerProps {
     /// Optional robot/E2E test id, forwarded to the trigger (the pressable
     /// that opens the popup). Inert outside a robot build.
     pub test_id: Option<&'static str>,
+    /// Below `Sm`, open the calendar in a bottom sheet rather than a panel
+    /// anchored to the field. Default `true`; `false` keeps the anchored
+    /// panel at every width.
+    #[prop(static)]
+    pub sheet_on_phone: bool,
 }
 
 impl Default for DateTimePickerProps {
@@ -357,6 +390,7 @@ impl Default for DateTimePickerProps {
             size: Reactive::Static(SelectSize::default()),
             clearable: Reactive::Static(false),
             test_id: None,
+            sheet_on_phone: true,
         }
     }
 }
@@ -366,6 +400,7 @@ impl Default for DateTimePickerProps {
 /// outside click / Escape closes. See the module docs.
 #[component]
 pub fn DateTimePicker(props: DateTimePickerProps) -> Element {
+    let sheet_on_phone = props.sheet_on_phone;
     let value = props.value;
     // Re-anchored: a pick closes the popup that fired it (see
     // `anchor_to_component`).
@@ -466,7 +501,7 @@ pub fn DateTimePicker(props: DateTimePickerProps) -> Element {
                 (clear_close)();
             }));
         }
-        anchored_panel(AnchorTarget::from(trigger_ref), content, close)
+        anchored_panel(AnchorTarget::from(trigger_ref), content, close, sheet_on_phone)
     };
 
 
@@ -518,6 +553,11 @@ pub struct DateRangePickerProps {
     /// Optional robot/E2E test id, forwarded to the trigger (the pressable
     /// that opens the popup). Inert outside a robot build.
     pub test_id: Option<&'static str>,
+    /// Below `Sm`, open the calendar in a bottom sheet rather than a panel
+    /// anchored to the field. Default `true`; `false` keeps the anchored
+    /// panel at every width.
+    #[prop(static)]
+    pub sheet_on_phone: bool,
 }
 
 impl Default for DateRangePickerProps {
@@ -535,6 +575,7 @@ impl Default for DateRangePickerProps {
             size: Reactive::Static(SelectSize::default()),
             clearable: Reactive::Static(false),
             test_id: None,
+            sheet_on_phone: true,
         }
     }
 }
@@ -543,6 +584,7 @@ impl Default for DateRangePickerProps {
 /// commits `(start, end)` and closes. See the module docs.
 #[component]
 pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
+    let sheet_on_phone = props.sheet_on_phone;
     let value = props.value;
     // Re-anchored: a pick closes the popup that fired it (see
     // `anchor_to_component`).
@@ -603,7 +645,7 @@ pub fn DateRangePicker(props: DateRangePickerProps) -> Element {
                 (clear_close)();
             }));
         }
-        anchored_panel(AnchorTarget::from(trigger_ref), content, close)
+        anchored_panel(AnchorTarget::from(trigger_ref), content, close, sheet_on_phone)
     };
 
 
@@ -639,6 +681,7 @@ mod tests {
                 AnchorTarget::from(anchor),
                 vec![runtime_core::text("panel").into_element()],
                 Rc::new(|| {}),
+                false,
             );
             let kids = match classify(el) {
                 P::View { children, .. } => children,

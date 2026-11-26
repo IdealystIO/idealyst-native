@@ -11,6 +11,14 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **On a phone, pickers and popovers open in a bottom sheet** (`idea-ui` minor). Below `Sm`,
+  `Select` lists its options, `Autocomplete` searches (its own input at the top of the sheet),
+  `DateInput`, `DateTimeInput`, `DatePicker`, `DateTimePicker` and `DateRangePicker` show their
+  calendar, and `Popover` shows its contents in a bottom sheet instead of a panel anchored to the
+  trigger, where a thumb could not reach it and the screen's edge clipped it. The width at the
+  moment it opens decides. Each takes `sheet_on_phone = false` to keep the anchored panel at every
+  width.
+
 - **`LocationError` has `ServicesOff` and is `#[non_exhaustive]`** (`location` major). Location
   switched off for the whole device is told apart from "no fix yet" on Android, iOS and macOS. An
   exhaustive `match` needs a `_` arm.

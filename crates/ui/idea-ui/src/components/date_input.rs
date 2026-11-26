@@ -143,6 +143,11 @@ pub struct DateInputProps {
     /// Optional robot/E2E test id, forwarded to the text input (see
     /// [`Field`]'s `test_id`). Inert outside a robot build.
     pub test_id: Option<&'static str>,
+    /// Below `Sm`, open the calendar in a bottom sheet rather than a panel
+    /// anchored to the field. Default `true`; `false` keeps the anchored
+    /// panel at every width.
+    #[prop(static)]
+    pub sheet_on_phone: bool,
 }
 
 impl Default for DateInputProps {
@@ -166,6 +171,7 @@ impl Default for DateInputProps {
             labels: None,
             width: Reactive::Static(None),
             test_id: None,
+            sheet_on_phone: true,
         }
     }
 }
@@ -173,6 +179,7 @@ impl Default for DateInputProps {
 /// Typed date input with a calendar popup. See the module docs.
 #[component]
 pub fn DateInput(props: DateInputProps) -> Element {
+    let sheet_on_phone = props.sheet_on_phone;
     let value = props.value;
     // Re-anchored: a pick closes the popup that fired it (see
     // `anchor_to_component`).
@@ -268,7 +275,7 @@ pub fn DateInput(props: DateInputProps) -> Element {
                 framed = false,
             )
         };
-        anchored_panel(AnchorTarget::from(anchor_ref), vec![calendar], close)
+        anchored_panel(AnchorTarget::from(anchor_ref), vec![calendar], close, sheet_on_phone)
     };
     let popup = ui! {
         if open.get() {
@@ -335,6 +342,11 @@ pub struct DateTimeInputProps {
     /// Optional robot/E2E test id, forwarded to the text input (see
     /// [`Field`]'s `test_id`). Inert outside a robot build.
     pub test_id: Option<&'static str>,
+    /// Below `Sm`, open the calendar in a bottom sheet rather than a panel
+    /// anchored to the field. Default `true`; `false` keeps the anchored
+    /// panel at every width.
+    #[prop(static)]
+    pub sheet_on_phone: bool,
 }
 
 impl Default for DateTimeInputProps {
@@ -360,6 +372,7 @@ impl Default for DateTimeInputProps {
             labels: None,
             width: Reactive::Static(None),
             test_id: None,
+            sheet_on_phone: true,
         }
     }
 }
@@ -368,6 +381,7 @@ impl Default for DateTimeInputProps {
 /// docs.
 #[component]
 pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
+    let sheet_on_phone = props.sheet_on_phone;
     let value = props.value;
     // Re-anchored: a pick closes the popup that fired it (see
     // `anchor_to_component`).
@@ -498,7 +512,7 @@ pub fn DateTimeInput(props: DateTimeInputProps) -> Element {
             )
         };
 
-        anchored_panel(AnchorTarget::from(anchor_ref), vec![calendar, time_row], close)
+        anchored_panel(AnchorTarget::from(anchor_ref), vec![calendar, time_row], close, sheet_on_phone)
     };
     let popup = ui! {
         if open.get() {

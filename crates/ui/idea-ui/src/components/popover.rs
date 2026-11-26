@@ -244,6 +244,12 @@ pub struct PopoverProps {
     pub on_dismiss: Option<Rc<dyn Fn()>>,
     /// Popover surface contents.
     pub children: Vec<Element>,
+    /// Below `Sm`, show the contents in a bottom sheet rather than beside
+    /// `target`: a panel pinned to a small trigger is hard for a thumb to
+    /// reach and the screen's edge clips it. Default `true`; `false` keeps
+    /// the anchored surface at every width.
+    #[prop(static)]
+    pub sheet_on_phone: bool,
 }
 
 impl Default for PopoverProps {
@@ -256,6 +262,7 @@ impl Default for PopoverProps {
             min_width: Reactive::Static(POPOVER_DEFAULT_MIN_WIDTH),
             on_dismiss: None,
             children: Vec::new(),
+            sheet_on_phone: true,
             styles: Default::default(),
         }
     }
@@ -298,6 +305,15 @@ pub fn Popover(props: PopoverProps) -> Element {
     let mut content: Vec<Element> = Vec::with_capacity(props.children.len());
     for c in props.children {
         ChildList::append_to(c, &mut content);
+    }
+    // Mounting a popover is opening it, so the width now decides: below
+    // `Sm`, the same contents in a sheet that opens as it mounts.
+    if super::picker_sheet::SheetChoice::new(props.sheet_on_phone).now() {
+        let close = props.on_dismiss.clone().unwrap_or_else(|| Rc::new(|| {}));
+        let body = std::cell::RefCell::new(Some(content));
+        return super::picker_sheet::picker_sheet(runtime_core::signal(true), close, move || {
+            runtime_core::view(body.borrow_mut().take().unwrap_or_default()).into_element()
+        });
     }
     // The surface arrives with a quick fade and slight scale (`pop_in`),
     // carried by a static layer around it.
@@ -371,6 +387,7 @@ mod tests {
             let el = Popover(PopoverProps {
                 target: None,
                 children: vec![runtime_core::text("hi").into_element()],
+                sheet_on_phone: false,
                 ..Default::default()
             });
             // Degenerate output: a plain (childless) view — there's nothing to
@@ -405,6 +422,7 @@ mod tests {
             let el = Popover(PopoverProps {
                 target: Some(AnchorTarget::from(trigger)),
                 children: vec![runtime_core::text("body").into_element()],
+                sheet_on_phone: false,
                 ..Default::default()
             });
 
@@ -465,6 +483,7 @@ mod tests {
                     runtime_core::text_input(runtime_core::signal(String::new()), |_| {})
                         .into_element(),
                 ],
+                sheet_on_phone: false,
                 ..Default::default()
             });
 
@@ -490,6 +509,7 @@ mod tests {
     /// The anchored surface's resolved `min_width`.
     fn surface_min_width(props: PopoverProps) -> Option<Tokenized<Length>> {
         use crate::test_support::TStyle;
+        let props = PopoverProps { sheet_on_phone: false, ..props };
         let mut kids = match classify(Popover(props)) {
             P::View { children, .. } => children,
             _ => panic!("a targeted Popover wraps [catcher, anchored] in a View"),

@@ -4,7 +4,8 @@
 //! CrewForge's want_0842baa4 (a grouped searchable picker) and want_3e23bb0c:
 //! a host fetching matches per keystroke needs rows drawn as given, focus and
 //! the typed text surviving each list swap, and a committed value that keeps its
-//! label once its row leaves the list.
+//! label once its row leaves the list. Each pins the anchored menu
+//! (`sheet_on_phone = false`): the harness's window is a phone's.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -110,7 +111,7 @@ fn autocomplete_keyboard_cursor_skips_headings_and_an_emptied_group_hides() {
     let _r = mount(&h, move || {
         let value = signal(String::new());
         let on_change: Rc<dyn Fn(String)> = Rc::new(move |id| sink.borrow_mut().push(id));
-        ui! { Autocomplete(value = value, options = grouped(), on_change = on_change) }
+        ui! { Autocomplete(value = value, options = grouped(), on_change = on_change, sheet_on_phone = false) }
     });
     focus(&h, true);
     let tree = live(&h);
@@ -152,6 +153,7 @@ fn mount_remote(h: &Harness, allow_free_text: bool) -> (Remote, runtime_scene::R
         });
         ui! {
             Autocomplete(
+                sheet_on_phone = false,
                 value = value,
                 options = options,
                 on_change = on_change,
@@ -271,7 +273,7 @@ fn autocomplete_loading_row_replaces_the_empty_text() {
         let value = signal(String::new());
         let loading = signal(true);
         *out.borrow_mut() = Some(loading);
-        ui! { Autocomplete(value = value, filter = false, loading = loading, loading_text = Some("Searching".to_string())) }
+        ui! { Autocomplete(value = value, filter = false, loading = loading, loading_text = Some("Searching".to_string()), sheet_on_phone = false) }
     });
     focus(&h, true);
     let tree = live(&h);
