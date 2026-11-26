@@ -389,6 +389,9 @@ impl Default for MenuProps {
 /// `on_dismiss`, the universal dropdown/menu behavior — mirrors `Popover`).
 #[component(children)]
 pub fn Menu(props: MenuProps) -> Element {
+    // A pick usually closes the menu; work it starts keeps its reply while
+    // whatever opened the menu stays (see `mark_overlay`).
+    runtime_core::mark_overlay();
     let target = props
         .target
         .expect("Menu: required `target` prop missing — set it to an AnchorTarget from a Ref");

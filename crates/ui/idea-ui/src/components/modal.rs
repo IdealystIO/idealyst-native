@@ -833,6 +833,11 @@ stylesheet! {
 /// via `on_dismiss`/`on_backdrop_press`.
 #[component]
 pub fn Modal(props: ModalProps) -> Element {
+    // A press inside often closes the modal; work it starts keeps its reply
+    // while whatever opened the modal stays (see `mark_overlay`). Here for a
+    // modal an `if` removes whole; again in `build_overlay` for one whose
+    // `open` turns false, where only the content leaves.
+    runtime_core::mark_overlay();
     let open = props.open;
     let content = props.content;
     let header = props.header;
@@ -923,6 +928,7 @@ fn build_overlay(
     // [`ModalProps::sheet_slide`].
     sheet_slide: Option<AnimatedValue<f32>>,
 ) -> Element {
+    runtime_core::mark_overlay();
     let DismissRouting { backdrop: backdrop_handler, platform: platform_dismiss } =
         DismissRouting::resolve(on_dismiss, on_backdrop_press, dismissable);
 

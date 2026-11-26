@@ -286,6 +286,9 @@ impl Default for PopoverProps {
 /// supplies a real `AnchorTarget` once the trigger is bound.
 #[component(children)]
 pub fn Popover(props: PopoverProps) -> Element {
+    // A press inside often closes the popover; work it starts keeps its
+    // reply while whatever opened the popover stays (see `mark_overlay`).
+    runtime_core::mark_overlay();
     // No anchor → nothing to position against. Degrade to an empty,
     // layout-free element instead of panicking (pinned by the
     // `none_target_*` tests below).
