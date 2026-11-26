@@ -59,9 +59,6 @@
 //! below. Compiled out entirely in release.
 
 use std::any::{Any, TypeId};
-// Only the debug-build diagnostic table (and the tests) need it here; the
-// engine's cells live in `native.rs`.
-#[cfg(any(debug_assertions, test))]
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
