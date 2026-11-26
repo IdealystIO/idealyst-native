@@ -240,7 +240,7 @@ const ENTER_MS: u64 = 180;
 const EXIT_MS: u64 = 150;
 /// A SHEET's exit takes longer than a card's, because it travels further:
 /// it leaves by the edge it came from rather than fading where it stands.
-const SHEET_EXIT_MS: u64 = 240;
+pub(crate) const SHEET_EXIT_MS: u64 = 240;
 /// How far below its resting position the card starts before sliding up.
 const CARD_SLIDE_PX: f32 = 14.0;
 /// How far below its resting position a SHEET starts before rising. Larger

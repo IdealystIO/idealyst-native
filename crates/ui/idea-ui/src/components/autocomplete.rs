@@ -153,7 +153,6 @@ use idea_theme::compat::SignalModify as _;
 use runtime_core::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_core::primitives::overlay::BackdropMode;
 use runtime_core::primitives::portal::{AnchorTarget, ElementAlign, ElementSide};
-use runtime_core::{effect, stylesheet};
 use runtime_core::{
     component, each_keyed, memo, on_defer, pressable, signal, text, text_input, ui, view,
     EachKey, EachRowBuild, Element, IdealystSchema, IntoElement, Reactive, ReadSignal, Ref, Signal,
@@ -1253,28 +1252,25 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     };
 
 
-    let sheet = sheet_choice.allowed().then(|| {
-        let sheet_open: Signal<bool> = signal(false);
-        // Open while an open is a sheet; a pick or a dismissal closes both.
-        effect!({
-            sheet_open.set(open.get() && sheet_mode.get());
-        });
-        let dismiss_revert = menu_revert.clone();
-        let dismiss_commit_typed = commit_typed.clone();
-        let on_dismiss: Rc<dyn Fn()> = Rc::new(move || {
-            open.set(false);
-            sheet_mode.set(false);
-            if free_text {
-                (dismiss_commit_typed)();
-            } else {
-                (dismiss_revert)();
-            }
-        });
-        let sheet_rows = build_rows.clone();
-        let sheet_styles = styles.clone();
-        let sheet_placeholder = props.placeholder.clone();
-        super::picker_sheet::picker_sheet(sheet_open, on_dismiss, move || {
-            let typing = on_type.clone();
+    // The sheet exists only while an open is one, like the menu; a pick or
+    // a dismissal closes it.
+    let dismiss_revert = menu_revert.clone();
+    let dismiss_commit_typed = commit_typed.clone();
+    let sheet_dismiss: Rc<dyn Fn()> = Rc::new(move || {
+        open.set(false);
+        sheet_mode.set(false);
+        if free_text {
+            (dismiss_commit_typed)();
+        } else {
+            (dismiss_revert)();
+        }
+    });
+    let sheet_placeholder = props.placeholder.clone();
+    let build_sheet = move || {
+        let (typing, rows, sheet_styles) = (on_type.clone(), build_rows.clone(), styles.clone());
+        let (sheet_size, sheet_placeholder) = (sheet_size.clone(), sheet_placeholder.clone());
+        super::picker_sheet::picker_sheet(Some(sheet_dismiss.clone()), move || {
+            let typing = typing.clone();
             let style = AutocompleteStyles::input()
                 .set(sheet_size.clone().map(AutocompleteSize::from))
                 .overridden(sheet_styles.input.as_ref());
@@ -1284,9 +1280,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 .autofocus(true)
                 .with_style(style)
                 .into_element();
-            view(vec![search, sheet_rows()]).with_style(AutocompleteSheetBody::sheet()).into_element()
+            vec![search, rows()]
         })
-    });
+    };
 
     ui! {
         view {
@@ -1294,20 +1290,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
             if open.get() && !sheet_mode.get() {
                 build_panel()
             }
-            if let Some(sheet) = sheet {
-                { sheet }
+            if open.get() && sheet_mode.get() {
+                { build_sheet() }
             }
-        }
-    }
-}
-
-stylesheet! {
-    // The sheet's search input over its matches, each the sheet's width.
-    AutocompleteSheetBody<()> {
-        base(_t) {
-            flex_direction: runtime_core::FlexDirection::Column,
-            align_items: runtime_core::AlignItems::Stretch,
-            gap: runtime_core::Length::Px(8.0),
         }
     }
 }

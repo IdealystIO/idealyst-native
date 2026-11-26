@@ -50,6 +50,12 @@
 //! is only wired to the backdrop when the host supplied it; with no
 //! `on_dismiss` the backdrop is inert (an outside tap is swallowed but
 //! does nothing) so an unwired popover can't silently no-op-close.
+//!
+//! Below `Sm` (unless `sheet_on_phone = false`) the same contents open in
+//! a bottom sheet instead, chosen when the popover mounts. The sheet
+//! slides in as it mounts and out when the host's `if` drops it. Its
+//! scrim, Escape and back close it and run `on_dismiss`; with no
+//! `on_dismiss` they still close it, because a sheet covers the screen.
 
 use std::rc::Rc;
 
@@ -239,8 +245,8 @@ pub struct PopoverProps {
     pub min_width: f32,
     /// Fires on Escape and on an outside click (a tap anywhere off the
     /// popover surface). Flip your open-state signal here. When unset,
-    /// the popover can't dismiss itself — Escape and the outside tap are
-    /// swallowed but do nothing.
+    /// the anchored popover can't dismiss itself — Escape and the outside
+    /// tap are swallowed but do nothing. A phone's sheet closes either way.
     pub on_dismiss: Option<Rc<dyn Fn()>>,
     /// Popover surface contents.
     pub children: Vec<Element>,
@@ -307,12 +313,14 @@ pub fn Popover(props: PopoverProps) -> Element {
         ChildList::append_to(c, &mut content);
     }
     // Mounting a popover is opening it, so the width now decides: below
-    // `Sm`, the same contents in a sheet that opens as it mounts.
+    // `Sm`, the same contents in a sheet that slides in as it mounts and
+    // out when the host's `if` drops it. Its scrim closes it even without
+    // `on_dismiss`: a sheet covers the screen, so one that cannot be
+    // closed would trap it.
     if super::picker_sheet::SheetChoice::new(props.sheet_on_phone).now() {
-        let close = props.on_dismiss.clone().unwrap_or_else(|| Rc::new(|| {}));
         let body = std::cell::RefCell::new(Some(content));
-        return super::picker_sheet::picker_sheet(runtime_core::signal(true), close, move || {
-            runtime_core::view(body.borrow_mut().take().unwrap_or_default()).into_element()
+        return super::picker_sheet::picker_sheet(props.on_dismiss.clone(), move || {
+            body.borrow_mut().take().unwrap_or_default()
         });
     }
     // The surface arrives with a quick fade and slight scale (`pop_in`),

@@ -298,6 +298,10 @@ fn assert_date_popup(build: impl FnOnce() -> Element, pick: impl Fn(usize) -> us
     assert!(open.contains("portal"), "{open}");
 
     dismiss_portals(&h);
+    // The harness's window is a phone's: the calendar is a sheet, which
+    // stays mounted for its slide out.
+    host_mock::pump::pump_timers();
+    h.flush();
     assert_eq!(shape(&h), closed);
 }
 

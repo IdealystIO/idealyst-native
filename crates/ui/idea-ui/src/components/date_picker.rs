@@ -123,11 +123,11 @@ pub(crate) fn anchored_panel(
     sheet_on_phone: bool,
 ) -> Element {
     if super::picker_sheet::SheetChoice::new(sheet_on_phone).now() {
-        // The panel exists only while open, so the sheet does too: it
-        // opens as it mounts and closes through `close`.
+        // Built inside the picker's `if`, like the panel: it slides in as
+        // it mounts and out when the picker closes.
         let body = std::cell::RefCell::new(Some(content));
-        return super::picker_sheet::picker_sheet(runtime_core::signal(true), close, move || {
-            view(body.borrow_mut().take().unwrap_or_default()).with_style(DateSheetBody::sheet()).into_element()
+        return super::picker_sheet::picker_sheet(Some(close), move || {
+            body.borrow_mut().take().unwrap_or_default()
         });
     }
     let catcher_close = close.clone();
@@ -156,17 +156,6 @@ pub(crate) fn anchored_panel(
         .into_element();
 
     view(vec![catcher, anchored]).into_element()
-}
-
-stylesheet! {
-    // The sheet's calendar and its rows, each the sheet's width.
-    DateSheetBody<()> {
-        base(_t) {
-            flex_direction: runtime_core::FlexDirection::Column,
-            align_items: runtime_core::AlignItems::Stretch,
-            gap: runtime_core::Length::Px(8.0),
-        }
-    }
 }
 
 /// A quiet footer action row (`Clear`), drawn by the `option` slot so it

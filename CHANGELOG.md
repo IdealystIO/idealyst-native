@@ -18,6 +18,9 @@ releases.
   trigger, where a thumb could not reach it and the screen's edge clipped it. The width at the
   moment it opens decides. Each takes `sheet_on_phone = false` to keep the anchored panel at every
   width.
+  The sheet exists only while open, slides in and out like any sheet, and takes no presses while it
+  leaves. Its scrim, Escape and back close it; a `Popover`'s sheet closes even without
+  `on_dismiss`.
 
 - **`LocationError` has `ServicesOff` and is `#[non_exhaustive]`** (`location` major). Location
   switched off for the whole device is told apart from "no fix yet" on Android, iOS and macOS. An

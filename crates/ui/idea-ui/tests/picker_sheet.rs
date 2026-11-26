@@ -17,6 +17,8 @@ const PHONE: f32 = 390.0;
 const DESKTOP: f32 = 1440.0;
 
 fn boot(width: f32, build: impl FnOnce() -> Element) -> (host_mock::Harness, Realized) {
+    // The sheet's slide out is a timed hold; the pumped scheduler runs it.
+    host_mock::pump::install_scheduler();
     let h = host_mock::Harness::new();
     let tree = h.world.enter(|| {
         install_idea_theme(light_theme());
@@ -204,6 +206,7 @@ fn a_date_input_told_not_to_keeps_its_calendar_anchored_on_a_phone() {
 /// A trigger with a Popover open beside it, at `width`; returns what
 /// mounting it logged.
 fn popover(width: f32, sheet_on_phone: bool) -> String {
+    host_mock::pump::install_scheduler();
     let h = host_mock::Harness::new();
     // The width settles before the popover mounts, as it has in an app.
     h.world.enter(|| {
@@ -239,4 +242,93 @@ fn a_popover_on_a_phone_is_a_sheet_and_beside_its_trigger_when_wide_or_told_not_
     assert!(!is_sheet(&wide) && wide.contains("portal"), "anchored from Sm up:\n{wide}");
     let pinned = popover(PHONE, false);
     assert!(!is_sheet(&pinned) && pinned.contains("portal"), "sheet_on_phone = false:\n{pinned}");
+}
+
+/// Every live root's tree, joined: the portals a sheet mounts are roots
+/// of their own.
+fn screen(h: &host_mock::Harness) -> String {
+    h.live_roots().into_iter().map(|r| h.live_tree(r)).collect::<Vec<_>>().join("\n")
+}
+
+/// A closed picker mounts nothing for its sheet, at any width: the sheet
+/// is built when a phone opens it. Every Select and Autocomplete on a
+/// screen carried a closed `Modal` before.
+#[test]
+fn regression_a_closed_picker_mounts_no_sheet() {
+    for width in [PHONE, DESKTOP] {
+        let (h, _r, _) = select(width, true);
+        let mounted = h.take_log().join("\n");
+        assert!(!mounted.contains("presence_placeholder"), "a closed Select at {width}:\n{mounted}");
+        let (h, _r, _) = autocomplete(width, true);
+        let mounted = h.take_log().join("\n");
+        assert!(!mounted.contains("presence_placeholder"), "a closed Autocomplete at {width}:\n{mounted}");
+    }
+}
+
+/// A sheet slides out before it leaves: the calendar's sheet stays
+/// mounted while its exit plays and is gone, nothing left behind, when
+/// the hold runs out. It used to vanish in the turn the picker closed.
+#[test]
+fn regression_a_closing_calendar_sheet_slides_out_before_it_leaves() {
+    let (h, _r) = date_input(PHONE, true);
+    let closed_roots = h.live_roots().len();
+    let log = open_calendar(&h);
+    assert!(is_sheet(&log), "{log}");
+    let dismissals: Vec<_> = h.shared.portal_dismissals.borrow().iter().flatten().cloned().collect();
+    h.world.enter(|| dismissals.iter().for_each(|d| d()));
+    h.flush();
+    assert!(screen(&h).contains("portal"), "still mounted while it slides out:\n{}", screen(&h));
+    host_mock::pump::pump_timers();
+    h.flush();
+    let after = screen(&h);
+    assert!(!after.contains("portal"), "gone once the slide is over:\n{after}");
+    assert_eq!(h.live_roots().len(), closed_roots, "nothing left behind:\n{after}");
+}
+
+/// While a sheet slides out its rows take no presses: a second tap on
+/// the leaving list must not pick again.
+#[test]
+fn a_leaving_sheet_takes_no_presses() {
+    let (h, _r, _) = select(PHONE, true);
+    // Nodes styled to take no presses, in order. Parts of an open sheet
+    // already are (its layers); what the pick adds is the leaving body.
+    let inert = Rc::new(std::cell::RefCell::new(Vec::<host_mock::Node>::new()));
+    let seen = inert.clone();
+    h.set_style_line(move |n, r| {
+        if r.pointer_events == Some(runtime_core::PointerEvents::None) {
+            seen.borrow_mut().push(n);
+        }
+        format!("apply_style n{n}")
+    });
+    open(&h);
+    let while_open = inert.borrow().clone();
+    h.press_labelled("Beta");
+    h.flush();
+    let leaving: Vec<_> = inert.borrow().iter().filter(|n| !while_open.contains(n)).copied().collect();
+    assert!(!leaving.is_empty(), "the picked sheet's body goes inert as it leaves");
+}
+
+/// A Popover's sheet closes on its scrim even when the host gave it no
+/// `on_dismiss`: a sheet covers the screen, and one that cannot close
+/// would trap it.
+#[test]
+fn regression_a_popover_sheet_without_on_dismiss_closes_on_its_scrim() {
+    let (h, _r) = boot(PHONE, || {
+        let anchor: runtime_core::Ref<runtime_core::ViewHandle> = runtime_core::Ref::new();
+        let trigger = runtime_core::view(vec![runtime_core::text("trigger").into_element()]).bind(anchor).into_element();
+        let popover = ui! {
+            Popover(target = Some(runtime_core::AnchorTarget::from(anchor))) {
+                runtime_core::text("PANEL")
+            }
+        };
+        runtime_core::view(vec![trigger, popover]).into_element()
+    });
+    assert!(screen(&h).contains("\"PANEL\""), "{}", screen(&h));
+    let dismissals: Vec<_> = h.shared.portal_dismissals.borrow().iter().flatten().cloned().collect();
+    assert!(!dismissals.is_empty(), "the sheet takes a dismissal");
+    h.world.enter(|| dismissals.iter().for_each(|d| d()));
+    h.flush();
+    host_mock::pump::pump_timers();
+    h.flush();
+    assert!(!screen(&h).contains("\"PANEL\""), "the scrim closed it:\n{}", screen(&h));
 }

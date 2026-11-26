@@ -316,16 +316,6 @@ fn transparent_backdrop_sheet() -> std::rc::Rc<StyleSheet> {
 // `stylesheet!` (LINK-time), not `premint_as`: the dropdown constructs on
 // OPEN, which the premint dump's crawl never does — see `popover.rs`.
 stylesheet! {
-    // The sheet's rows run its full width.
-    SelectSheetRows<()> {
-        base(_t) {
-            flex_direction: runtime_core::FlexDirection::Column,
-            align_items: runtime_core::AlignItems::Stretch,
-        }
-    }
-}
-
-stylesheet! {
     SelectBackdropSheet<()> {
         base(_t) {
             position: Position::Absolute,
@@ -690,8 +680,8 @@ pub fn Select(props: SelectProps) -> Element {
     let icon_data = props.icon.get().unwrap_or(CHEVRON_DOWN);
 
     let open: Signal<bool> = signal(false);
-    // Open as a sheet: decided at each open by the width, and held until
-    // the sheet closes.
+    // This open is a sheet: decided at each open by the width, and held
+    // until it closes.
     let sheet_open: Signal<bool> = signal(false);
     let sheet_choice = super::picker_sheet::SheetChoice::new(props.sheet_on_phone);
     let trigger_ref: Ref<PressableHandle> = Ref::new();
@@ -767,16 +757,16 @@ pub fn Select(props: SelectProps) -> Element {
         open.set(false);
         sheet_open.set(false);
     });
-    // The anchored menu exists only while open: each open builds it fresh
-    // (rows reflect the current `value`), each close tears it down. The
-    // sheet is mounted once and plays its own entry and exit.
-    let sheet = sheet_choice.allowed().then(|| {
-        let (rows_change, rows_close, rows_styles) = (on_change.clone(), menu_close.clone(), props.styles.clone());
-        let dismiss = menu_close.clone();
-        super::picker_sheet::picker_sheet(sheet_open, dismiss, move || {
-            sheet_rows(value, options, rows_change.clone(), rows_close.clone(), &rows_styles)
+    // The menu and the sheet exist only while open: each open builds one
+    // fresh (rows reflect the current `value`), each close takes it down,
+    // the sheet after its slide out.
+    let (sheet_close, sheet_styles) = (menu_close.clone(), props.styles.clone());
+    let build_sheet = move || {
+        let (rows_change, rows_close, rows_styles) = (on_change.clone(), sheet_close.clone(), sheet_styles.clone());
+        super::picker_sheet::picker_sheet(Some(sheet_close.clone()), move || {
+            vec![option_rows(value, options, rows_change.clone(), rows_close.clone(), &rows_styles)]
         })
-    });
+    };
     ui! {
         view {
             trigger
@@ -793,8 +783,8 @@ pub fn Select(props: SelectProps) -> Element {
                     )
                 }
             }
-            if let Some(sheet) = sheet {
-                { sheet }
+            if open.get() && sheet_open.get() {
+                { build_sheet() }
             }
         }
     }
@@ -879,19 +869,6 @@ fn option_rows(
             })
             .collect()
     })
-}
-
-/// The sheet's body: the option rows, at the sheet's width.
-fn sheet_rows(
-    value: Signal<String>,
-    options: runtime_core::ReadSignal<OptionList>,
-    on_change: Rc<dyn Fn(String)>,
-    menu_close: Rc<dyn Fn()>,
-    styles: &SelectSlotStyles,
-) -> Element {
-    runtime_core::view(vec![option_rows(value, options, on_change, menu_close, styles)])
-        .with_style(SelectSheetRows::sheet())
-        .into_element()
 }
 
 fn menu_build(
