@@ -1076,6 +1076,11 @@ it with the typed hook:
 let sse = server::use_sse::<Note>(notifications());
 ```
 
+A stream that has nothing to send writes a `:` comment line every 15 seconds,
+so proxies that close idle responses
+(CloudFront after 30 s, an AWS load balancer after 60 s) keep it open.
+EventSource clients and `use_sse` skip comments.
+
 Prefer SSE for one-way streams (progress, notifications, LLM tokens); reach
 for `#[channel]` only when the client→server direction is real.
 

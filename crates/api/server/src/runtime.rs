@@ -224,18 +224,27 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// How long an `#[sse]` stream may stay silent before the server writes a
+/// `:` comment line. Proxies close an idle response: CloudFront after 30 s,
+/// an AWS load balancer after 60 s by default. EventSource clients and the
+/// framework's `use_sse` skip comment lines.
+pub const SSE_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Wrap a `Stream<Item = T>` as an axum Server-Sent Events response,
-/// serializing each item as a JSON `data:` event. Used by the `#[sse]`
-/// macro's generated handler.
+/// serializing each item as a JSON `data:` event, with a comment line
+/// every [`SSE_KEEP_ALIVE`] of silence. Used by the `#[sse]` macro's
+/// generated handler.
 pub fn sse_response<S, T>(stream: S) -> Response
 where
     S: futures_util::Stream<Item = T> + Send + 'static,
     T: serde::Serialize,
 {
-    use axum::response::sse::{Event, Sse};
+    use axum::response::sse::{Event, KeepAlive, Sse};
     use futures_util::StreamExt;
     let events = stream.map(|item| Event::default().json_data(item));
-    Sse::new(events).into_response()
+    Sse::new(events)
+        .keep_alive(KeepAlive::new().interval(SSE_KEEP_ALIVE))
+        .into_response()
 }
 
 /// Bind a TCP listener on `addr` and serve the registered server
@@ -430,6 +439,23 @@ mod tests {
             tags: &[],
             handler,
         }
+    }
+
+    // Regression: `#[sse]` answered with a bare `Sse::new`, so a stream
+    // with nothing to say wrote nothing and the proxy in front closed it
+    // as idle, over and over.
+    #[tokio::test(start_paused = true)]
+    async fn regression_quiet_sse_stream_sends_keep_alive() {
+        use http_body_util::BodyExt;
+        let quiet = futures_util::stream::pending::<u32>();
+        let mut body = sse_response(quiet).into_body();
+        let frame = tokio::time::timeout(SSE_KEEP_ALIVE * 2, body.frame())
+            .await
+            .expect("a quiet stream must still write within two keep-alive intervals")
+            .expect("the stream is open")
+            .expect("frame");
+        let bytes = frame.into_data().expect("a data frame");
+        assert!(bytes.starts_with(b":"), "expected a comment line, got {bytes:?}");
     }
 
     #[test]
