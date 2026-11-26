@@ -80,6 +80,7 @@ A field a platform can't show is dropped, never faked.
 | actions | category actions (max 4) | `addAction` (max 3) | toast `<action>` (max 5) | `actions` | dropped (page API has none) |
 | reply field | `UNTextInputNotificationAction` | `RemoteInput` | toast `<input>` | KDE `inline-reply` (one) | dropped |
 | priority | interruption level: Low passive, Default/High active, Urgent time-sensitive | one channel per level (Low → low importance, High/Urgent → high importance, heads-up) | Low → no popup, High/Urgent → high priority | `urgency` hint 0/1/2 | Urgent → `requireInteraction` |
+| replace (same id) | alerts again | alerts again | alerts again | alerts again | alerts again (`renotify`) |
 | silent | no sound set | the silent channel (normal importance whatever the priority, since sound belongs to the channel) | `<audio silent>` | `suppress-sound` | `silent` |
 | group | `threadIdentifier` | `setGroup` | dropped | dropped | dropped |
 | image | attachment (the OS moves the file into its store) | large icon + big picture | hero image | `image-path` | `image` (URL) |

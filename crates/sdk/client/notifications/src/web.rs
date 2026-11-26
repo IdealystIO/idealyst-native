@@ -4,7 +4,9 @@
 //! - `notify` constructs `new Notification(title, options)`. `options` is
 //!   built from the shared fields — `body` (with the subtitle folded on;
 //!   web has no subtitle field), `tag` = the resolved id (the browser
-//!   coalesces by tag, so re-posting the same id *replaces*), `silent` for
+//!   coalesces by tag, so re-posting the same id *replaces*), `renotify`
+//!   (without it a same-tag replacement is swapped in silently — no banner,
+//!   no sound — where every native platform alerts again), `silent` for
 //!   [`Sound::Silent`], `requireInteraction` for [`Priority::Urgent`],
 //!   `image` — then handed to the app's [`Notification::web`] hook as a
 //!   JSON object before the call.
@@ -112,6 +114,9 @@ pub(crate) fn options(n: &Note, id: &NotificationId) -> Map<String, Value> {
     let mut o = Map::new();
     o.insert("body".into(), json!(body_with_subtitle(n)));
     o.insert("tag".into(), json!(id.as_str()));
+    // A replacement alerts again, as on every native platform; the web
+    // default swaps it in silently. Valid because `tag` is always set.
+    o.insert("renotify".into(), json!(true));
     if n.sound == Sound::Silent {
         o.insert("silent".into(), json!(true));
     }

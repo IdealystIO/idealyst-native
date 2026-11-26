@@ -74,7 +74,7 @@ async fn notify_posts_title_body_and_the_id_as_tag() {
     assert_eq!(id, NotificationId::from("order-7"));
     let posted = JsValue::global().get("__posted").unwrap().as_string().unwrap();
     // The subtitle is folded onto the body (web has no subtitle field).
-    assert_eq!(posted, r#"["Tïtle",{"body":"sub\nbody","tag":"order-7"}]"#);
+    assert_eq!(posted, r#"["Tïtle",{"body":"sub\nbody","renotify":true,"tag":"order-7"}]"#);
 }
 
 #[wasm_bindgen_test]
@@ -119,7 +119,7 @@ async fn shared_fields_map_onto_notification_options() {
     .unwrap();
     assert_eq!(
         eval("JSON.stringify(globalThis.__shown[0].options)"),
-        r#"{"body":"B","image":"https://example.com/a.png","requireInteraction":true,"silent":true,"tag":"opts"}"#
+        r#"{"body":"B","image":"https://example.com/a.png","renotify":true,"requireInteraction":true,"silent":true,"tag":"opts"}"#
     );
 }
 
@@ -127,6 +127,7 @@ async fn shared_fields_map_onto_notification_options() {
 async fn the_web_hook_edits_the_options_last() {
     let _stub = NotificationOverride::install(RECORDING);
     let n = Notification::new("T", "B").id("hook").web(|o| {
+        o.remove("renotify");
         o.insert("vibrate".into(), runtime_core::__serde_json::json!([100, 50, 100]));
         o.insert("body".into(), runtime_core::__serde_json::json!("from the hook"));
     });
@@ -179,4 +180,19 @@ async fn regression_cancel_and_replace_close_shown_notifications() {
 
     cancel_all().await;
     assert_eq!(eval("globalThis.__shown.map(n => n.closed).join()"), "true,true,true,true");
+}
+
+/// The bug: re-posting an id on web replaced the notification silently (no
+/// banner, no sound) while every native platform alerts again, because the
+/// browser only re-alerts a same-tag replacement under `renotify`. Every
+/// post must carry it, alongside the tag it requires.
+#[wasm_bindgen_test]
+async fn regression_a_replacement_alerts_again_like_native() {
+    let _stub = NotificationOverride::install(RECORDING);
+    notify(Notification::new("Inbox", "1 new message").id("inbox")).await.unwrap();
+    notify(Notification::new("Inbox", "2 new messages").id("inbox")).await.unwrap();
+    assert_eq!(
+        eval("globalThis.__shown.map(n => `${n.options.tag}:${n.options.renotify}`).join()"),
+        "inbox:true,inbox:true"
+    );
 }
