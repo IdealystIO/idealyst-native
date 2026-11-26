@@ -10,8 +10,9 @@
 //!   becomes a thin replayer and the runtime lives in the dev sidecar.
 //!
 //! On both paths, when the build marked the page with
-//! `window.IDEALYST_SERVICE_WORKER`, the composed service worker is
-//! registered (`web_glue::service_worker`).
+//! `window.IDEALYST_SERVICE_WORKER`, the page starts listening on the
+//! service-worker channel and registers the composed worker
+//! (`web_glue::service_worker`).
 
 use runtime_scene::Element;
 
@@ -76,6 +77,11 @@ pub fn run<E: SceneExtensions, S: runtime_vocabulary::BuiltinSet>(
     // never fatal to the app. The global's name is a contract with the
     // build, which pins it in `the_marker_names_the_global_the_boot_path_reads`.
     if let Some(url) = web_glue::JsValue::global().get("IDEALYST_SERVICE_WORKER").ok().and_then(|v| v.as_string()) {
+        // Listen before registering: the worker may have mail for this
+        // page (a notification clicked with no tab open) and sends it once
+        // the page says it is ready, which `listen` does as soon as a
+        // worker is active.
+        web_glue::service_worker::listen();
         web_glue::spawn_local(async move {
             if let Err(e) = web_glue::service_worker::register(&url).await {
                 web_glue::dom::console::error_2(

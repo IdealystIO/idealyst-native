@@ -18,7 +18,25 @@ service_worker = ["sw/notifications.js"]
 - **Language:** handlers are plain JavaScript. A worker has no DOM, and loading the app's wasm to answer a single event would cost megabytes on every wake-up. Register listeners at the top level of the file (`self.addEventListener("push", …)`): browsers only dispatch to listeners added while the worker script first runs.
 - **Errors:** a declared file that can't be read fails the build, naming the package.
 
-The prelude creates `self.idealyst`, the namespace contributions share. It also has a new version take over at once (`skipWaiting` + `clients.claim`): contributions are event handlers with no cache an open page depends on, so a fixed handler shouldn't wait for every tab to close.
+The prelude creates `self.idealyst`, the namespace contributions share, with the channel described below. It also has a new version take over at once (`skipWaiting` + `clients.claim`): contributions are event handlers with no cache an open page depends on, so a fixed handler shouldn't wait for every tab to close.
+
+## Talking to the page
+
+The prelude and `web_glue::service_worker` are two halves of one small channel. Both live in web-glue (`js/service_worker.js` is the prelude), so they can't drift apart.
+
+| Worker side (a contribution) | Page side (Rust) |
+| --- | --- |
+| `self.idealyst.deliver(channel, message)` | `service_worker::on_message(channel, \|message\| …)` |
+| `self.idealyst.on(channel, (message, client) => …)` | `service_worker::post(channel, &message)` |
+
+Messages are structured-cloned. A delivered message has to survive two gaps: the browser stops an idle worker, and the page it's for may not be open yet (a notification clicked with every tab closed opens one, which takes a moment to boot). So:
+
+- **The outbox.** `deliver` writes the message to an IndexedDB outbox first, then sends it to one page that has said it's listening: the focused one, else a visible one, else any. With none, it stays in the outbox, which survives the worker stopping.
+- **The handshake.** `service_worker::listen()` installs the page's listener and then sends `ready`, now and to every worker that later takes control. The web boot calls it when the build composed a worker, and `on_message` calls it too. A worker with mail but no listening page it knows of sends `ping` to every open page, and a listening page answers `ready`. A worker forgets its listeners when it stops, so this is how a restarted worker finds them again.
+- **On the page,** a message for a channel no handler has claimed yet is held until the first `on_message(channel, …)`. A handler an SDK installs after boot still gets what arrived during boot, handed over on a microtask.
+- **Once.** The outbox is drained in one transaction, so a message reaches one page once, however many deliveries flush at the same time.
+
+An app in `"import"` mode (below) has no marker on its page. Its SDKs call `on_message`, which starts the listener on their own.
 
 ## Registration
 

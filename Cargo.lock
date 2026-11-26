@@ -2098,6 +2098,7 @@ dependencies = [
  "walrus",
  "wasm-carve",
  "wasmparser 0.224.1",
+ "web-glue",
 ]
 
 [[package]]

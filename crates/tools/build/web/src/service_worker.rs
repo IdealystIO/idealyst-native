@@ -20,7 +20,8 @@
 //! JavaScript (a worker has no DOM, and loading the app's wasm to answer
 //! one event would cost megabytes per wake-up); each runs in its own
 //! function scope, labelled with its package, after the framework
-//! [`PRELUDE`].
+//! [`PRELUDE`], whose `self.idealyst.deliver(channel, message)` reaches the
+//! page's `web_glue::service_worker::on_message(channel, …)`.
 //!
 //! Only packages the app actually depends on contribute: the closure is
 //! walked from the app's node in `cargo metadata`'s resolve graph,
@@ -60,22 +61,12 @@ pub const FILE_NAME: &str = "idealyst-sw.js";
 pub const MARKER_GLOBAL: &str = "IDEALYST_SERVICE_WORKER";
 
 /// The framework's part of every composed worker, ahead of the
-/// contributions.
-///
-/// - `self.idealyst` is the namespace contributions share (the page/worker
-///   channel lands here).
-/// - A new version takes over at once (`skipWaiting` + `clients.claim`):
-///   the contributions are event handlers, so there is no cache of an old
-///   version for an open page to depend on, and a fixed click handler
-///   should not wait for every tab to close.
-pub const PRELUDE: &str = r#"// Composed by the idealyst web build from the service-worker handlers the
-// app's dependencies declare under [package.metadata.idealyst.web]. Do not
-// edit: it is rewritten on every build.
-"use strict";
-self.idealyst = self.idealyst || {};
-self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
-"#;
+/// contributions: the worker half of `web_glue::service_worker`'s channel
+/// (`self.idealyst.deliver` / `self.idealyst.on`, the IndexedDB outbox, the
+/// ready handshake) and the takeover policy (`skipWaiting` +
+/// `clients.claim`). It lives in web-glue beside the page half it talks to,
+/// so the two can't drift; this build only places it.
+pub const PRELUDE: &str = web_glue::service_worker::PRELUDE;
 
 /// Whether the page registers the composed worker itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

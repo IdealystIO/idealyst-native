@@ -36,3 +36,4 @@ async fn no_service_worker_api_is_an_err_not_a_throw() {
     assert!(msg.contains("unavailable"), "{msg}");
     assert!(service_worker::is_supported(), "the stub is gone");
 }
+
