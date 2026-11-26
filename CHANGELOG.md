@@ -3964,6 +3964,11 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A `presence` releases what it animated out** (`runtime-vocabulary` patch). It detached the
+  exiting nodes and dropped their scope but never told the host they were discarded, so every
+  `Modal` that closed left its views behind: on iOS a retained view and a layout node per view, on
+  web the listeners pinning the detached element.
+
 - **A view with hover or press styling no longer aborts at mount on Linux** (`backend-linux`).
   Looking up its controllers asserted on the list's item type. A press-down pressable (a menu
   button) also stays pressed only until its release; its press-state gesture was never grouped

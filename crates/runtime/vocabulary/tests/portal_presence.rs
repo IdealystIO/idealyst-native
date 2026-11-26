@@ -422,9 +422,32 @@ fn presence_exit_retires_animates_then_detaches_and_drops() {
 
     pump_timers();
     // Timer fires: detach FIRST, then the scope drops (the spliced
-    // dispose rule, now the retire hook's responsibility).
-    assert_eq!(h.take_log(), ["remove_child n0 -x n1"]);
+    // dispose rule, now the retire hook's responsibility), then the host
+    // is told the nodes are discarded.
+    assert_eq!(h.take_log(), ["remove_child n0 -x n1", "release_subtree n1"]);
     assert_eq!(drops.get(), 1, "child scope drops after the exit window");
+}
+
+/// A presence that animated its child out detached it and dropped its
+/// scope but never told the host the nodes were discarded, so a host
+/// that keeps state per node (iOS: a retained view and a layout node;
+/// web: listeners pinning the element) kept every closed dialog forever.
+#[test]
+fn regression_a_presence_releases_what_it_animated_out() {
+    let h = harness();
+    let open = h.world.enter(|| signal(true));
+    let _root = h.mount(
+        presence(move || portal(PortalTarget::Viewport(ViewportPlacement::Center)).child(text().content("card")).build())
+            .present(open)
+            .exit(fade(150))
+            .build(),
+    );
+    open.set(false);
+    h.flush();
+    pump_timers();
+    h.flush();
+    assert!(h.take_log().iter().any(|l| l.starts_with("release_subtree")), "the exited subtree is released");
+    assert_eq!(h.live_roots().len(), 1, "only the mount's own root is left: {:?}", h.live_roots());
 }
 
 #[test]
@@ -445,7 +468,7 @@ fn presence_without_exit_unmounts_immediately() {
 
     open.set(false);
     h.flush();
-    assert_eq!(h.take_log(), ["remove_child n0 -x n1"]);
+    assert_eq!(h.take_log(), ["remove_child n0 -x n1", "release_subtree n1"]);
     assert_eq!(drops.get(), 1, "no exit animation: teardown is immediate");
 }
 
@@ -480,7 +503,7 @@ fn presence_quick_exit_cancels_pending_enter() {
         "cancelled enter frame must not re-apply rest over the exit state"
     );
     pump_timers();
-    assert_eq!(h.take_log(), ["remove_child n0 -x n1"]);
+    assert_eq!(h.take_log(), ["remove_child n0 -x n1", "release_subtree n1"]);
 }
 
 #[test]
@@ -519,8 +542,9 @@ fn presence_re_present_mid_exit_builds_fresh_while_old_finishes() {
     );
 
     pump_timers();
-    // The old child's exit completes: only n1 is detached; n2 stays.
-    assert_eq!(h.take_log(), ["remove_child n0 -x n1"]);
+    // The old child's exit completes: only n1 is detached and released;
+    // n2 stays.
+    assert_eq!(h.take_log(), ["remove_child n0 -x n1", "release_subtree n1"]);
 
     pump_frame();
     assert_eq!(h.take_log(), ["apply_presence n2 rest 200ms"]);

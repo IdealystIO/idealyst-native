@@ -160,10 +160,15 @@ where
                         b.apply_presence(n, anim.state, Some((anim.duration_ms, anim.easing)));
                     }
                 }
-                // Detach + drop after the animation completes. Detach
+                // Detach, drop, release after the animation completes:
+                // the order the scene's own held teardown uses. Detach
                 // BEFORE the scope drops (the spliced dispose rule: a
-                // reactive effect in the exiting subtree must never
-                // fire against a half-detached node).
+                // reactive effect in the exiting subtree must never fire
+                // against a half-detached node). The release is this
+                // hook's to make (`runtime_scene::Retired`): without it a
+                // host keeps what it holds per node forever — iOS a
+                // retained view and a layout node, web the listeners
+                // pinning the detached element.
                 let backend_for_finish = backend_for_retire.clone();
                 let finish: Finish = Rc::new(RefCell::new(Some(Box::new(move || {
                     {
@@ -173,6 +178,10 @@ where
                         }
                     }
                     drop(realized);
+                    let mut b = backend_for_finish.borrow_mut();
+                    for n in &nodes {
+                        b.release_subtree(n);
+                    }
                 }))));
                 let task = after_ms(anim.duration_ms as i32, {
                     let finish = finish.clone();
@@ -193,11 +202,12 @@ where
             }
             None => {
                 // No exit animation: drop the scope immediately, then
-                // clear the placeholder.
+                // clear the placeholder and release what was there.
                 drop(realized);
                 let mut b = backend_for_retire.borrow_mut();
                 for n in &nodes {
                     b.remove_child(&parent, n);
+                    b.release_subtree(n);
                 }
             }
         }
