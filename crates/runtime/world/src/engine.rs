@@ -220,6 +220,21 @@ pub(crate) trait Engine {
     /// `Owned`'s drop: retract context, free effects (cleanups first), then
     /// free signals.
     fn scope_drop(scope: &mut Self::Scope);
+    /// `Owned`'s drop inside a [`teardown`](crate::teardown): retract
+    /// context and free effects now, and hand back a scope holding only the
+    /// signals, for the teardown to free when it ends (or later, while a
+    /// [`retain_teardown`](crate::retain_teardown) handle lives).
+    ///
+    /// The default frees everything now and hands back nothing: an engine
+    /// that cannot split a scope grants no retention, so a retained task's
+    /// callback is dropped exactly as it was before retention existed.
+    fn scope_retire(scope: &mut Self::Scope) -> Option<Self::Scope> {
+        Self::scope_drop(scope);
+        None
+    }
+    /// Whether [`scope_retire`](Self::scope_retire) hands the signals
+    /// back. `false` (the default) makes `retain_teardown` grant nothing.
+    const RETIRES_SIGNALS: bool = false;
 
     // ---- context ------------------------------------------------------
 

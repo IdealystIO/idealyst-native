@@ -2014,9 +2014,185 @@ impl std::fmt::Debug for Owned {
 impl Drop for Owned {
     fn drop(&mut self) {
         // Context retracted first, then effects (cleanups), then signals —
-        // see `Engine::scope_drop`. Attachments drop after, with the struct.
-        Active::scope_drop(&mut self.scope);
+        // see `Engine::scope_drop`. Inside a `teardown` the signals are set
+        // aside for the teardown to free. Attachments drop after, with the
+        // struct.
+        // `try_with`: an `Owned` can drop while the thread's locals are
+        // being destroyed, and the teardown state may already be gone.
+        if TEARDOWN.try_with(|t| t.borrow().depth).unwrap_or(0) > 0 {
+            if let Some(signals) = Active::scope_retire(&mut self.scope) {
+                let _ = TEARDOWN.try_with(|t| t.borrow_mut().signals.push(signals));
+            }
+        } else {
+            Active::scope_drop(&mut self.scope);
+        }
     }
+}
+
+// ============================================================================
+// Teardown brackets — keeping a removed subtree's signals for a reply still
+// owed to it.
+// ============================================================================
+
+struct TeardownState {
+    /// Nested `teardown` calls; the outermost one frees.
+    depth: u32,
+    /// Which teardown this is (see `teardown_epoch`). Advances as each
+    /// outermost `teardown` begins.
+    epoch: u64,
+    /// Run when the outermost `teardown` ends, before its signals are
+    /// freed or kept (see `on_teardown_end`).
+    at_end: Vec<Box<dyn FnOnce()>>,
+    /// Signal-only scopes set aside by the `Owned`s dropped inside.
+    signals: Vec<<Active as Engine>::Scope>,
+    /// Set by `retain_teardown`: the signals go here at the end instead of
+    /// being freed.
+    retained: Option<Rc<RetainedSignals>>,
+}
+
+runtime_tls::thread_local! {
+    static TEARDOWN: RefCell<TeardownState> =
+        const { RefCell::new(TeardownState { depth: 0, epoch: 0, at_end: Vec::new(), signals: Vec::new(), retained: None }) };
+}
+
+/// Signals a teardown set aside because something still owes them a write.
+/// Freed when the last [`TeardownRetention`] drops.
+struct RetainedSignals(RefCell<Vec<<Active as Engine>::Scope>>);
+
+impl Drop for RetainedSignals {
+    fn drop(&mut self) {
+        for mut scope in self.0.take() {
+            Active::scope_drop(&mut scope);
+        }
+    }
+}
+
+/// Keeps the signals of a [`teardown`] allocated. See [`retain_teardown`].
+#[derive(Clone)]
+pub struct TeardownRetention(#[allow(dead_code)] Rc<RetainedSignals>);
+
+/// Drop a removed subtree inside `f` as one teardown: every [`Owned`]
+/// dropped inside retracts its context and frees its effects at once, as
+/// always, but the signals of all of them are freed together when the
+/// outermost `teardown` returns. Nested calls join the outer one.
+///
+/// What it is for: a reply still owed to the removed subtree. A
+/// `spawn_then` started inside a dialog that the press closed must be able
+/// to write the dialog's own state when its reply lands, harmlessly,
+/// rather than abort on a freed slot. Whoever needs that calls
+/// [`retain_teardown`] while the teardown runs (from an effect cleanup in
+/// the subtree), and the signals then stay allocated until it lets go.
+/// Their effects are gone, so nothing reacts to those writes and nothing
+/// shows them.
+///
+/// A drop outside any `teardown` frees its signals at once, as an
+/// [`Owned`] always has.
+pub fn teardown<R>(f: impl FnOnce() -> R) -> R {
+    TEARDOWN.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.depth == 0 {
+            t.epoch += 1;
+        }
+        t.depth += 1;
+    });
+    struct End;
+    impl Drop for End {
+        fn drop(&mut self) {
+            // The outermost teardown's end callbacks run first, while the
+            // teardown is still open: they may ask to keep its signals.
+            loop {
+                let next = TEARDOWN.try_with(|t| {
+                    let mut t = t.borrow_mut();
+                    if t.depth == 1 && !t.at_end.is_empty() {
+                        Some(t.at_end.remove(0))
+                    } else {
+                        None
+                    }
+                });
+                match next {
+                    Ok(Some(f)) => f(),
+                    _ => break,
+                }
+            }
+            let finished = TEARDOWN.try_with(|t| {
+                let mut t = t.borrow_mut();
+                t.depth -= 1;
+                if t.depth > 0 {
+                    return None;
+                }
+                Some((std::mem::take(&mut t.signals), t.retained.take()))
+            });
+            let Ok(Some((signals, retained))) = finished else { return };
+            match retained {
+                // Handed over: freed when the last retention drops.
+                Some(bin) => bin.0.borrow_mut().extend(signals),
+                None => {
+                    for mut scope in signals {
+                        Active::scope_drop(&mut scope);
+                    }
+                }
+            }
+        }
+    }
+    let _end = End;
+    f()
+}
+
+/// Which [`teardown`] is running, if one is: a number that stays the same
+/// for one outermost teardown (nested calls included) and differs for the
+/// next. Lets code that learns about a teardown piece by piece (each
+/// scope's cleanup) tell whether two pieces belong to the same one.
+pub fn teardown_epoch() -> Option<u64> {
+    TEARDOWN
+        .try_with(|t| {
+            let t = t.borrow();
+            (t.depth > 0).then_some(t.epoch)
+        })
+        .ok()
+        .flatten()
+}
+
+/// Run `f` when the [`teardown`] running now ends, after every scope in it
+/// has dropped and before its signals are freed — so `f` can still call
+/// [`retain_teardown`] with everything the teardown removed known. Returns
+/// `false`, without running `f`, outside a teardown.
+pub fn on_teardown_end(f: impl FnOnce() + 'static) -> bool {
+    TEARDOWN
+        .try_with(|t| {
+            let mut t = t.borrow_mut();
+            if t.depth == 0 {
+                return false;
+            }
+            t.at_end.push(Box::new(f));
+            true
+        })
+        .unwrap_or(false)
+}
+
+/// Keep the signals of the [`teardown`] running now allocated until every
+/// returned handle drops. `None` outside a teardown, or on an engine that
+/// cannot split a scope: the caller then has nothing safe to write to and
+/// must drop what it owed.
+///
+/// Call it while the teardown runs: from an effect cleanup in the removed
+/// subtree, which is where a liveness token learns its scope ended.
+pub fn retain_teardown() -> Option<TeardownRetention> {
+    if !<Active as Engine>::RETIRES_SIGNALS {
+        return None;
+    }
+    TEARDOWN.try_with(|t| {
+        let mut t = t.borrow_mut();
+        if t.depth == 0 {
+            return None;
+        }
+        let bin = t
+            .retained
+            .get_or_insert_with(|| Rc::new(RetainedSignals(RefCell::new(Vec::new()))))
+            .clone();
+        Some(TeardownRetention(bin))
+    })
+    .ok()
+    .flatten()
 }
 
 /// Run `f`, collecting every signal and effect it creates (in any world)

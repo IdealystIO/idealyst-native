@@ -1553,6 +1553,13 @@ impl Engine for Native {
     fn scope_drop(scope: &mut Self::Scope) {
         drop_items(std::mem::take(scope));
     }
+    const RETIRES_SIGNALS: bool = true;
+    fn scope_retire(scope: &mut Self::Scope) -> Option<Self::Scope> {
+        let (signals, rest): (Vec<OwnedItem>, Vec<OwnedItem>) =
+            std::mem::take(scope).into_iter().partition(|item| matches!(item, OwnedItem::Signal { .. }));
+        drop_items(rest);
+        Some(signals)
+    }
 
     #[inline]
     fn ctx_provide(key: TypeId, value: Box<dyn Any>) {

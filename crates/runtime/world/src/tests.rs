@@ -3656,3 +3656,151 @@ fn record_staged_commit_waits_while_a_world_is_entered() {
     w.flush();
     assert_eq!(s.peek(), 4);
 }
+
+// ---------------------------------------------------------------------------
+// Teardown brackets and retention
+// ---------------------------------------------------------------------------
+
+/// Inside a `teardown`, a dropped scope's effects go at once and its
+/// signals when the teardown ends; outside one, both go at once.
+// The native engine's: a bridged engine grants no retention (see
+// `Engine::RETIRES_SIGNALS`), which the next test pins.
+#[cfg(not(feature = "loopback-engine"))]
+#[test]
+fn a_teardown_frees_its_signals_when_it_ends() {
+    let world = World::new();
+    let cleaned = counter();
+    let (s, owned) = world.enter(|| {
+        collect_owned(|| {
+            let cleaned = Rc::clone(&cleaned);
+            effect(move || {
+                let cleaned = Rc::clone(&cleaned);
+                on_cleanup(move || bump(&cleaned));
+            });
+            signal(1)
+        })
+    });
+    world.enter(|| {
+        teardown(|| {
+            drop(owned);
+            assert_eq!(cleaned.get(), 1, "the effect went at once");
+            assert!(s.is_alive(), "the signal waits for the teardown to end");
+        })
+    });
+    assert!(!s.is_alive(), "and goes when it ends");
+
+    let (s, owned) = world.enter(|| collect_owned(|| signal(1)));
+    drop(owned);
+    assert!(!s.is_alive(), "outside a teardown a signal goes with its scope");
+}
+
+/// A retention taken while the teardown runs keeps every signal it set
+/// aside — including those of scopes dropped before the retention was
+/// taken — writable until the last handle drops.
+// The native engine's: a bridged engine grants no retention (see
+// `Engine::RETIRES_SIGNALS`), which the next test pins.
+#[cfg(not(feature = "loopback-engine"))]
+#[test]
+fn a_retained_teardown_keeps_its_signals_until_released() {
+    let world = World::new();
+    let held: Rc<RefCell<Option<TeardownRetention>>> = Rc::new(RefCell::new(None));
+    let (dialog_state, dialog) = world.enter(|| collect_owned(|| signal(String::new())));
+    let ((), control) = world.enter(|| {
+        collect_owned(|| {
+            let held = Rc::clone(&held);
+            // What a liveness token does when its scope ends with a reply
+            // still owed.
+            effect(move || {
+                let held = Rc::clone(&held);
+                on_cleanup(move || *held.borrow_mut() = retain_teardown());
+            });
+        })
+    });
+    world.enter(|| {
+        teardown(|| {
+            drop(dialog);
+            drop(control);
+        })
+    });
+    assert!(held.borrow().is_some(), "the cleanup got a retention");
+    assert!(dialog_state.is_alive(), "the earlier scope's signal is kept too");
+    world.enter(|| dialog_state.set("refused".to_string()));
+    world.flush();
+    assert_eq!(world.enter(|| dialog_state.get()), "refused", "and writable");
+    let second = held.borrow().clone();
+    held.borrow_mut().take();
+    assert!(dialog_state.is_alive(), "every handle has to go");
+    drop(second);
+    assert!(!dialog_state.is_alive(), "freed when the last retention drops");
+}
+
+/// Outside a teardown there is nothing to retain: the caller is told so
+/// and must drop what it owed.
+#[test]
+fn retaining_outside_a_teardown_grants_nothing() {
+    let world = World::new();
+    assert!(world.enter(retain_teardown).is_none());
+}
+
+/// An engine that cannot split a scope grants no retention, so nothing is
+/// promised a signal it frees.
+#[cfg(feature = "loopback-engine")]
+#[test]
+fn a_bridged_engine_grants_no_retention() {
+    let world = World::new();
+    let granted = world.enter(|| teardown(retain_teardown));
+    assert!(granted.is_none());
+}
+
+/// A teardown's end callbacks run after every scope in it has dropped,
+/// in one epoch, and may still keep its signals.
+#[cfg(not(feature = "loopback-engine"))]
+#[test]
+fn a_teardown_end_callback_sees_the_whole_teardown_and_may_keep_it() {
+    let world = World::new();
+    let order: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+    let kept: Rc<RefCell<Option<TeardownRetention>>> = Rc::new(RefCell::new(None));
+    let epochs: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+    let ((), first) = world.enter(|| {
+        collect_owned(|| {
+            let (order, kept, epochs) = (Rc::clone(&order), Rc::clone(&kept), Rc::clone(&epochs));
+            effect(move || {
+                let (order, kept, epochs) = (Rc::clone(&order), Rc::clone(&kept), Rc::clone(&epochs));
+                on_cleanup(move || {
+                    order.borrow_mut().push("first dropped");
+                    epochs.borrow_mut().push(teardown_epoch().expect("inside the teardown"));
+                    let order = Rc::clone(&order);
+                    assert!(on_teardown_end(move || {
+                        order.borrow_mut().push("end");
+                        *kept.borrow_mut() = retain_teardown();
+                    }));
+                });
+            });
+        })
+    });
+    let (later, second) = world.enter(|| {
+        collect_owned(|| {
+            let (order, epochs) = (Rc::clone(&order), Rc::clone(&epochs));
+            effect(move || {
+                let (order, epochs) = (Rc::clone(&order), Rc::clone(&epochs));
+                on_cleanup(move || {
+                    order.borrow_mut().push("second dropped");
+                    epochs.borrow_mut().push(teardown_epoch().expect("inside the teardown"));
+                });
+            });
+            signal(0)
+        })
+    });
+    world.enter(|| {
+        teardown(|| {
+            drop(first);
+            teardown(|| drop(second));
+        })
+    });
+    assert_eq!(*order.borrow(), ["first dropped", "second dropped", "end"]);
+    let e = epochs.borrow();
+    assert_eq!(e[0], e[1], "one teardown, nested call included");
+    assert!(later.is_alive(), "the end callback kept a scope dropped after it registered");
+    assert_eq!(teardown_epoch(), None);
+    assert!(!on_teardown_end(|| {}), "nothing to end outside a teardown");
+}
