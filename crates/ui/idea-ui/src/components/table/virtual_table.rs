@@ -475,7 +475,7 @@ impl Shared {
 
 /// Build a virtualized table. `props.virtualized` has been taken out into
 /// `rows`.
-pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
+pub(super) fn virtual_table(mut props: TableProps, rows: VirtualRows) -> Element {
     assert!(
         !props.columns.is_empty(),
         "virtualized Table: `columns` is required — the grid sizes and labels its columns from them"
@@ -496,10 +496,8 @@ pub(super) fn virtual_table(props: TableProps, rows: VirtualRows) -> Element {
          have"
     );
 
-    assert!(
-        !props.drag_from_row || props.on_reorder.is_some(),
-        "virtualized Table: `drag_from_row` starts the reorder drag from the row, so it needs `on_reorder`"
-    );
+    // With no `on_reorder` there is nothing to drag (`drag_from_row`'s docs).
+    props.drag_from_row &= props.on_reorder.is_some();
     let mut cols: Vec<GridCol> = Vec::with_capacity(props.columns.len() + 2);
     if props.on_reorder.is_some() && !props.drag_from_row {
         cols.push(GridCol::Grip);

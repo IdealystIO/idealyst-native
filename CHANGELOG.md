@@ -3977,6 +3977,10 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   alone below Android 10, where it could never be granted. A request made when the Activity is gone
   resolves instead of hanging.
 
+- **`Table(drag_from_row)` without `on_reorder` is a plain table** (`idea-ui`). It panicked, so a
+  table whose reordering is off while it is sorted another way, or for a user who can't edit,
+  crashed the app.
+
 - **An iOS stack shows the navigator's screen after back-to-back moves** (`ios-navigator-helpers`).
   UIKit drops a move made in the turn of a `reset`, and one made during a slide, so a reset and two
   pushes left the wrong screen on show. The presenter hands UIKit the whole stack, waits for a slide

@@ -1058,6 +1058,29 @@ fn drag_from_row_picks_the_row_up_from_any_cell() {
     assert!(events.menus.borrow().is_empty());
 }
 
+/// REGRESSION (CrewForge): `drag_from_row` without `on_reorder` panicked at
+/// mount, so a list whose reordering is off while it is sorted another way
+/// crashed the app. The rows are plain rows: no grip, a press opens the row,
+/// a press that moves drags nothing.
+#[test]
+fn regression_drag_from_row_without_on_reorder_is_a_plain_table() {
+    let events = Rc::new(RowEvents::default());
+    let e = events.clone();
+    let f = table(8, |rows, p| {
+        p.drag_from_row = true;
+        rows.on_row_click(move |row| e.clicks.borrow_mut().push(row))
+    });
+    assert_eq!((f.grid().col_count)(), 5, "selection + four columns, no grip");
+    let email = f.mount(2, 4);
+    f.touch(email, press(runtime_core::TouchPhase::Began, 0.0, 0));
+    f.touch(email, press(runtime_core::TouchPhase::Ended, 0.0, 80));
+    assert_eq!(*events.clicks.borrow(), vec![3], "a press opens the row");
+    f.touch(email, press(runtime_core::TouchPhase::Began, 0.0, 1_000));
+    f.touch(email, press(runtime_core::TouchPhase::Moved, 90.0, 1_016));
+    f.touch(email, press(runtime_core::TouchPhase::Ended, 90.0, 1_032));
+    assert_eq!(*events.clicks.borrow(), vec![3], "a press that moves opens nothing");
+}
+
 /// A press that does not move is still the row's click.
 #[test]
 fn drag_from_row_keeps_a_still_press_a_click() {

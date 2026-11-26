@@ -973,8 +973,10 @@ pub struct TableProps {
     /// swipe still scrolls: a hold opens the row's menu (virtualized
     /// `on_row_menu`) and moving on from it picks the row up — close the
     /// menu in [`on_row_drag_start`](Self::on_row_drag_start) — and with no
-    /// menu the hold picks the row up. Needs `on_reorder`; a plain table
-    /// cannot combine it with `on_group_reorder`, whose bands drag by grip.
+    /// menu the hold picks the row up. Without `on_reorder` it does nothing,
+    /// so it can stay on while reordering is off (another sort, no right to
+    /// edit). A plain table cannot combine it with `on_group_reorder`, whose
+    /// bands drag by grip.
     #[prop(static)]
     pub drag_from_row: bool,
     /// Called with the row a reorder drag picks up (from its grip or, with
@@ -1128,9 +1130,8 @@ pub fn Table(mut props: TableProps) -> Element {
     });
 
     assert!(
-        !props.drag_from_row || (props.on_reorder.is_some() && props.on_group_reorder.is_none()),
-        "Table: `drag_from_row` starts the reorder drag from the row, so it needs `on_reorder`, and \
-         can't be combined with `on_group_reorder`, whose bands drag by their grip"
+        !props.drag_from_row || props.on_group_reorder.is_none(),
+        "Table: `drag_from_row` can't be combined with `on_group_reorder`, whose bands drag by their grip"
     );
     // Group drag: the groups whose band is draggable, in order, each with
     // its row count (band included).

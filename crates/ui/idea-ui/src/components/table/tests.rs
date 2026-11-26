@@ -3460,6 +3460,47 @@ fn drag_from_row_drags_a_plain_row_from_its_cells_and_keeps_its_click() {
     });
 }
 
+/// REGRESSION (CrewForge): `drag_from_row` without `on_reorder` panicked, so
+/// a table whose reordering is off while it is sorted another way crashed
+/// the app. The rows are plain rows: no grip, nothing to drag, and a press
+/// is the row's click.
+#[test]
+fn regression_drag_from_row_without_on_reorder_is_a_plain_table() {
+    use runtime_core::{TouchEvent, TouchId, TouchPhase, TouchPoint};
+    with_test_world(|| {
+        let clicks = Rc::new(Cell::new(0u32));
+        let c = clicks.clone();
+        let t = Table(TableProps {
+            drag_from_row: true,
+            children: vec![
+                row_of(vec![head_cell("Name"), head_cell("Role")]),
+                TableRow(TableRowProps {
+                    children: vec![text_of("Ana"), text_of("Lead")],
+                    id: Some(RowId::from("a")),
+                    on_row_click: Some(Rc::new(move || c.set(c.get() + 1))),
+                    ..Default::default()
+                }),
+            ],
+            ..Default::default()
+        });
+        let mut cells: Vec<Element> = grid_cells(t).into_iter().filter(|c| !is_backdrop(c)).collect();
+        assert_eq!(cells.len(), 4, "no grip column");
+        let ev = |phase, x: f32, t_ms: u64| TouchEvent {
+            id: TouchId(1),
+            phase,
+            position: TouchPoint::new(x, 10.0),
+            window_position: TouchPoint::new(x, 10.0),
+            timestamp_ns: t_ms * 1_000_000,
+            force: None,
+        };
+        if let Some(role) = view_prim(cells.remove(3)).on_touch {
+            role(&ev(TouchPhase::Began, 10.0, 0));
+            role(&ev(TouchPhase::Moved, 40.0, 16));
+            role(&ev(TouchPhase::Ended, 40.0, 32));
+        }
+    });
+}
+
 /// CrewForge: an app with white framed tables on a grey page had no one
 /// place to set a framed table's fill. A restyle of the frozen cells
 /// beat the row tones (restyle compounds land after the sheet's), so a
