@@ -643,7 +643,7 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "14.2.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "21.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "24.2.0", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "24.2.1", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "8.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "21.0.0", registry = "idealyst" }
 idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "1.2.0", registry = "idealyst" }

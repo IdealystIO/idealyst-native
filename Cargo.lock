@@ -6470,7 +6470,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "24.2.0"
+version = "24.2.1"
 dependencies = [
  "backend-ssr",
  "dnd",
