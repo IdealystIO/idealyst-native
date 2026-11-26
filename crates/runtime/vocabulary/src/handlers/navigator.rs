@@ -538,14 +538,19 @@ fn realize_screen<H: NavCaps + 'static>(
     // `component_scope` wraps one Element; the Screen's options ride
     // out through a side slot (they're plain data, not scope-owned).
     let options_slot: Rc<RefCell<Option<Rc<dyn Any>>>> = Rc::new(RefCell::new(None));
-    let mut element = component_scope({
+    // Isolated, here and at the realize below: the screen lives until this
+    // navigator drops it, not as long as whatever `if` the navigator was
+    // first mounted inside. An overlay in the screen asks how long its
+    // opener lives (`runtime_scene::enclosing_region`), and must not be
+    // told "as long as the app's login gate".
+    let mut element = runtime_scene::isolated(|| component_scope({
         let options_slot = options_slot.clone();
         move || {
             let crate::prims::Screen { element, options } = build(params);
             *options_slot.borrow_mut() = options;
             element
         }
-    });
+    }));
     let options = options_slot.borrow_mut().take();
     // A screen built as several roots (a page and its overlays) gets one
     // view around them, so it has a node of its own for the placement below
@@ -570,7 +575,7 @@ fn realize_screen<H: NavCaps + 'static>(
     if let Some(rules) = overlay {
         fold_style_overrides(&mut element, rules);
     }
-    let realized = realize(backend, registry, element);
+    let realized = runtime_scene::isolated(|| realize(backend, registry, element));
     let mut nodes = realized.collect_nodes();
     match nodes.len() {
         1 => LiveScreen {

@@ -152,6 +152,10 @@ pub use crate::style_attach::{signal_class, IntoStyleProp, StyleProp};
 ///
 /// Acquire one token in the mount handler and wrap each callback with it.
 pub use crate::callback_guard::ScopeAlive;
+/// Mark an overlay component (dialog, menu, popover, sheet): a press
+/// inside it keeps its `spawn_then` reply while whatever opened it stays
+/// mounted. See the item's docs.
+pub use crate::callback_guard::mark_overlay;
 
 // Slots — a descendant publishing content into a region an ancestor
 // renders, keyed by a marker type. Authoring composition over the kernel

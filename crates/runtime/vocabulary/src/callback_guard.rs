@@ -94,7 +94,7 @@ enum Anchor {
     /// Flipped by an [`on_owned_drop`] keepalive owned by the ownership
     /// scope — or never flipped at all, for [`ScopeAlive::immortal`] and
     /// for a token acquired outside any world.
-    Flag(Rc<Cell<bool>>),
+    Flag(Rc<FlagAnchor>),
     /// The effect whose body was running when the token was taken. Dies
     /// with the effect's OWNER (its slot is freed then), not on the
     /// effect's re-runs — see [`ScopeAlive::current`].
@@ -104,8 +104,147 @@ enum Anchor {
 impl Anchor {
     fn alive(&self) -> bool {
         match self {
-            Anchor::Flag(f) => f.get(),
+            Anchor::Flag(f) => f.alive.get(),
             Anchor::Effect(e) => e.is_alive(),
+        }
+    }
+}
+
+/// A scope's liveness flag, and what a reply still owed to the scope
+/// needs when the scope ends with an overlay (see [`mark_overlay`]).
+struct FlagAnchor {
+    alive: Cell<bool>,
+    /// Replies in flight that were started under this token.
+    owed: Cell<u32>,
+    /// Set when the scope ended in a teardown that removed an overlay
+    /// whose opener was still mounted, with a reply owed: that opener, and
+    /// the teardown's signals, kept until the last owed reply settles.
+    afterlife: RefCell<Option<(OverlayOpener, runtime_world::TeardownRetention)>>,
+}
+
+impl FlagAnchor {
+    fn new() -> Rc<Self> {
+        Rc::new(Self { alive: Cell::new(true), owed: Cell::new(0), afterlife: RefCell::new(None) })
+    }
+
+    /// The scope ended. With a reply still owed and inside a teardown,
+    /// decide when that teardown ends — once every scope in it has
+    /// dropped, so an overlay dropped after this one still counts.
+    fn end(self: &Rc<Self>) {
+        self.alive.set(false);
+        if self.owed.get() == 0 {
+            return;
+        }
+        let Some(epoch) = runtime_world::teardown_epoch() else { return };
+        let this = self.clone();
+        runtime_world::on_teardown_end(move || {
+            let opener = REMOVED_OVERLAYS
+                .try_with(|r| {
+                    let r = r.borrow();
+                    if r.0 != epoch {
+                        return None;
+                    }
+                    r.1.iter().find(|o| o.is_alive()).cloned()
+                })
+                .ok()
+                .flatten();
+            if let (Some(opener), Some(kept)) = (opener, runtime_world::retain_teardown()) {
+                *this.afterlife.borrow_mut() = Some((opener, kept));
+            }
+        });
+    }
+}
+
+/// Whatever opened an overlay: alive while it stays mounted.
+#[derive(Clone)]
+struct OverlayOpener(Rc<dyn Fn() -> bool>);
+
+impl OverlayOpener {
+    fn is_alive(&self) -> bool {
+        (self.0)()
+    }
+}
+
+runtime_tls::thread_local! {
+    /// The openers of the overlays removed in the teardown running now,
+    /// tagged with its epoch (`runtime_world::teardown_epoch`); a newer
+    /// epoch replaces the list.
+    static REMOVED_OVERLAYS: RefCell<(u64, Vec<OverlayOpener>)> = const { RefCell::new((0, Vec::new())) };
+}
+
+/// Mark the component calling this (in its body) as an overlay: a
+/// dialog, menu, popover or sheet, which a press inside it often closes.
+///
+/// When an `if` / `match` (or a `presence`) removes the overlay, a
+/// [`spawn_then`] started by a press inside it keeps its reply while
+/// whatever opened the overlay stays mounted — the region the overlay was
+/// built in, or the overlay's own component when nothing encloses it.
+/// The removed scopes' signals stay allocated until that reply has run,
+/// so a reply that writes the overlay's own state (an error line on a
+/// dialog the reader closed) writes harmlessly and unseen. When the opener
+/// goes as well, or the overlay leaves any other way (its screen popped,
+/// its parent dropped), the reply is dropped as for any control.
+///
+/// Without the mark a reply belongs to the control that was pressed: a
+/// "Hand in" that closes its own confirmation dialog loses its reply and
+/// leaves the screen's busy flag set.
+///
+/// The rule is per removal: every control whose scope ends in the same
+/// removal as a marked overlay is treated alike, so a branch that holds a
+/// dialog and other controls keeps their replies too.
+///
+/// [`spawn_then`]: crate::scoped_spawn::spawn_then
+pub fn mark_overlay() {
+    let opener = match runtime_scene::enclosing_region() {
+        Some(region) => OverlayOpener(Rc::new(move || region.is_alive())),
+        None => {
+            // Nothing encloses the overlay: it lives as long as its own
+            // component (an always-mounted dialog driven by `open`).
+            let own = ScopeAlive::anchored();
+            OverlayOpener(Rc::new(move || own.get()))
+        }
+    };
+    on_owned_drop(move || {
+        let Some(epoch) = runtime_world::teardown_epoch() else { return };
+        let _ = REMOVED_OVERLAYS.try_with(|r| {
+            let mut r = r.borrow_mut();
+            if r.0 != epoch {
+                *r = (epoch, Vec::new());
+            }
+            r.1.push(opener);
+        });
+    });
+}
+
+#[cfg(feature = "async-driver")]
+/// A reply owed under a [`ScopeAlive`] token (see
+/// [`ScopeAlive::owe_reply`]). Dropping it settles the reply, releasing the
+/// scope's kept signals with the last one.
+pub(crate) struct OwedReply(Anchor);
+
+#[cfg(feature = "async-driver")]
+impl OwedReply {
+    /// May the reply run? While the scope lives; or, after it ended with
+    /// an overlay (see [`mark_overlay`]), while that overlay's opener lives.
+    pub(crate) fn may_run(&self) -> bool {
+        match &self.0 {
+            Anchor::Flag(f) => {
+                f.alive.get() || f.afterlife.borrow().as_ref().is_some_and(|(opener, _)| opener.is_alive())
+            }
+            other => other.alive(),
+        }
+    }
+}
+
+#[cfg(feature = "async-driver")]
+impl Drop for OwedReply {
+    fn drop(&mut self) {
+        if let Anchor::Flag(f) = &self.0 {
+            let left = f.owed.get().saturating_sub(1);
+            f.owed.set(left);
+            if left == 0 {
+                f.afterlife.borrow_mut().take();
+            }
         }
     }
 }
@@ -241,10 +380,21 @@ impl ScopeAlive {
     /// A fresh token tied to the innermost ownership scope, or permanently
     /// live when there is no scope to tie to.
     fn anchored() -> Self {
-        let flag = Rc::new(Cell::new(true));
+        let flag = FlagAnchor::new();
         let for_drop = flag.clone();
-        on_owned_drop(move || for_drop.set(false));
+        on_owned_drop(move || for_drop.end());
         Self(Anchor::Flag(flag))
+    }
+
+    #[cfg(feature = "async-driver")]
+    /// A reply is now owed under this token; the returned guard settles
+    /// it. While one is owed, the token's scope ending with an overlay
+    /// keeps the removed scopes' signals (see [`mark_overlay`]).
+    pub(crate) fn owe_reply(&self) -> OwedReply {
+        if let Anchor::Flag(f) = &self.0 {
+            f.owed.set(f.owed.get() + 1);
+        }
+        OwedReply(self.0.clone())
     }
 
     /// Run `f` with this token as the ambient one, so a nested
@@ -257,7 +407,7 @@ impl ScopeAlive {
 
     /// A token that never flips — for callbacks with no scope to tie to.
     pub fn immortal() -> Self {
-        Self(Anchor::Flag(Rc::new(Cell::new(true))))
+        Self(Anchor::Flag(FlagAnchor::new()))
     }
 
     /// Flip a flag-anchored token dead by hand — test-only, standing in
@@ -265,7 +415,7 @@ impl ScopeAlive {
     #[cfg(test)]
     fn kill(&self) {
         match &self.0 {
-            Anchor::Flag(f) => f.set(false),
+            Anchor::Flag(f) => f.alive.set(false),
             Anchor::Effect(_) => unreachable!("effect-anchored tokens die with their slot"),
         }
     }

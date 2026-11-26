@@ -52,7 +52,9 @@ pub(crate) fn spawn_then_dropped(at: &'static Location<'static>) {
              if that view was closed. If the scope was a control that rebuilt itself (a \
              busy flag on its own button) or a view a live update replaced, take \
              `ScopeAlive::current()` in the component body and use \
-             `spawn_then_in(&alive, …)`."
+             `spawn_then_in(&alive, …)`. If it was inside a dialog, menu or popover \
+             the press closed, that overlay needs `mark_overlay()` in its body \
+             (idea-ui's do)."
         )
     });
     #[cfg(not(debug_assertions))]

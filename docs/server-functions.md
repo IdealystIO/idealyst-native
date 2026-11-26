@@ -949,8 +949,11 @@ control you build out of primitives must do the same — take
 `ScopeAlive::current()` in the component body and spawn with
 `spawn_then_in(&alive, call, done)` (or wrap the whole handler with
 `alive.wrap0(…)`, which publishes that scope for anything spawned inside).
-The `spawn-then-handler-anchor` lint flags the unanchored shape. See
-`runtime_core::spawn_then`'s module docs.
+The `spawn-then-handler-anchor` lint flags the unanchored shape. A press
+that closes its own dialog, menu or popover is covered without either:
+idea-ui's overlays call `mark_overlay`, which keeps the reply while
+whatever opened the overlay stays mounted. See `runtime_core::spawn_then`'s
+module docs.
 
 ### Batching (opt-in)
 

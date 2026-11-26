@@ -177,7 +177,10 @@ where
                             b.remove_child(&parent, n);
                         }
                     }
-                    drop(realized);
+                    // One teardown, as a region's swap is (see
+                    // `runtime_world::teardown`): a reply still owed to a
+                    // control in the content may keep its signals.
+                    runtime_world::teardown(|| drop(realized));
                     let mut b = backend_for_finish.borrow_mut();
                     for n in &nodes {
                         b.release_subtree(n);
@@ -203,7 +206,7 @@ where
             None => {
                 // No exit animation: drop the scope immediately, then
                 // clear the placeholder and release what was there.
-                drop(realized);
+                runtime_world::teardown(|| drop(realized));
                 let mut b = backend_for_retire.borrow_mut();
                 for n in &nodes {
                     b.remove_child(&parent, n);

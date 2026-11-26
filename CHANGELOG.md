@@ -1474,6 +1474,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`runtime_core::mark_overlay()`** (`runtime-vocabulary` minor). An overlay component built
+  from primitives calls it in its body to keep replies owed to controls inside it, as idea-ui's
+  overlays do.
+
+- **Teardown brackets in the kernel** (`runtime-world` minor). `teardown(f)` drops what `f`
+  drops as one teardown, freeing the signals when it ends; `retain_teardown()` keeps them until its
+  handles drop; `teardown_epoch()` and `on_teardown_end(f)` let code see a teardown as a whole.
+  `runtime-scene` (minor) runs every `if`/`match` swap as one, and adds `enclosing_region()`,
+  `isolated(f)` and `RegionAlive`, the liveness of the region a build runs in.
+
 - **`ActionBar(phone = PhoneActions::Row)`** (`idea-ui-layout` minor). A phone's verbs stay on
   one line, the primary last with twice the width of each other, for a walk's Back / Skip / Next.
   `PhoneActions::Stacked` (the default) keeps them full width and stacked. From `Sm` both are the
@@ -3966,6 +3976,16 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A press that closes its own dialog, menu or popover keeps its `spawn_then` reply**
+  (`runtime-vocabulary` minor, `idea-ui`). A "Hand in" that closed its confirmation dialog lost
+  its reply, because the reply was tied to the pressed control and the control left with the dialog:
+  the request landed and the screen's busy flag stayed set. idea-ui's `Modal`, `Menu` and `Popover`
+  now call `mark_overlay`. When an `if`, `match` or `presence` removes them, a reply owed to a
+  control inside still runs while whatever opened the overlay stays mounted. The removed scopes'
+  signals stay allocated until that reply has run, so one that writes the closed overlay's own state
+  writes harmlessly. A reply whose opener has also gone, or whose screen a navigator popped, is
+  still dropped. `examples/spawn-anchor-repro` shows the cases side by side.
 
 - **`ToolbarSearch` keeps its field under the glyph on a phone** (`idea-ui-layout` patch). idea-ui's
   `Popover` opens as a bottom sheet below `Sm`, whose scrim would cover the list the search narrows.

@@ -166,6 +166,28 @@
 //! `handler_spawned_task_dies_with_its_node`, which pins the default that
 //! makes the re-anchor necessary).
 //!
+//! # A press that closes its own overlay
+//!
+//! The same collision, one level out: a dialog's "Hand in" that closes the
+//! dialog, a menu row that closes the menu. The control and everything
+//! around it go with the overlay, so no re-anchor inside the overlay can
+//! save the reply. An overlay component calls
+//! [`mark_overlay`](crate::callback_guard::mark_overlay) in its body
+//! (idea-ui's `Modal`, `Menu` and `Popover` do), and then:
+//!
+//! - when an `if` / `match` or a `presence` removes the overlay, a reply
+//!   owed to a control that went with it still runs, as long as whatever
+//!   opened the overlay is mounted when the reply lands;
+//! - the removed scopes' signals stay allocated until that reply has run
+//!   (`runtime_world::retain_teardown`), so a reply that writes the
+//!   overlay's own state — an error line on a dialog the reader closed —
+//!   writes harmlessly and unseen instead of aborting on a freed slot;
+//! - when the opener has gone too, or the overlay left some other way (its
+//!   screen popped, its parent dropped), the reply is dropped as above.
+//!
+//! Regression: idea-ui's `tests/overlay_press_spawn.rs`, and
+//! `examples/spawn-anchor-repro` to watch it.
+//!
 //! Outside any world the token is permanently live, so a task spawned from
 //! a test or a boot path still applies its result.
 
@@ -248,6 +270,9 @@ fn spawn_guarded<T, F, A>(
     A: FnOnce(T) + 'static,
 {
     let alive = alive.clone();
+    // Owed from now until `then` has run or been dropped: if the scope
+    // ends inside an overlay meanwhile, its signals are kept for `then`.
+    let owed = alive.owe_reply();
     spawn_detached(async move {
         // Record every poll of the task, then commit what it staged before
         // `then` runs: a write the future made must be what `then` reads,
@@ -264,7 +289,7 @@ fn spawn_guarded<T, F, A>(
         })
         .await;
         written.commit();
-        if alive.get() {
+        if owed.may_run() {
             // Publish the token for the callback's duration, so a task
             // chained from inside `then` inherits this same lifetime
             // rather than anchoring to nothing (nothing is being built
