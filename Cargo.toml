@@ -506,10 +506,10 @@ license = "MIT OR Apache-2.0"
 idealyst = { path = "crates/idealyst", version = "9.0.0", registry = "idealyst" }
 runtime-core = { path = "crates/runtime/core", version = "8.0.0", registry = "idealyst" }
 runtime-shared = { path = "crates/runtime/shared", version = "6.7.0", registry = "idealyst" }
-runtime-world = { path = "crates/runtime/world", version = "1.11.0", registry = "idealyst" }
+runtime-world = { path = "crates/runtime/world", version = "1.12.0", registry = "idealyst" }
 runtime-tls = { path = "crates/runtime/tls", version = "0.1.1", registry = "idealyst" }
-runtime-scene = { path = "crates/runtime/scene", version = "2.1.1", registry = "idealyst" }
-runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "9.7.1", registry = "idealyst" }
+runtime-scene = { path = "crates/runtime/scene", version = "2.2.0", registry = "idealyst" }
+runtime-vocabulary = { path = "crates/runtime/vocabulary", version = "9.8.0", registry = "idealyst" }
 runtime-template = { path = "crates/runtime/template", version = "1.5.1", registry = "idealyst" }
 # Fast non-cryptographic integer hasher (rustc's own FxHash). Used in the
 # reactive core's hot-path collections keyed by internal Signal/Effect ids,
@@ -542,7 +542,7 @@ dev-hot = { path = "crates/dev/hot", version = "1.7.1", registry = "idealyst" }
 runtime-macros = { path = "crates/runtime/macros", version = "4.3.0", registry = "idealyst" }
 runtime-macros-parse = { path = "crates/runtime/macros-parse", version = "2.0.0", registry = "idealyst" }
 runtime-macros-expand = { path = "crates/runtime/macros-expand", version = "4.6.0", registry = "idealyst" }
-mcp-catalog = { path = "crates/mcp/catalog", version = "2.4.11", registry = "idealyst" }
+mcp-catalog = { path = "crates/mcp/catalog", version = "2.4.12", registry = "idealyst" }
 catalog-scan = { path = "crates/mcp/catalog-scan", version = "5.0.0", registry = "idealyst" }
 mcp-server = { path = "crates/mcp/server", version = "7.0.1", registry = "idealyst" }
 mcp-design-server = { path = "crates/mcp/design-server", version = "3.1.0", registry = "idealyst" }
@@ -644,10 +644,10 @@ runtime-server-shell-native = { path = "crates/dev/runtime-server-shell", versio
 # crate's own defaults.
 idea-theme = { path = "crates/ui/idea-theme", version = "14.2.0", registry = "idealyst" }
 idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "21.0.0", registry = "idealyst" }
-idea-ui = { path = "crates/ui/idea-ui", version = "24.2.1", registry = "idealyst" }
+idea-ui = { path = "crates/ui/idea-ui", version = "24.3.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "8.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "21.0.0", registry = "idealyst" }
-idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "1.3.0", registry = "idealyst" }
+idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "1.3.1", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "8.0.0", registry = "idealyst" }
 pan = { path = "crates/sdk/client/pan", version = "8.0.0", registry = "idealyst" }
 zoom = { path = "crates/sdk/client/zoom", version = "8.0.0", registry = "idealyst" }
