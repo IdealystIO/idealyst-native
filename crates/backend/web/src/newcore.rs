@@ -1341,6 +1341,10 @@ impl caps::TextInputOps for WebBackend {
         WebBackend::update_text_input_keyboard_impl(self, node, keyboard)
     }
 
+    fn update_text_input_return_key(&mut self, node: &Self::Node, key: primitives::text_input::ReturnKey) {
+        WebBackend::update_text_input_return_key_impl(self, node, key)
+    }
+
     fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {
         WebBackend::set_text_input_focus_handler_impl(self, node, flushing1(handler))
     }

@@ -11,6 +11,14 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **With no `assets` list, a web bundle ships only the conventional web folders** (`build-web`,
+  `idealyst-cli`). `assets/`, `public/`, `static/`, `fonts/`, `images/`, `img/`, `icons/` and
+  `media/` ship, plus top-level files of a web type (`favicon.ico`, `robots.txt`, css,
+  `manifest.json`). Every other folder stays out, and the build names each one it left out. Every
+  folder the denylist didn't name used to ship, so a workspace's `crates/` (its `.rs`), `docs/` and a
+  `deploy/terraform` with its tfvars went into the public bundle. To ship another folder, list it in
+  `[package.metadata.idealyst.app.web].assets`.
+
 - **On a phone, pickers and popovers open in a bottom sheet** (`idea-ui` minor). Below `Sm`,
   `Select` lists its options, `Autocomplete` searches (its own input at the top of the sheet),
   `DateInput`, `DateTimeInput`, `DatePicker`, `DateTimePicker` and `DateRangePicker` show their
@@ -1473,6 +1481,26 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **`return_key` on `text_input` and `Field`** (`runtime-shared`, `runtime-vocabulary`, `idea-ui`
+  minor; `backend-web`, `backend-ios-mobile`, `backend-android-mobile`, `backend-ssr`, the dev wire).
+  `ReturnKey::Next | Go | Done | Send | Search` labels the soft keyboard's return key: web
+  `enterkeyhint`, iOS `returnKeyType`, Android `imeOptions`. It is a label only, so pressing the key
+  still reaches `on_key_down` as Enter. Static or reactive. Wire PROTOCOL_VERSION 30, remote
+  CODEC_VERSION 17.
+- **An app theme's own tokens install with it** (`idea-theme` minor). New
+  `IdeaTheme::extension_tokens`, which `app_theme!` fills in from its tones' `tokens = [...]`.
+  Installing the theme registers them, and swapping themes swaps their values. Before this, a
+  custom token never reached the registry and its sheets drew the fallback.
+- **iOS SDKs can ship Swift** (`run-ios`, `idealyst-cli`). `runtime_swift = [...]` in
+  `[package.metadata.idealyst.ios]` compiles the files into the app in the simulator and device
+  builds, so an SDK can reach a Swift-only API (StoreKit 2) through `@_cdecl` functions. See
+  `crates/sdk/README.md`.
+- **Android library manifests are merged** (`run-android`, `idealyst-cli`). A Maven library an SDK
+  declares beyond the pinned set brings the permissions, `<queries>` and components its own
+  `AndroidManifest.xml` declares, as Gradle's merger would. See `docs/android-packaging.md`.
+- **`#[sse]` streams send a keep-alive** (`server` minor). A quiet stream writes a `:` comment every
+  15 seconds (`SSE_KEEP_ALIVE`), so CloudFront and load balancers don't close it as idle.
 
 - **`runtime_core::mark_overlay()`** (`runtime-vocabulary` minor). An overlay component built
   from primitives calls it in its body to keep replies owed to controls inside it, as idea-ui's

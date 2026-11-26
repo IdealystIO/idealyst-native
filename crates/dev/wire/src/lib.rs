@@ -68,7 +68,7 @@ pub use payload_serde::{
 /// [`WireStyleRules`] carries every `StyleRules` property; the
 /// conversions on both ends are exhaustive destructures, so a new
 /// property cannot compile until it crosses (see `WireStyleRules`).
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
 
 
 /// Alias retained for code/docs that reference `WIRE_VERSION` rather
@@ -787,6 +787,14 @@ pub enum Command {
     UpdateTextInputContentSensitivity {
         node: NodeId,
         sensitivity: WireContentSensitivity,
+    },
+    /// Set what an existing text input's soft-keyboard return key says
+    /// (PROTOCOL_VERSION 30): the vocabulary's `update_text_input_return_key`
+    /// op, verbatim. Replayed after the create in a snapshot, like
+    /// `UpdateTextInputKeyboard`.
+    UpdateTextInputReturnKey {
+        node: NodeId,
+        key: WireReturnKey,
     },
     /// Set an existing text input's placeholder ink (PROTOCOL_VERSION 27;
     /// `None`: the toolkit's own) — the vocabulary's
@@ -1616,6 +1624,21 @@ pub enum WireCursor {
     #[default]
     #[serde(other)]
     Auto,
+}
+
+/// Wire mirror of `runtime_shared::primitives::text_input::ReturnKey`,
+/// converted where [`WireKeyboardKind`] is.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WireReturnKey {
+    Next,
+    Go,
+    Done,
+    Send,
+    Search,
+    /// Also the catch-all; must stay last (`#[serde(other)]`).
+    #[default]
+    #[serde(other)]
+    Default,
 }
 
 /// Wire mirror of

@@ -149,6 +149,60 @@ impl KeyboardKind {
     ];
 }
 
+/// What a `text_input`'s soft-keyboard return key says: `Next` on a field
+/// that moves to the next one, `Go` on one that signs in, `Send` on a chat
+/// box. A label only: pressing the key still reaches `on_key_down` as
+/// `Enter`, and what it does is the app's.
+///
+/// | Kind      | web `enterkeyhint` | iOS `UIReturnKeyType` | Android `imeOptions` |
+/// |-----------|--------------------|-----------------------|----------------------|
+/// | `Default` | —                  | `default`             | `actionUnspecified`  |
+/// | `Next`    | `next`             | `next`                | `actionNext`         |
+/// | `Go`      | `go`               | `go`                  | `actionGo`           |
+/// | `Done`    | `done`             | `done`                | `actionDone`         |
+/// | `Send`    | `send`             | `send`                | `actionSend`         |
+/// | `Search`  | `search`           | `search`              | `actionSearch`       |
+///
+/// Desktop and drawn backends (macOS, Windows, Linux, wgpu, terminal, CPU)
+/// have no soft keyboard and ignore it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "remote-serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ReturnKey {
+    /// The platform's own return key.
+    #[default]
+    Default,
+    /// Moves on to the next field.
+    Next,
+    /// Goes: signs in, opens an address.
+    Go,
+    /// Finishes the form.
+    Done,
+    /// Sends a message.
+    Send,
+    /// Runs a search.
+    Search,
+}
+
+impl ReturnKey {
+    /// Every kind, in declaration order (for exhaustive backend tests and
+    /// doc controls).
+    pub const ALL: [ReturnKey; 6] =
+        [ReturnKey::Default, ReturnKey::Next, ReturnKey::Go, ReturnKey::Done, ReturnKey::Send, ReturnKey::Search];
+
+    /// The web's `enterkeyhint` value, `None` for [`ReturnKey::Default`]
+    /// (the attribute is left off).
+    pub fn enterkeyhint(self) -> Option<&'static str> {
+        match self {
+            ReturnKey::Default => None,
+            ReturnKey::Next => Some("next"),
+            ReturnKey::Go => Some("go"),
+            ReturnKey::Done => Some("done"),
+            ReturnKey::Send => Some("send"),
+            ReturnKey::Search => Some("search"),
+        }
+    }
+}
+
 /// Whether a `text_input` holds something a screen share must not show.
 ///
 /// On Android 15+ (API 35) a window with a sensitive view in it is blank in

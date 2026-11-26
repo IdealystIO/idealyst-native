@@ -1160,6 +1160,10 @@ impl caps::TextInputOps for HostMock {
         );
     }
 
+    fn update_text_input_return_key(&mut self, node: &Node, key: runtime_shared::primitives::text_input::ReturnKey) {
+        self.s.rec_v("update_text_input_return_key", format!("update_text_input_return_key n{node} {key:?}"));
+    }
+
     fn update_text_input_placeholder_color(&mut self, node: &Node, color: Option<&runtime_shared::Color>) {
         self.s.rec_v(
             "update_text_input_placeholder_color",

@@ -122,6 +122,11 @@ mod safe_area_policy;
 #[allow(dead_code)]
 mod soft_keyboard_policy;
 
+/// `text_input`'s return-key label → `EditorInfo` IME action. Un-gated
+/// like `soft_keyboard_policy`.
+#[allow(dead_code)]
+mod return_key_policy;
+
 /// `image()` routing (which loader a `src` takes), the iOS-matching Taffy
 /// measurement, and the SVG re-raster gate. Un-gated like `sticky_compute`
 /// so the regression tests run on the host; the JNI half lives in

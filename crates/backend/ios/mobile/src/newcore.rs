@@ -1131,6 +1131,10 @@ mod ios_impl {
             IosBackend::update_text_input_keyboard_impl(self, node, keyboard)
         }
 
+        fn update_text_input_return_key(&mut self, node: &Self::Node, key: primitives::text_input::ReturnKey) {
+            IosBackend::update_text_input_return_key_impl(self, node, key)
+        }
+
         fn update_text_input_placeholder(&mut self, node: &Self::Node, placeholder: Option<&str>) {
             IosBackend::update_text_input_placeholder_impl(self, node, placeholder)
         }

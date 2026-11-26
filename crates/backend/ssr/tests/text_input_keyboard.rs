@@ -62,3 +62,17 @@ fn ssr_text_input_live_keyboard_renders_its_current_kind() {
     let out = html(|| view().child(text_input().keyboard_dyn(|| KeyboardKind::Url)).build());
     assert!(out.contains(r#"inputmode="url""#), "{out}");
 }
+
+/// The return key's label renders as `enterkeyhint`, as the web backend
+/// writes it, so a field focused before hydration already shows "next".
+#[test]
+fn ssr_text_input_emits_enterkeyhint_per_return_key() {
+    use runtime_shared::primitives::text_input::ReturnKey;
+    for key in ReturnKey::ALL {
+        let out = html(|| view().child(text_input().return_key(key)).build());
+        match key.enterkeyhint() {
+            Some(v) => assert!(out.contains(&format!(r#"enterkeyhint="{v}""#)), "{key:?}: {out}"),
+            None => assert!(!out.contains("enterkeyhint="), "{key:?}: {out}"),
+        }
+    }
+}

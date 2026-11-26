@@ -1829,6 +1829,11 @@ impl WireRecordingBackend {
         });
     }
 
+    pub fn update_text_input_return_key(&mut self, node: &NodeId, key: runtime_shared::primitives::text_input::ReturnKey) {
+        let mut state = self.inner.borrow_mut();
+        state.emit(Command::UpdateTextInputReturnKey { node: *node, key: convert_out::return_key_to_wire(key) });
+    }
+
     pub fn update_text_input_placeholder_color(&mut self, node: &NodeId, color: Option<&runtime_shared::Color>) {
         let mut state = self.inner.borrow_mut();
         state.emit(Command::UpdateTextInputPlaceholderColor {

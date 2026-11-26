@@ -579,6 +579,7 @@ fn encode_item(data: Box<dyn Any>, children: Vec<Element>) -> Node {
             secure: val(p.secure),
             keyboard: val(p.keyboard),
             content_sensitivity: val(p.content_sensitivity),
+            return_key: val(p.return_key),
             placeholder_color: val(p.placeholder_color),
             disabled: p.disabled.map(val),
         };

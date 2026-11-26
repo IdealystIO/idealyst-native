@@ -286,6 +286,14 @@ pub(crate) fn apply_keyboard_attrs(
     }
 }
 
+/// The web backend's `enterkeyhint` for a return key, removed for `Default`.
+pub(crate) fn apply_return_key_attr(node: &NodeRef, key: runtime_shared::primitives::text_input::ReturnKey) {
+    match key.enterkeyhint() {
+        Some(v) => set_attr(node, "enterkeyhint", v.to_string()),
+        None => remove_attr(node, "enterkeyhint"),
+    }
+}
+
 /// Append a space-separated class to a node's `class` attribute (so a
 /// chrome handler can stamp `ui-nav-root` then `ui-nav-drawer-root` on
 /// the same node, matching the live web navigator).

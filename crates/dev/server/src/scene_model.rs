@@ -130,6 +130,9 @@ pub struct SceneModel {
     /// Per-text-input latest `UpdateTextInputContentSensitivity`, replayed
     /// like the keyboard hint.
     node_content_sensitivity: HashMap<NodeId, Command>,
+    /// Per-text-input latest `UpdateTextInputReturnKey`, replayed like the
+    /// keyboard hint.
+    node_return_key: HashMap<NodeId, Command>,
     /// Per-text-input / text-area latest placeholder ink
     /// (`Update*PlaceholderColor`), replayed after the create like the
     /// keyboard hint.
@@ -617,6 +620,9 @@ impl SceneModel {
             Command::UpdateTextInputContentSensitivity { node, .. } => {
                 self.node_content_sensitivity.insert(*node, cmd.clone());
             }
+            Command::UpdateTextInputReturnKey { node, .. } => {
+                self.node_return_key.insert(*node, cmd.clone());
+            }
             Command::UpdateTextInputPlaceholderColor { node, .. }
             | Command::UpdateTextAreaPlaceholderColor { node, .. } => {
                 self.node_placeholder_color.insert(*node, cmd.clone());
@@ -687,6 +693,7 @@ impl SceneModel {
         self.node_keyboard_avoid.remove(&node);
         self.node_text_input_keyboard.remove(&node);
         self.node_content_sensitivity.remove(&node);
+        self.node_return_key.remove(&node);
         self.node_placeholder_color.remove(&node);
         self.navigators.remove(&node);
         self.nav_style_slots.remove(&node);
@@ -951,6 +958,9 @@ impl SceneModel {
                 out.push(cmd.clone());
             }
             if let Some(cmd) = self.node_content_sensitivity.get(id) {
+                out.push(cmd.clone());
+            }
+            if let Some(cmd) = self.node_return_key.get(id) {
                 out.push(cmd.clone());
             }
             if let Some(cmd) = self.node_placeholder_color.get(id) {
@@ -1567,6 +1577,55 @@ mod tests {
         assert_eq!(sent(&model), [wire::WireContentSensitivity::NotSensitive]);
         model.apply(&Command::ReleaseNode { node });
         assert!(sent(&model).is_empty());
+    }
+
+    /// The latest return key replays after the create, and goes with its
+    /// node, as the keyboard hint does.
+    #[test]
+    fn text_input_return_key_replays_in_snapshot_after_create() {
+        let mut model = SceneModel::new();
+        let node = wire::NodeId(1);
+        model.apply(&Command::CreateTextInput {
+            id: node,
+            initial_value: String::new(),
+            placeholder: None,
+            on_change: wire::HandlerId(1),
+            secure: false,
+            a11y: Default::default(),
+        });
+        for key in [wire::WireReturnKey::Next, wire::WireReturnKey::Go] {
+            model.apply(&Command::UpdateTextInputReturnKey { node, key });
+        }
+        model.apply(&Command::Finish { root: node });
+        let sent = |model: &SceneModel| -> Vec<wire::WireReturnKey> {
+            let snap = model.snapshot_commands();
+            let create = snap.iter().position(|c| matches!(c, Command::CreateTextInput { .. })).unwrap_or(usize::MAX);
+            snap.iter()
+                .enumerate()
+                .filter_map(|(i, c)| match c {
+                    Command::UpdateTextInputReturnKey { key, .. } => {
+                        assert!(i > create, "after the create");
+                        Some(*key)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(sent(&model), [wire::WireReturnKey::Go]);
+        model.apply(&Command::ReleaseNode { node });
+        assert!(sent(&model).is_empty());
+    }
+
+    /// Every return key has its own wire value, and an unknown one from a
+    /// newer peer decodes to the platform's own.
+    #[test]
+    fn return_key_wire_mirror_is_distinct_and_tolerant() {
+        use runtime_shared::primitives::text_input::ReturnKey;
+        let wired: std::collections::HashSet<_> =
+            ReturnKey::ALL.iter().map(|k| format!("{:?}", crate::convert_out::return_key_to_wire(*k))).collect();
+        assert_eq!(wired.len(), ReturnKey::ALL.len());
+        let unknown: wire::WireReturnKey = serde_json::from_str("\"Join\"").unwrap();
+        assert_eq!(unknown, wire::WireReturnKey::Default);
     }
 
     /// The wire mirror covers every runtime kind distinctly, and an

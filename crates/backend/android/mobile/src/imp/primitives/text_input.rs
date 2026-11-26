@@ -263,6 +263,37 @@ pub(crate) fn read_keyboard_kind(node: &GlobalRef) -> Option<runtime_shared::pri
 /// so a mask toggle changes the glyphs to dots and nothing else — the same
 /// observable result as `secureTextEntry` on iOS and `type=password` on web.
 /// The password transformation itself (dots) is applied by `setInputType`.
+/// Label `node`'s soft-keyboard action key ([`crate::return_key_policy`]).
+/// The IME reads `imeOptions` when it starts on the field, so a field it is
+/// already up for is restarted to pick the change up.
+pub(crate) fn apply_return_key(node: &GlobalRef, key: runtime_shared::primitives::text_input::ReturnKey) {
+    with_env(|env| {
+        let current = env.call_method(node.as_obj(), "getImeOptions", "()I", &[]).ok().and_then(|v| v.i().ok());
+        let Some(current) = current else { return };
+        let next = crate::return_key_policy::with_action(current, key);
+        if next == current {
+            return;
+        }
+        let _ = env.call_method(node.as_obj(), "setImeOptions", "(I)V", &[JValue::Int(next)]);
+        let focused = env.call_method(node.as_obj(), "hasFocus", "()Z", &[]).ok().and_then(|v| v.z().ok());
+        if focused != Some(true) {
+            return;
+        }
+        let Ok(ctx) = env.call_method(node.as_obj(), "getContext", "()Landroid/content/Context;", &[]).and_then(|v| v.l()) else {
+            return;
+        };
+        let Ok(name) = env.new_string("input_method") else { return };
+        let imm = env
+            .call_method(&ctx, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&name)])
+            .and_then(|v| v.l());
+        if let Ok(imm) = imm {
+            if !imm.is_null() {
+                let _ = env.call_method(&imm, "restartInput", "(Landroid/view/View;)V", &[JValue::Object(node.as_obj())]);
+            }
+        }
+    });
+}
+
 pub(crate) fn apply_input_type(
     node: &GlobalRef,
     kind: runtime_shared::primitives::text_input::KeyboardKind,

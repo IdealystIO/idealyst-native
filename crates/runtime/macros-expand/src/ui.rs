@@ -1141,6 +1141,7 @@ const TEXT_INPUT_BUILDER_PROPS: &[&str] = &[
     "secure",
     "keyboard",
     "content_sensitivity",
+    "return_key",
     "on_focus",
     "on_blur",
     "on_key_down",

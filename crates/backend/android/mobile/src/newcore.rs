@@ -1216,6 +1216,10 @@ mod native {
             AndroidBackend::update_text_input_keyboard_impl(self, node, keyboard)
         }
 
+        fn update_text_input_return_key(&mut self, node: &Self::Node, key: primitives::text_input::ReturnKey) {
+            AndroidBackend::update_text_input_return_key_impl(self, node, key)
+        }
+
         fn update_text_input_content_sensitivity(
             &mut self,
             node: &Self::Node,

@@ -62,6 +62,8 @@ struct TraceBackend {
     keyboards: Vec<(u64, runtime_shared::primitives::text_input::KeyboardKind)>,
     /// `(node, sensitivity)` per `update_text_input_content_sensitivity`.
     sensitivities: Vec<(u64, runtime_shared::primitives::text_input::ContentSensitivity)>,
+    /// `(node, key)` per `update_text_input_return_key`.
+    return_keys: Vec<(u64, runtime_shared::primitives::text_input::ReturnKey)>,
 }
 
 impl Host for TraceBackend {
@@ -257,6 +259,10 @@ impl caps::TextInputOps for TraceBackend {
         sensitivity: runtime_shared::primitives::text_input::ContentSensitivity,
     ) {
         self.sensitivities.push((*node, sensitivity));
+    }
+
+    fn update_text_input_return_key(&mut self, node: &u64, key: runtime_shared::primitives::text_input::ReturnKey) {
+        self.return_keys.push((*node, key));
     }
 }
 impl caps::ToggleOps for TraceBackend {}
@@ -580,6 +586,25 @@ fn text_input_content_sensitivity_crosses_the_dev_wire() {
     wire_app.apply_batch(commands).expect("replay succeeds");
     let got: Vec<S> = wire_app.backend().borrow().sensitivities.iter().map(|(_, s)| *s).collect();
     assert_eq!(got, [S::NotSensitive, S::Sensitive]);
+}
+
+/// `text_input`'s return key crosses the dev wire (PROTOCOL_VERSION 30).
+#[test]
+fn text_input_return_key_crosses_the_dev_wire() {
+    use runtime_shared::primitives::text_input::ReturnKey as K;
+    use runtime_vocabulary::builders::{text_input, view};
+
+    let recorder = WireRecordingBackend::new();
+    let _session = dev_server::newcore::SceneSession::mount(&recorder, |_r| {}, || {
+        view().child(text_input().return_key(K::Next)).child(text_input().return_key(K::Go)).child(text_input()).build()
+    });
+    let json = serde_json::to_string(&recorder.drain_commands()).expect("serialize");
+    let commands: Vec<Command> = serde_json::from_str(&json).expect("deserialize");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut wire_app = WireBackend::new(TraceBackend::default(), tx);
+    wire_app.apply_batch(commands).expect("replay succeeds");
+    let got: Vec<K> = wire_app.backend().borrow().return_keys.iter().map(|(_, k)| *k).collect();
+    assert_eq!(got, [K::Next, K::Go]);
 }
 
 /// Drive a link element through the recording backend. Verifies

@@ -74,6 +74,17 @@ pub trait TextInputOps: ExternalOps {
     ) {
     }
 
+    /// Set what a single-line text input's soft-keyboard return key says
+    /// ([`ReturnKey`]). Called right after `create_text_input` (before
+    /// anything can focus it: iOS reads `returnKeyType` as the keyboard
+    /// comes up) for a static value other than `Default`, and per change of
+    /// a live one. A label only; the key's press still reports `Enter`.
+    /// Default: no-op, for every backend without a soft keyboard.
+    ///
+    /// [`ReturnKey`]: runtime_shared::primitives::text_input::ReturnKey
+    #[allow(unused_variables)]
+    fn update_text_input_return_key(&mut self, node: &Self::Node, key: primitives::text_input::ReturnKey) {}
+
     /// Install a focus-change notifier (`handler(true)` on focus gain).
     #[allow(unused_variables)]
     fn set_text_input_focus_handler(&mut self, node: &Self::Node, handler: Rc<dyn Fn(bool)>) {}

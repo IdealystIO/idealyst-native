@@ -16,7 +16,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, Sel};
 use objc2::{msg_send, sel};
 use objc2_foundation::NSString;
-use runtime_shared::primitives::text_input::KeyboardKind;
+use runtime_shared::primitives::text_input::{KeyboardKind, ReturnKey};
 
 // `UITextContentType` constants. Linked from UIKit (which the crate
 // already links) rather than spelled as string literals: the constants'
@@ -174,9 +174,42 @@ pub(crate) fn apply(field: &AnyObject, kind: KeyboardKind) {
     }
 }
 
+/// `UIReturnKeyType` for a return key (raw values of UIKit's enum).
+pub(crate) fn return_key_type(key: ReturnKey) -> isize {
+    match key {
+        ReturnKey::Default => 0,
+        ReturnKey::Go => 1,
+        ReturnKey::Next => 4,
+        ReturnKey::Search => 6,
+        ReturnKey::Send => 7,
+        ReturnKey::Done => 9,
+    }
+}
+
+/// Set `field`'s `returnKeyType`, sent to the receiver [`trait_receiver`]
+/// picks, and reload a keyboard already up (the same read-at-bring-up
+/// invariant as [`apply`]).
+pub(crate) fn apply_return_key(field: &AnyObject, key: ReturnKey) {
+    let to = trait_receiver(field, sel!(setReturnKeyType:));
+    unsafe {
+        let _: () = msg_send![&*to, setReturnKeyType: return_key_type(key)];
+        let first: bool = msg_send![field, isFirstResponder];
+        if first {
+            let _: () = msg_send![field, reloadInputViews];
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the `UIReturnKeyType` raw values, one per kind.
+    #[test]
+    fn return_key_types() {
+        let got: Vec<isize> = ReturnKey::ALL.iter().map(|k| return_key_type(*k)).collect();
+        assert_eq!(got, [0, 4, 1, 9, 7, 6]);
+    }
 
     /// Pins the `UIKeyboardType` raw values (UIKit's `UIKeyboardType` enum)
     /// and that Email/Url — and only they — turn off auto-capitalization,

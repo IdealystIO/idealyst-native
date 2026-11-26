@@ -71,6 +71,19 @@ pub fn content_sensitivity_to_wire(
     }
 }
 
+/// Reverse: `dev_client::convert::wire_return_key`.
+pub fn return_key_to_wire(k: runtime_shared::primitives::text_input::ReturnKey) -> wire::WireReturnKey {
+    use runtime_shared::primitives::text_input::ReturnKey as K;
+    match k {
+        K::Default => wire::WireReturnKey::Default,
+        K::Next => wire::WireReturnKey::Next,
+        K::Go => wire::WireReturnKey::Go,
+        K::Done => wire::WireReturnKey::Done,
+        K::Send => wire::WireReturnKey::Send,
+        K::Search => wire::WireReturnKey::Search,
+    }
+}
+
 pub fn easing_to_wire(e: Easing) -> WireEasing {
     match e {
         Easing::Linear => WireEasing::Linear,

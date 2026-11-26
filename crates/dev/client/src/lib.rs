@@ -1047,6 +1047,10 @@ where
                 let sensitivity = convert::wire_content_sensitivity(sensitivity);
                 self.backend.borrow_mut().update_text_input_content_sensitivity(&n, sensitivity);
             }
+            Command::UpdateTextInputReturnKey { node, key } => {
+                let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
+                self.backend.borrow_mut().update_text_input_return_key(&n, convert::wire_return_key(key));
+            }
             Command::UpdateTextInputPlaceholderColor { node, color } => {
                 let n = self.nodes.get(&node).ok_or(ReplayError::UnknownNode(node))?.clone();
                 let color = color.map(convert::wire_color_to_color);

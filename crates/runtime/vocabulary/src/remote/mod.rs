@@ -99,7 +99,8 @@ pub mod wasm;
 /// - 15: [`Node::TextInput`] and [`Node::TextArea`] carry
 ///   `placeholder_color`.
 /// - 16: [`Node::TextInput`] carries `content_sensitivity`.
-pub const CODEC_VERSION: u32 = 16;
+/// - 17: [`Node::TextInput`] carries `return_key`.
+pub const CODEC_VERSION: u32 = 17;
 
 /// A bundle-side callback id. Local to one bundle: a host serving several
 /// bundles holds one [`host::Link`] per bundle.
@@ -249,6 +250,8 @@ pub enum Node {
         keyboard: Val<runtime_shared::primitives::text_input::KeyboardKind>,
         /// Whether a screen share may show it (CODEC_VERSION 16).
         content_sensitivity: Val<runtime_shared::primitives::text_input::ContentSensitivity>,
+        /// The soft keyboard's return-key label (CODEC_VERSION 17).
+        return_key: Val<runtime_shared::primitives::text_input::ReturnKey>,
         /// The placeholder's ink (CODEC_VERSION 15).
         placeholder_color: Val<Option<runtime_shared::Color>>,
         /// `Some` when the author bound `disabled` (CODEC_VERSION 4).
@@ -1226,6 +1229,7 @@ remote_value!(
     runtime_shared::primitives::image::ImageLoadEvent,
     runtime_shared::primitives::text_input::KeyboardKind,
     runtime_shared::primitives::text_input::ContentSensitivity,
+    runtime_shared::primitives::text_input::ReturnKey,
     runtime_shared::touch::TouchPoint,
     runtime_shared::host::ColorScheme,
 );

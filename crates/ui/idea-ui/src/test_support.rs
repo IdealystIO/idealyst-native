@@ -130,6 +130,8 @@ pub enum P {
         secure: bool,
         /// Evaluated current soft-keyboard hint.
         keyboard: runtime_core::KeyboardKind,
+        /// Evaluated current return-key label.
+        return_key: runtime_core::ReturnKey,
         /// Evaluated current placeholder ink.
         placeholder_color: Option<Color>,
         /// The mount-time `autofocus` flag.
@@ -386,6 +388,7 @@ mod imp {
                 on_focus: p.on_focus.is_some(),
                 secure: eval(p.secure),
                 keyboard: eval(p.keyboard),
+                return_key: eval(p.return_key),
                 placeholder_color: eval(p.placeholder_color),
                 autofocus: p.autofocus,
                 a11y_label: p.a11y.label,

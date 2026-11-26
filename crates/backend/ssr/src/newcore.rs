@@ -747,6 +747,15 @@ impl caps::TextInputOps for SsrBackend {
         crate::apply_keyboard_attrs(node, keyboard);
     }
 
+    fn update_text_input_return_key(
+        &mut self,
+        node: &Self::Node,
+        key: runtime_shared::primitives::text_input::ReturnKey,
+    ) {
+        // The web backend's `enterkeyhint`, so hydration adopts a match.
+        crate::apply_return_key_attr(node, key);
+    }
+
     fn create_text_area(
         &mut self,
         initial_value: &str,

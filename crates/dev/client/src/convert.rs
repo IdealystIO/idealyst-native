@@ -125,6 +125,19 @@ pub fn wire_content_sensitivity(
     }
 }
 
+/// Wire-to-framework reverse of `dev_server::convert_out::return_key_to_wire`.
+pub fn wire_return_key(k: wire::WireReturnKey) -> runtime_shared::primitives::text_input::ReturnKey {
+    use runtime_shared::primitives::text_input::ReturnKey as K;
+    match k {
+        wire::WireReturnKey::Default => K::Default,
+        wire::WireReturnKey::Next => K::Next,
+        wire::WireReturnKey::Go => K::Go,
+        wire::WireReturnKey::Done => K::Done,
+        wire::WireReturnKey::Send => K::Send,
+        wire::WireReturnKey::Search => K::Search,
+    }
+}
+
 pub fn wire_easing(e: WireEasing) -> Easing {
     match e {
         WireEasing::Linear => Easing::Linear,

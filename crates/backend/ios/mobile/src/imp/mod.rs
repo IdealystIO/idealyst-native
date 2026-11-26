@@ -2187,6 +2187,17 @@ impl IosBackend {
         }
     }
 
+    pub(crate) fn update_text_input_return_key_impl(
+        &mut self,
+        node: &IosNode,
+        key: runtime_shared::primitives::text_input::ReturnKey,
+    ) {
+        // Single-line fields only: a text area's return inserts a newline.
+        if let IosNode::TextField(field) = node {
+            keyboard_kind::apply_return_key(field, key);
+        }
+    }
+
     /// iOS has no general hover/press state firing, but an editable field needs
     /// `FOCUSED` to drive its focus ring (the `focused` style variant). Install
     /// the framework's state setter on the `IdealystTextField` so its

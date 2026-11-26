@@ -2827,6 +2827,14 @@ impl WebBackend {
         primitives::text_input::update_keyboard(node, keyboard)
     }
 
+    pub(crate) fn update_text_input_return_key_impl(
+        &mut self,
+        node: &Node,
+        key: runtime_shared::primitives::text_input::ReturnKey,
+    ) {
+        primitives::text_input::update_return_key(node, key)
+    }
+
     pub(crate) fn set_text_input_focus_handler_impl(&mut self, node: &Node, handler: Rc<dyn Fn(bool)>) {
         primitives::text_input::set_focus_handler(self, node, handler);
     }

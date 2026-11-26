@@ -45,7 +45,9 @@
 //! (`KeyboardKind::Email` / `Phone` / `Number` / `Decimal` / `SignedDecimal` /
 //! `Url`) through the `text_input` primitive's `keyboard`; desktop platforms
 //! ignore it. A field that can go negative wants `SignedDecimal`: `Decimal` has
-//! no minus key on iOS.
+//! no minus key on iOS. `return_key` (reactive) labels the soft keyboard's
+//! return key (`ReturnKey::Next` / `Go` / `Done` / `Send` / `Search`); its
+//! press still reaches `on_key_down` as Enter.
 //! `Textarea` has no `keyboard`: multi-line text is prose, and the
 //! email / phone / digit layouts are single-line ones.
 
@@ -76,6 +78,8 @@ use idea_theme::theme::IdeaThemeRef;
 pub use runtime_core::KeyboardKind;
 /// What [`FieldProps::content_sensitivity`] takes.
 pub use runtime_core::ContentSensitivity;
+/// What [`FieldProps::return_key`] takes.
+pub use runtime_core::ReturnKey;
 use idea_theme::tokens;
 
 /// A leading/trailing adornment inside a [`Field`]'s box — an icon or a custom
@@ -669,6 +673,14 @@ pub struct FieldProps {
     /// Android's rule.
     #[schema(constraint = "reactive: static ContentSensitivity or Signal/rx!")]
     pub content_sensitivity: ContentSensitivity,
+    /// What the soft keyboard's return key says on phones and tablets:
+    /// `ReturnKey::Next` on a field that moves to the next one, `Go` on one
+    /// that signs in, `Send`, `Search`, `Done`. A label only: pressing it
+    /// still reaches `on_key_down` as Enter, and what it does is the app's.
+    /// Forwarded to the `text_input` primitive's `return_key`; desktop
+    /// platforms ignore it. Reactive. Default `ReturnKey::Default`.
+    #[schema(constraint = "reactive: static ReturnKey or Signal/rx!")]
+    pub return_key: ReturnKey,
     /// Leading adornment (icon/element) rendered before the input, inside the
     /// field box. Default [`Adornment::None`]. See [`Adornment`]. An
     /// element-builder (children category) — kept bare; reactivity is internal
@@ -776,6 +788,7 @@ impl Default for FieldProps {
             secure: Reactive::Static(false),
             keyboard: Reactive::Static(KeyboardKind::Default),
             content_sensitivity: Reactive::Static(ContentSensitivity::Auto),
+            return_key: Reactive::Static(ReturnKey::Default),
             leading: Adornment::None,
             trailing: Adornment::None,
             leading_when: None,
@@ -899,6 +912,7 @@ pub fn Field(props: &FieldProps) -> Element {
         .secure(secure)
         .keyboard(props.keyboard.clone())
         .content_sensitivity(props.content_sensitivity.clone())
+        .return_key(props.return_key.clone())
         .placeholder_reactive(props.placeholder.clone())
         .placeholder_color(crate::components::placeholder_ink())
         .autofocus(props.autofocus);
@@ -1397,6 +1411,35 @@ mod tests {
             P::View { children, .. } => children.into_iter().find_map(input_keyboard),
             _ => None,
         }
+    }
+
+    /// REGRESSION (LumiTask sign-in): `Field` had no return-key prop, so the
+    /// key read "return" on a field whose Enter moves to the password or
+    /// creates the account. The label must reach the `text_input`, live.
+    #[test]
+    fn regression_field_forwards_return_key_to_its_input() {
+        fn input_return_key(el: Element) -> Option<ReturnKey> {
+            match classify(el) {
+                P::TextInput { return_key, .. } => Some(return_key),
+                P::View { children, .. } => children.into_iter().find_map(input_return_key),
+                _ => None,
+            }
+        }
+        with_test_world(|| {
+            theme();
+            assert_eq!(input_return_key(Field(&FieldProps::default())), Some(ReturnKey::Default));
+            let next = FieldProps { return_key: Reactive::Static(ReturnKey::Next), ..Default::default() };
+            assert_eq!(input_return_key(Field(&next)), Some(ReturnKey::Next));
+            let last: Signal<bool> = runtime_core::signal(false);
+            let live = FieldProps {
+                return_key: runtime_core::rx!(if last.get() { ReturnKey::Go } else { ReturnKey::Next }),
+                ..Default::default()
+            };
+            let field = Field(&live);
+            last.set(true);
+            idea_theme::testing::commit();
+            assert_eq!(input_return_key(field), Some(ReturnKey::Go), "a live `return_key` reaches the input");
+        });
     }
 
     /// REGRESSION: `Field` had no keyboard prop, so an email field opened

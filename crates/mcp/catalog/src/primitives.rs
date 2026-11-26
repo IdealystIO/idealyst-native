@@ -402,6 +402,12 @@ inventory::submit! {
                 constraint: "",
             },
             PropFieldSpec {
+                name: "return_key",
+                type_str: "impl Into<Reactive<ReturnKey>>",
+                doc: "What the soft keyboard's return key says: ReturnKey::{Default, Next, Go, Done, Send, Search}. Sets `enterkeyhint` on web, `returnKeyType` on iOS and `imeOptions` on Android. A label only: the key still reaches `on_key_down` as Enter, so wire what it does there (focus the next field's handle, submit). Desktop backends ignore it. A Signal/rx! source re-applies in place.",
+                constraint: "",
+            },
+            PropFieldSpec {
                 name: "on_key_down",
                 type_str: "Fn(&KeyEvent) -> KeyOutcome",
                 doc: "Keydown hook while focused. Return KeyOutcome::PreventDefault to suppress the platform default — this is how Enter-to-submit is built.",

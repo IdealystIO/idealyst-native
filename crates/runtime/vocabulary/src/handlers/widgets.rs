@@ -521,6 +521,17 @@ where
             bind_dyn(live, move |&s| b.borrow_mut().update_text_input_content_sensitivity(&n, s));
         }
     }
+    // The return key's label, the same two ways and before anything can
+    // focus the field (iOS reads it as the keyboard comes up).
+    match prim.return_key {
+        Value::Const(runtime_shared::primitives::text_input::ReturnKey::Default) => {}
+        Value::Const(k) => backend.borrow_mut().update_text_input_return_key(&node, k),
+        live @ Value::Dyn(_) => {
+            let b = backend.clone();
+            let n = node.clone();
+            bind_dyn(live, move |&k| b.borrow_mut().update_text_input_return_key(&n, k));
+        }
+    }
     // Editable inputs also get `focus`/`blur` so the robot can drive
     // real keyboard focus. Handles are made ON DEMAND from the backend
     // node at call time.

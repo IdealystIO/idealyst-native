@@ -3315,6 +3315,14 @@ impl AndroidBackend {
         primitives::text_input::apply_input_type(node, kind, secure);
     }
 
+    pub(crate) fn update_text_input_return_key_impl(
+        &mut self,
+        node: &GlobalRef,
+        key: runtime_shared::primitives::text_input::ReturnKey,
+    ) {
+        primitives::text_input::apply_return_key(node, key);
+    }
+
     pub(crate) fn create_text_area_impl(
         &mut self,
         initial_value: &str,

@@ -6200,6 +6200,27 @@ fn regression_text_input_keyboard_sets_inputmode_and_composes_with_secure() {
     }
 }
 
+/// Regression: nothing set a field's return-key label, so the phone's key
+/// always read "return". `ReturnKey` renders as `enterkeyhint`, and
+/// `Default` removes it.
+#[wasm_bindgen_test]
+fn regression_text_input_return_key_sets_enterkeyhint() {
+    use runtime_shared::primitives::text_input::ReturnKey;
+    use std::rc::Rc;
+
+    install_mount();
+    let mut backend = WebBackend::new("#app");
+    let node =
+        backend.create_text_input_impl("", None, Rc::new(|_: String| {}), None, None, false, &Default::default());
+    let el: web_glue::dom::Element = node.clone().unchecked_into();
+    for (key, want) in [(ReturnKey::Next, "next"), (ReturnKey::Go, "go"), (ReturnKey::Send, "send")] {
+        backend.update_text_input_return_key_impl(&node, key);
+        assert_eq!(el.get_attribute("enterkeyhint").as_deref(), Some(want));
+    }
+    backend.update_text_input_return_key_impl(&node, ReturnKey::Default);
+    assert_eq!(el.get_attribute("enterkeyhint"), None);
+}
+
 /// Regression: an editor's placeholder had no ink of its own. The ink
 /// rides a custom property plus a marker attribute that one shared
 /// `::placeholder` rule reads; `None` removes both so the browser's own

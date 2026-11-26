@@ -10,7 +10,7 @@ use runtime_shared::primitives::activity_indicator::{
 use runtime_shared::primitives::key::{KeyEvent, KeyOutcome};
 use runtime_shared::primitives::slider::SliderHandle;
 use runtime_shared::primitives::text_area::TextAreaHandle;
-use runtime_shared::primitives::text_input::{ContentSensitivity, KeyboardKind, TextInputHandle};
+use runtime_shared::primitives::text_input::{ContentSensitivity, KeyboardKind, ReturnKey, TextInputHandle};
 use runtime_shared::primitives::toggle::ToggleHandle;
 use runtime_shared::Color;
 use runtime_scene::{item, Element};
@@ -248,6 +248,7 @@ pub fn text_input() -> TextInputBuilder {
             secure: Value::Const(false),
             keyboard: Value::Const(KeyboardKind::Default),
             content_sensitivity: Value::Const(ContentSensitivity::Auto),
+            return_key: Value::Const(ReturnKey::Default),
             placeholder_color: Value::Const(None),
             autofocus: false,
             disabled: None,
@@ -355,6 +356,18 @@ impl TextInputBuilder {
     /// Live [`Self::content_sensitivity`], re-applied in place.
     pub fn content_sensitivity_dyn(mut self, f: impl Fn() -> ContentSensitivity + 'static) -> Self {
         self.prim.content_sensitivity = Value::Dyn(Box::new(f));
+        self
+    }
+
+    /// What the soft keyboard's return key says ([`ReturnKey`]).
+    pub fn return_key(mut self, key: ReturnKey) -> Self {
+        self.prim.return_key = Value::Const(key);
+        self
+    }
+
+    /// Live [`Self::return_key`], re-applied in place.
+    pub fn return_key_dyn(mut self, f: impl Fn() -> ReturnKey + 'static) -> Self {
+        self.prim.return_key = Value::Dyn(Box::new(f));
         self
     }
 

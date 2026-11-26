@@ -715,6 +715,49 @@ fn text_input_content_sensitivity_reaches_the_backend() {
     assert!(ops_named(&h.take_log(), OP).is_empty(), "gone with the scope");
 }
 
+/// A static return key reaches the backend once, right after the create
+/// (before anything can focus the field); `Default` makes no call; a live
+/// one re-applies in place and goes with its scope.
+#[test]
+fn text_input_return_key_reaches_the_backend() {
+    use runtime_shared::primitives::text_input::ReturnKey as K;
+    const OP: &str = "update_text_input_return_key";
+    let h = harness();
+    let world = h.world.clone();
+    let (realized, live) = world.enter(|| {
+        let live = signal(K::Next);
+        let tree = view()
+            .child(text_input().return_key(K::Go).autofocus(true))
+            .child(text_input())
+            .child(text_input().return_key_dyn(move || live.get()))
+            .build();
+        (realize(&h.backend, &h.registry, tree), live)
+    });
+    let log = h.take_log();
+    let ops = ops_named(&log, OP);
+    assert_eq!(ops.len(), 2, "{log:?}");
+    assert!(ops[0].ends_with(" Go") && ops[1].ends_with(" Next"), "{ops:?}");
+    let create = log.iter().position(|l| l.ends_with(" text_input")).expect("created");
+    let applied = log.iter().position(|l| l.starts_with(OP)).unwrap();
+    assert!(applied > create, "after the create: {log:?}");
+    let focus = log.iter().position(|l| l.contains("focus_text_input"));
+    if let Some(focus) = focus {
+        assert!(applied < focus, "before the autofocus: {log:?}");
+    }
+
+    live.set(K::Send);
+    world.flush();
+    let log = h.take_log();
+    let ops = ops_named(&log, OP);
+    assert!(ops.len() == 1 && ops[0].ends_with(" Send"), "{ops:?}");
+    assert!(ops_named(&log, "create").is_empty(), "no rebuild: {log:?}");
+
+    drop(realized);
+    live.set(K::Done);
+    world.flush();
+    assert!(ops_named(&h.take_log(), OP).is_empty(), "gone with the scope");
+}
+
 /// The author surface: `ui!`'s `keyboard = …` lowers to the glue setter,
 /// which takes a plain kind or a live source (`Signal`) through
 /// `Into<Reactive<KeyboardKind>>`.

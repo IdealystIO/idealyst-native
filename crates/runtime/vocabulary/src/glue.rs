@@ -70,9 +70,10 @@ pub use runtime_shared::accessibility::{
 pub use runtime_shared::primitives::activity_indicator::ActivityIndicatorSize;
 // The `text_input` soft-keyboard hint (`keyboard = KeyboardKind::Email`):
 // at the root so authors spell it `runtime_core::KeyboardKind`. Same for
-// the `on_blur` veto (`on_blur = || BlurOutcome::Keep`) and
-// `content_sensitivity = ContentSensitivity::NotSensitive`.
-pub use runtime_shared::primitives::text_input::{BlurOutcome, ContentSensitivity, KeyboardKind};
+// the `on_blur` veto (`on_blur = || BlurOutcome::Keep`),
+// `content_sensitivity = ContentSensitivity::NotSensitive` and
+// `return_key = ReturnKey::Next`.
+pub use runtime_shared::primitives::text_input::{BlurOutcome, ContentSensitivity, KeyboardKind, ReturnKey};
 pub use runtime_shared::primitives::icon::{FillRule, IconData, IconHandle, StrokeAnimation};
 // `Easing` is re-exported (not just imported): the `stylesheet!`
 // emitter spells `::runtime_core::Easing::…` for `transitions { … }`
@@ -2028,7 +2029,7 @@ pub mod primitives {
         use super::super::*;
 
         pub use runtime_shared::primitives::text_input::{
-            BlurOutcome, ContentSensitivity, KeyboardKind, TextInputHandle,
+            BlurOutcome, ContentSensitivity, KeyboardKind, ReturnKey, TextInputHandle,
         };
 
         /// `text_input(value, on_change)` (controlled single-line).
@@ -2145,6 +2146,19 @@ pub mod primitives {
                 self.b = match sensitivity.into() {
                     super::super::Reactive::Static(s) => self.b.content_sensitivity(s),
                     live => self.b.content_sensitivity_dyn(move || live.get()),
+                };
+                self
+            }
+
+            /// What the soft keyboard's return key says ([`ReturnKey`]):
+            /// `Next` on a field that moves on, `Go` on one that signs in.
+            /// A label only: the key still reaches `on_key_down` as
+            /// `Enter`. A plain value or a live source; platforms without a
+            /// soft keyboard ignore it.
+            pub fn return_key(mut self, key: impl Into<super::super::Reactive<ReturnKey>>) -> Self {
+                self.b = match key.into() {
+                    super::super::Reactive::Static(k) => self.b.return_key(k),
+                    live => self.b.return_key_dyn(move || live.get()),
                 };
                 self
             }

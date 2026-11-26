@@ -216,6 +216,16 @@ pub(crate) fn update_keyboard(node: &Node, kind: KeyboardKind) {
     }
 }
 
+/// The return key's label as `enterkeyhint`, removed for `Default`.
+pub(crate) fn update_return_key(node: &Node, key: runtime_shared::primitives::text_input::ReturnKey) {
+    if let Ok(el) = node.clone().dyn_into::<web_glue::dom::Element>() {
+        let _ = match key.enterkeyhint() {
+            Some(v) => el.set_attribute("enterkeyhint", v),
+            None => el.remove_attribute("enterkeyhint"),
+        };
+    }
+}
+
 pub(crate) fn update_placeholder(node: &Node, placeholder: Option<&str>) {
     if let Ok(input) = node.clone().dyn_into::<web_glue::dom::HtmlInputElement>() {
         input.set_placeholder(placeholder.unwrap_or(""));
