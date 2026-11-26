@@ -107,3 +107,57 @@ recipe!(
         }
     }
 );
+
+recipe!(
+    Notification,
+    /// A notification with a reply field and a second button, and a
+    /// handler for what the user does with it. [`on_response`](crate::on_response)
+    /// hears every tap, button press, reply and dismissal on the UI thread,
+    /// so it can write a `signal` directly; the reply text arrives as
+    /// `text`, the payload as `data`. Here the handler lives as long as the
+    /// component (its guard is dropped in `on_scope_drop`, when the
+    /// component unmounts); an app that must
+    /// hear the tap that *launched* it registers its handler at boot
+    /// instead, before the first screen mounts.
+    pub fn reply_and_actions() -> ::runtime_core::Element {
+        use crate::{authorize, notify, on_response, Action, Notification, ResponseAction};
+        use ::runtime_core::driver::spawn_detached;
+        use ::runtime_core::{on_scope_drop, signal, text, ui};
+
+        let last = signal("No response yet".to_string());
+
+        let sub = on_response(move |r| {
+            let chat = r.data.get("chat").cloned().unwrap_or_default();
+            last.set(match &r.action {
+                ResponseAction::Action(id) if id == "reply" => {
+                    format!("Reply to {chat}: {}", r.text.clone().unwrap_or_default())
+                }
+                ResponseAction::Action(id) => format!("Pressed {id} on {chat}"),
+                ResponseAction::Open => format!("Opened {chat}"),
+                ResponseAction::Dismiss => format!("Dismissed {chat}"),
+            });
+        });
+        on_scope_drop(move || drop(sub));
+
+        let ask = move || {
+            spawn_detached(async move {
+                if authorize().await.is_granted() {
+                    let note = Notification::new("Sam", "Lunch at noon?")
+                        .id("chat-sam")
+                        .with("chat", "sam")
+                        .group("chats")
+                        .action(Action::new("reply", "Reply").text_input("Send", "Message"))
+                        .action(Action::new("mute", "Mute").opens_app(false).destructive());
+                    let _ = notify(note).await;
+                }
+            });
+        };
+
+        ui! {
+            view {
+                button(label = "Ask Sam", on_click = ask)
+                text(move || last.get())
+            }
+        }
+    }
+);

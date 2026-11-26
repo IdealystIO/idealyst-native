@@ -34,6 +34,11 @@ screen-recorder = { workspace = true }
 media-writer = { workspace = true }
 files = { workspace = true }
 
+# Web: `svg::register` takes the web backend's concrete registry there, so
+# the generic registration seam downcasts to it (src/lib.rs).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+backend-web = { workspace = true }
+
 [package.metadata.idealyst.app]
 name      = "SDK Gallery"
 bundle_id = "io.idealyst.sdkgallery"

@@ -145,11 +145,31 @@ pub fn ConnectivityPanel() -> Element {
     }
 }
 
-/// `notifications` — post now, schedule, cancel.
+/// `notifications` — post now, schedule, cancel, and hear the response:
+/// a plain post, a chat message with a reply field and buttons (shown on
+/// native; web's page-level API has no buttons, so a click there reports
+/// `Open`), an urgent one and a silent one.
 #[component]
 pub fn NotificationsPanel() -> Element {
+    use notifications::{Action, Notification, Priority, ResponseAction, Sound};
+
     let status = signal("Not posted yet.".to_string());
-    let post = |status: Signal<String>, after: Option<u64>| {
+    let response = signal("No response yet — post one, then click it.".to_string());
+
+    let sub = notifications::on_response(move |r| {
+        let what = match &r.action {
+            ResponseAction::Open => "opened".to_string(),
+            ResponseAction::Dismiss => "dismissed".to_string(),
+            ResponseAction::Action(id) => format!("pressed \"{id}\""),
+        };
+        let reply = r.text.as_deref().map(|t| format!(", replied \"{t}\"")).unwrap_or_default();
+        let mut data: Vec<_> = r.data.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        data.sort();
+        response.set(format!("{}: {what}{reply} — payload {{{}}}", r.id, data.join(", ")));
+    });
+    runtime_core::on_scope_drop(move || drop(sub));
+
+    let post = |status: Signal<String>, make: fn() -> Notification, after: Option<u64>| {
         Rc::new(move || {
             spawn_detached(async move {
                 let grant = notifications::authorize().await;
@@ -157,9 +177,7 @@ pub fn NotificationsPanel() -> Element {
                     status.set(format!("Not allowed ({grant:?}) — turn notifications on in Settings."));
                     return;
                 }
-                let n = notifications::Notification::new("SDK gallery", "Hello from the notifications SDK")
-                    .subtitle(if after.is_some() { "Scheduled" } else { "Posted now" })
-                    .id("gallery");
+                let n = make();
                 let result = match after {
                     None => notifications::notify(n).await,
                     Some(s) => notifications::schedule(n, Duration::from_secs(s)).await,
@@ -172,20 +190,47 @@ pub fn NotificationsPanel() -> Element {
             });
         }) as Rc<dyn Fn()>
     };
-    let cancel = Rc::new(move || {
+    fn plain() -> Notification {
+        Notification::new("SDK gallery", "Hello from the notifications SDK")
+            .subtitle("Posted from the gallery")
+            .id("gallery")
+            .with("screen", "gallery")
+    }
+    fn chat() -> Notification {
+        Notification::new("Sam", "Lunch at noon?")
+            .id("chat-sam")
+            .with("chat", "sam")
+            .group("chats")
+            .action(Action::new("reply", "Reply").text_input("Send", "Message"))
+            .action(Action::new("mute", "Mute").opens_app(false).destructive())
+    }
+    fn urgent() -> Notification {
+        Notification::new("Build failed", "main is red — stays until you act on it")
+            .id("urgent")
+            .with("build", "4711")
+            .priority(Priority::Urgent)
+    }
+    fn silent() -> Notification {
+        Notification::new("Synced", "No sound for this one").id("silent").sound(Sound::Silent)
+    }
+    let cancel_all = Rc::new(move || {
         spawn_detached(async move {
-            notifications::cancel(&notifications::NotificationId::from("gallery")).await;
-            status.set("Cancelled.".to_string());
+            notifications::cancel_all().await;
+            status.set("Cancelled all.".to_string());
         });
     }) as Rc<dyn Fn()>;
     ui! {
         Panel(title = "notifications".to_string()) {
             view(style = styles::Row()) {
-                Button(label = "Notify now".to_string(), tone = tone::Primary, variant = variant::Filled, on_click = post(status, None))
-                Button(label = "In 10 s".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, Some(10)))
-                Button(label = "Cancel".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = cancel)
+                Button(label = "Notify now".to_string(), tone = tone::Primary, variant = variant::Filled, on_click = post(status, plain, None))
+                Button(label = "Chat + reply".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, chat, None))
+                Button(label = "Urgent".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, urgent, None))
+                Button(label = "Silent".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, silent, None))
+                Button(label = "In 10 s".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, plain, Some(10)))
+                Button(label = "Cancel all".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = cancel_all)
             }
             Status(line = rx!(status.get()))
+            Status(line = rx!(response.get()))
         }
     }
 }

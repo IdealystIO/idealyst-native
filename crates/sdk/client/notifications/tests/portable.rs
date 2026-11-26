@@ -2,10 +2,10 @@
 //!
 //! The pure-logic tests (builder, id types) run on **every** host. The
 //! no-op behavioral tests (`notify` / `schedule` / `cancel` / `push_token` /
-//! `authorize`) run only where the **fallback** `imp` compiles — desktop
-//! Windows / a CI runner — because the macOS `apple` backend messages the
-//! real `UNUserNotificationCenter`, which throws in a non-bundled test
-//! binary. Linux has its own `linux` mod below: its D-Bus backend is real,
+//! `authorize`) run only where the **fallback** `imp` compiles — a CI
+//! runner — because the macOS `apple` backend talks to the real
+//! `UNUserNotificationCenter`, which a non-bundled test binary cannot use
+//! (every call reports `Backend` there; `src/apple.rs` tests that). Linux has its own `linux` mod below: its D-Bus backend is real,
 //! so the always-run tests there assert only the bus-free contract
 //! (`schedule`/`push_token` unsupported, `authorize` usable) and the live
 //! post is an `#[ignore]`d test. The other native backends are

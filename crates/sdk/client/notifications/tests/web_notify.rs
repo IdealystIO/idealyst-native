@@ -11,7 +11,13 @@
 
 use std::time::Duration;
 
-use notifications::{notify, push_token, schedule, Notification, NotificationId, NotifyError};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use notifications::{
+    cancel, cancel_all, notify, on_response, push_token, schedule, Notification, NotificationId, NotificationResponse,
+    NotifyError, Priority, ResponseAction, Sound,
+};
 use wasm_bindgen_test::*;
 use web_glue::JsValue;
 
@@ -41,8 +47,20 @@ impl NotificationOverride {
 
 impl Drop for NotificationOverride {
     fn drop(&mut self) {
-        run("globalThis.Notification = globalThis.__savedNotification; delete globalThis.__posted;");
+        run("globalThis.Notification = globalThis.__savedNotification; delete globalThis.__posted; \
+             delete globalThis.__shown; globalThis.__idealystNotes?.clear();");
     }
+}
+
+/// A stand-in `Notification` that records each instance in `__shown`, with
+/// a `close()` that marks it closed.
+const RECORDING: &str = "class { constructor(t, o) { this.title = t; this.options = o; this.closed = false; \
+     (globalThis.__shown ??= []).push(this); } close() { this.closed = true; } }";
+
+/// Evaluate a JS expression in the page, as a string.
+fn eval(expr: &str) -> String {
+    run(&format!("globalThis.__out = String({expr});"));
+    JsValue::global().get("__out").unwrap().as_string().unwrap()
 }
 
 #[wasm_bindgen_test]
@@ -83,4 +101,82 @@ async fn schedule_and_push_token_are_not_supported_on_web() {
         Err(NotifyError::NotSupported)
     );
     assert!(matches!(push_token().await, Err(NotifyError::NotSupported)));
+}
+
+#[wasm_bindgen_test]
+async fn shared_fields_map_onto_notification_options() {
+    let _stub = NotificationOverride::install(RECORDING);
+    notify(
+        Notification::new("T", "B")
+            .id("opts")
+            .sound(Sound::Silent)
+            .priority(Priority::Urgent)
+            .image("https://example.com/a.png")
+            .group("dropped on web")
+            .action(notifications::Action::new("reply", "Reply")),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        eval("JSON.stringify(globalThis.__shown[0].options)"),
+        r#"{"body":"B","image":"https://example.com/a.png","requireInteraction":true,"silent":true,"tag":"opts"}"#
+    );
+}
+
+#[wasm_bindgen_test]
+async fn the_web_hook_edits_the_options_last() {
+    let _stub = NotificationOverride::install(RECORDING);
+    let n = Notification::new("T", "B").id("hook").web(|o| {
+        o.insert("vibrate".into(), runtime_core::__serde_json::json!([100, 50, 100]));
+        o.insert("body".into(), runtime_core::__serde_json::json!("from the hook"));
+    });
+    notify(n).await.unwrap();
+    assert_eq!(
+        eval("JSON.stringify(globalThis.__shown[0].options)"),
+        r#"{"body":"from the hook","tag":"hook","vibrate":[100,50,100]}"#
+    );
+}
+
+/// A click reports `Open` with the notification's payload to the
+/// `on_response` handlers, and closes the notification.
+#[wasm_bindgen_test]
+async fn a_click_reports_open_with_the_payload_and_closes_it() {
+    let _stub = NotificationOverride::install(RECORDING);
+    let seen: Rc<RefCell<Vec<NotificationResponse>>> = Rc::default();
+    let sink = seen.clone();
+    let _sub = on_response(move |r| sink.borrow_mut().push(r.clone()));
+
+    notify(Notification::new("Sam", "Lunch?").id("chat-sam").with("chat", "sam")).await.unwrap();
+    assert!(seen.borrow().is_empty(), "nothing until the user clicks");
+    run("globalThis.__shown[0].onclick();");
+
+    assert_eq!(
+        *seen.borrow(),
+        vec![NotificationResponse {
+            id: NotificationId::from("chat-sam"),
+            action: ResponseAction::Open,
+            text: None,
+            data: [("chat".to_string(), "sam".to_string())].into(),
+        }]
+    );
+    assert_eq!(eval("globalThis.__shown[0].closed"), "true");
+}
+
+/// Re-posting an id closes the notification it replaces; `cancel` closes
+/// one by id and `cancel_all` the rest. Without the page-wide map these
+/// were no-ops on web.
+#[wasm_bindgen_test]
+async fn regression_cancel_and_replace_close_shown_notifications() {
+    let _stub = NotificationOverride::install(RECORDING);
+    notify(Notification::new("a", "1").id("a")).await.unwrap();
+    notify(Notification::new("a", "2").id("a")).await.unwrap();
+    notify(Notification::new("b", "1").id("b")).await.unwrap();
+    notify(Notification::new("c", "1").id("c")).await.unwrap();
+    assert_eq!(eval("globalThis.__shown.map(n => n.closed).join()"), "true,false,false,false");
+
+    cancel(&NotificationId::from("b")).await;
+    assert_eq!(eval("globalThis.__shown.map(n => n.closed).join()"), "true,false,true,false");
+
+    cancel_all().await;
+    assert_eq!(eval("globalThis.__shown.map(n => n.closed).join()"), "true,true,true,true");
 }

@@ -4,19 +4,22 @@ version = "8.0.0"
 edition.workspace = true
 license.workspace = true
 
-# Cross-platform LOCAL notifications (+ a raw push-token seam).
+# Cross-platform LOCAL notifications and their responses (+ a raw push-token
+# seam).
 #
-# Show a notification now or after a delay, update/cancel it by id, and read
-# the device's push token for *app-owned* remote delivery. One author API
-# (`Notification` builder + `notify` / `schedule` / `cancel` / `cancel_all`),
-# every backend, identical observable behavior:
+# Show a notification now or after a delay — with action buttons, a reply
+# field, a priority, a sound choice, a group and an image — update/cancel it
+# by id, hear what the user did with it (`on_response`), and read the
+# device's push token for *app-owned* remote delivery. One author API, every
+# backend, identical observable behavior; per-platform hooks hand over the
+# platform's own notification object for everything else:
 #
-#   - web (wasm32)        : the `Notification` Web API (immediate); web-push
-#                           `PushManager.subscribe` is the push-token analog
-#   - iOS / macOS / tvOS  : UNUserNotificationCenter + UNTimeIntervalTrigger
-#                           (objc2); APNs token via registerForRemoteNotifications
-#   - Android             : NotificationManager + NotificationChannel (JNI);
-#                           AlarmManager scheduling + FCM token are host seams
+#   - web (wasm32)        : the `Notification` Web API (immediate)
+#   - iOS / macOS / tvOS  : UNUserNotificationCenter + its delegate (objc2)
+#   - Android             : NotificationManager + channels + AlarmManager,
+#                           with the Kotlin shim under runtime/kotlin (JNI)
+#   - Windows             : WinRT toasts
+#   - Linux               : org.freedesktop.Notifications over D-Bus (zbus)
 #
 # Authorization is NOT re-implemented here — it goes through the `permissions`
 # crate (`Permission::Notifications`). This crate declares the manifest
@@ -31,7 +34,22 @@ license.workspace = true
 [package.metadata.idealyst]
 capabilities = ["notifications"]
 
+# The Android shim (taps, actions, dismissals, scheduled alarms) and the
+# trampoline activity + receiver it needs, declared inside <application>.
+[package.metadata.idealyst.android]
+runtime_kotlin = ["runtime/kotlin/io/idealyst/notifications/RustNotifications.kt"]
+manifest_application = ["manifest/application.xml"]
+
+# iOS links the Rust code as a staticlib inside Xcode/swiftc, which drops
+# `#[link(kind = "framework")]`; the iOS run tool links what is declared here.
+[package.metadata.idealyst.ios]
+frameworks = ["UserNotifications"]
+
 [dependencies]
+# The response inbox: platform callbacks (any thread) wake a UI-thread task
+# waiting on this channel (src/response.rs); also the one-shot completion
+# channels of the Apple backend.
+async-channel = "2"
 # Runtime grant flow (status / request) — the shared substrate; we never call
 # OS permission APIs directly.
 permissions = { workspace = true }
@@ -40,7 +58,9 @@ permissions = { workspace = true }
 # src/lib.rs). `runtime-vocabulary` is a direct dep because the `ui!`
 # emission inside the recipes spells absolute `::runtime_vocabulary::glue::…`
 # paths.
-runtime-core = { workspace = true }
+# `async-driver`: the response pump is a task on the host's executor
+# (`driver::spawn_detached`, src/response.rs).
+runtime-core = { workspace = true, features = ["async-driver"] }
 runtime-vocabulary = { workspace = true }
 
 # Web (wasm): the Notification Web API through a web-glue binding
@@ -58,7 +78,10 @@ wasm-bindgen-test = "0.3"
 # iOS / macOS / tvOS: UNUserNotificationCenter via objc2.
 [target.'cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))'.dependencies]
 objc2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSDictionary"] }
+objc2-foundation = { version = "0.2", features = ["NSString", "NSArray", "NSDictionary", "NSObject"] }
+# Completion-handler blocks (request added, categories applied) and the
+# delegate's completion parameters.
+block2 = "0.5"
 
 # Android: NotificationManager + NotificationChannel via JNI on the host context.
 [target.'cfg(target_os = "android")'.dependencies]
@@ -87,11 +110,10 @@ catalog = ["runtime-core/catalog", "runtime-core/async-driver"]
 backend-windows = { workspace = true }
 windows = { version = "0.62", features = ["UI_Notifications", "Data_Xml_Dom", "Foundation", "Foundation_Collections"] }
 
-[target.'cfg(all(target_os = "windows", not(target_arch = "wasm32")))'.dev-dependencies]
-pollster = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+pollster = "0.4"
 # The robot test controls (`src/robot_controls.rs`) compile only in robot
 # builds; the unit tests turn the vocabulary's `robot` on to reach them.
 runtime-vocabulary = { workspace = true, features = ["robot"] }

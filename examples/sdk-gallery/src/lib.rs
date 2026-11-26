@@ -14,6 +14,17 @@ pub fn register_scene_extensions<H>(registry: &mut runtime_scene::Registry<H>)
 where
     H: runtime_vocabulary::caps::ExternalOps + runtime_vocabulary::style_attach::StyleServices + 'static,
 {
+    // On web `svg::register` is `WebBackend`-concrete (its real renderer
+    // is), while this seam is generic over the backend; the web boot always
+    // passes the web registry.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let any: &mut dyn std::any::Any = registry;
+        if let Some(web) = any.downcast_mut::<runtime_scene::Registry<backend_web::WebBackend>>() {
+            svg::register(web);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     svg::register(registry);
     webview::register(registry);
     video::register(registry);

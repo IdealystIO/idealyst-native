@@ -529,7 +529,7 @@ app.
 |---|---|---|
 | `location` | `location::register_robot_controls()` | `location.set {latitude, longitude, accuracy_m?, …}`, `location.clear` |
 | `connectivity` | `connectivity::register_robot_controls()` | `connectivity.set {online, transport?}`, `connectivity.clear` |
-| `notifications` | `notifications::register_robot_controls()` | `notifications.log`, `notifications.clear_log` |
+| `notifications` | `notifications::register_robot_controls()` | `notifications.log`, `notifications.clear_log`, `notifications.respond` (act as the user tapping, pressing an action, replying or dismissing) |
 | `permissions` | `permissions::register_robot_controls()` | `permissions.set {permission, status}`, `permissions.clear`, `permissions.requests` |
 | `file-picker` | `file_picker::register_robot_controls()` | `file_picker.queue {files: [{name, mime?, base64? \| text?}]}`, `file_picker.cancel_next`, `file_picker.requests`, `file_picker.clear` |
 | `camera` | `camera::register_robot_controls()` | `camera.fake {width, height, rgba}` (every `open` streams the image), `camera.clear`, `camera.status` |

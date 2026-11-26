@@ -1,69 +1,90 @@
-//! Android local notifications via `NotificationManager` +
-//! `NotificationChannel` + `Notification.Builder`, over JNI.
+//! Android local notifications and responses: `NotificationManager`,
+//! notification channels, `AlarmManager`, and the Kotlin shim
+//! `runtime/kotlin/io/idealyst/notifications/RustNotifications.kt`, over JNI.
 //!
 //! **Compile-checked only ⚠️** — this drives real Android framework classes
-//! through JNI; it has not been exercised on a device/emulator from this
-//! crate. The shape mirrors the documented NotificationManager flow.
+//! through JNI and the shim; it has not been exercised on a device/emulator
+//! from this crate.
 //!
-//! Mechanism (immediate `notify`):
-//! 1. Get the `NotificationManager` system service from the host context.
-//! 2. Ensure a `NotificationChannel` exists (API 26+): create one with a
-//!    stable id + `IMPORTANCE_DEFAULT` and register it. Idempotent — the
-//!    platform de-dupes by channel id.
-//! 3. Build a `Notification.Builder(context, channelId)`, set the small
-//!    icon (the app's launcher icon), `setContentTitle` / `setContentText`
-//!    (and `setSubText` for the subtitle), `build()`.
-//! 4. `manager.notify(intId, notification)`, where `intId` is a stable hash
-//!    of the string id so re-posting the same id *replaces* the
-//!    notification (Android keys by an int tag).
+//! ## Posting
 //!
-//! JNI work runs on the calling thread (attached per op via the host
-//! `JavaVM` from `ndk_context`, mirroring the `storage`/`net` SDKs).
+//! `notify` / `schedule` ask the shim for a `Notification.Builder` with the
+//! shared fields set (`RustNotifications.builder`): title, body, sub-text
+//! (subtitle), group, the channel — one per [`Priority`], plus one silent
+//! channel for [`Sound::Silent`] (since Android 8 the sound belongs to the
+//! channel, so a silent notification is posted on a channel without one, at
+//! normal importance whatever its priority), each named from
+//! [`crate::labels`] — the image as a large icon
+//! and big picture, up to three action buttons (with a `RemoteInput` for a
+//! text field), and the tap / dismiss intents. The app's
+//! [`Notification::android`] hook then edits the builder, and
+//! `RustNotifications.show` posts it — `manager.notify(tag, …)` now, or for
+//! `schedule` an `AlarmManager` alarm whose intent carries the *built*
+//! notification, so the alarm posts exactly what was built (hooks
+//! included). The int `tag` is a stable hash of the string id, so
+//! re-posting the same id *replaces* the notification.
 //!
-//! ## Scheduling + FCM = host seams
+//! ## Responses
 //!
-//! - **`schedule`** by delay needs `AlarmManager` + a `BroadcastReceiver`
-//!   the app registers in its manifest (the receiver re-posts the
-//!   notification when the alarm fires). A `BroadcastReceiver` is host
-//!   manifest wiring, not something a pure-JNI library can register
-//!   cleanly, so `schedule` returns `NotSupported` here and immediate
-//!   `notify` is implemented fully. See the README push/scheduling seam.
-//! - **`push_token`** is the FCM registration token from
-//!   `FirebaseMessaging.getInstance().getToken()`, which needs a Firebase
-//!   project + `google-services.json` the app supplies. Host seam →
-//!   `NotSupported`.
+//! The shim's `NotificationOpenActivity` (taps, actions that open the app)
+//! and `NotificationReceiver` (other actions, dismissals) report each
+//! response to [`nativeResponse`] when this process's Rust side has
+//! attached, and queue it in `SharedPreferences` otherwise — the tap that
+//! cold-starts the app happens before Rust boots, and a background action
+//! may arrive while the app is not running at all. [`init`] attaches and
+//! drains the queue. Both components are declared by this crate's manifest
+//! fragment; the generated `MainActivity` is untouched.
 //!
 //! Needs the `POST_NOTIFICATIONS` runtime permission on API 33+ (declared
 //! by this crate's capability metadata, granted through the `permissions`
 //! crate).
+//!
+//! ## FCM = host seam
+//!
+//! [`push_token`] is the FCM registration token, which needs a Firebase
+//! project + `google-services.json` the app supplies → `NotSupported`.
+//!
+//! [`nativeResponse`]: Java_io_idealyst_notifications_RustNotifications_nativeResponse
 
-use jni::objects::{JObject, JValue};
-use jni::JavaVM;
+use std::collections::HashMap;
 
-use crate::{resolve_id, Notification, NotificationId, NotifyError, PushToken};
+use jni::objects::{JClass, JObject, JString, JValue};
+use jni::{JNIEnv, JavaVM};
+use runtime_core::__serde_json::{self as serde_json, json, Value};
 
-// android.app.NotificationManager.IMPORTANCE_DEFAULT
-const IMPORTANCE_DEFAULT: i32 = 3;
-// The single channel this SDK posts on. A richer API would expose channels;
-// the unopinionated capability uses one default channel.
-const CHANNEL_ID: &str = "idealyst_default";
-const CHANNEL_NAME: &str = "Notifications";
+use crate::{
+    deliver_response, labels, resolve_id, visible_actions, Notification, NotificationId, NotifyError, Priority,
+    PushToken, ResponseAction, Sound,
+};
+
+const HELPER: &str = "io/idealyst/notifications/RustNotifications";
+/// Android shows at most three action buttons.
+const MAX_ACTIONS: usize = 3;
+/// The shim's response encodings (`RustNotifications.OPEN` / `DISMISS` /
+/// `ACTION_PREFIX`).
+const OPEN: &str = "open";
+const DISMISS: &str = "dismiss";
+const ACTION_PREFIX: &str = "action:";
 
 fn java_vm() -> Result<JavaVM, NotifyError> {
     let ctx = ndk_context::android_context();
     let vm_ptr = ctx.vm() as *mut jni::sys::JavaVM;
-    unsafe { JavaVM::from_raw(vm_ptr) }
-        .map_err(|e| NotifyError::Backend(format!("invalid JavaVM pointer: {e}")))
+    unsafe { JavaVM::from_raw(vm_ptr) }.map_err(|e| NotifyError::Backend(format!("invalid JavaVM pointer: {e}")))
 }
 
 fn map_jni(e: jni::errors::Error) -> NotifyError {
     NotifyError::Backend(format!("JNI: {e}"))
 }
 
+fn context<'a>() -> JObject<'a> {
+    let ctx = ndk_context::android_context();
+    unsafe { JObject::from_raw(ctx.context().cast()) }
+}
+
 /// A stable int tag from the string id — Android keys notifications by an
-/// int, and re-posting the same int replaces the notification (the update
-/// semantics our public API promises). FNV-1a over the id bytes.
-fn int_tag(id: &str) -> i32 {
+/// int, and re-posting the same int replaces the notification. FNV-1a over
+/// the id bytes.
+pub(crate) fn int_tag(id: &str) -> i32 {
     let mut hash: u32 = 0x811c_9dc5;
     for b in id.as_bytes() {
         hash ^= *b as u32;
@@ -72,198 +93,258 @@ fn int_tag(id: &str) -> i32 {
     hash as i32
 }
 
-/// `context.getSystemService(Context.NOTIFICATION_SERVICE)` → the
-/// `NotificationManager`.
-fn notification_manager<'a>(
-    env: &mut jni::JNIEnv<'a>,
-    activity: &JObject<'a>,
-) -> Result<JObject<'a>, NotifyError> {
-    let name = env.new_string("notification").map_err(map_jni)?;
-    env.call_method(
-        activity,
-        "getSystemService",
-        "(Ljava/lang/String;)Ljava/lang/Object;",
-        &[JValue::Object(&JObject::from(name))],
-    )
-    .map_err(map_jni)?
-    .l()
-    .map_err(map_jni)
+/// The shim's priority index (`RustNotifications.builder`).
+fn priority_index(p: Priority) -> i32 {
+    match p {
+        Priority::Low => 0,
+        Priority::Default => 1,
+        Priority::High => 2,
+        Priority::Urgent => 3,
+    }
 }
 
-/// Create + register the default `NotificationChannel` (API 26+).
-/// Idempotent — `createNotificationChannel` replaces a same-id channel.
-fn ensure_channel<'a>(
-    env: &mut jni::JNIEnv<'a>,
-    manager: &JObject<'a>,
-) -> Result<(), NotifyError> {
-    let id = env.new_string(CHANNEL_ID).map_err(map_jni)?;
-    let name = env.new_string(CHANNEL_NAME).map_err(map_jni)?;
-    let channel = env
-        .new_object(
-            "android/app/NotificationChannel",
-            "(Ljava/lang/String;Ljava/lang/CharSequence;I)V",
-            &[
-                JValue::Object(&JObject::from(id)),
-                JValue::Object(&JObject::from(name)),
-                JValue::Int(IMPORTANCE_DEFAULT),
-            ],
-        )
-        .map_err(map_jni)?;
-    env.call_method(
-        manager,
-        "createNotificationChannel",
-        "(Landroid/app/NotificationChannel;)V",
-        &[JValue::Object(&channel)],
-    )
-    .map_err(map_jni)?;
-    Ok(())
+/// The action list as the shim's JSON.
+pub(crate) fn actions_json(n: &Notification) -> String {
+    let actions: Vec<Value> = visible_actions(n, MAX_ACTIONS)
+        .iter()
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "title": a.title,
+                "input": a.input.as_ref().map(|i| json!({ "button": i.button_title, "placeholder": i.placeholder })),
+                "opens_app": a.opens_app,
+            })
+        })
+        .collect();
+    Value::Array(actions).to_string()
 }
 
-/// `context.getApplicationInfo().icon` — the app's launcher icon resource id,
-/// required by `setSmallIcon` (a notification with no small icon is rejected).
-fn app_icon<'a>(
-    env: &mut jni::JNIEnv<'a>,
-    activity: &JObject<'a>,
-) -> Result<i32, NotifyError> {
-    let info = env
-        .call_method(
-            activity,
-            "getApplicationInfo",
-            "()Landroid/content/pm/ApplicationInfo;",
-            &[],
-        )
-        .map_err(map_jni)?
-        .l()
-        .map_err(map_jni)?;
-    env.get_field(&info, "icon", "I").map_err(map_jni)?.i().map_err(map_jni)
+/// A shim response encoding as a [`ResponseAction`].
+pub(crate) fn parse_action(action: &str) -> ResponseAction {
+    match action {
+        OPEN => ResponseAction::Open,
+        DISMISS => ResponseAction::Dismiss,
+        other => ResponseAction::Action(other.strip_prefix(ACTION_PREFIX).unwrap_or(other).to_string()),
+    }
 }
 
-pub(super) async fn notify(n: Notification) -> Result<NotificationId, NotifyError> {
+fn parse_data(json: &str) -> HashMap<String, String> {
+    serde_json::from_str::<HashMap<String, Value>>(json)
+        .map(|m| {
+            m.into_iter()
+                .filter_map(|(k, v)| match v {
+                    Value::String(s) => Some((k, s)),
+                    Value::Null => None,
+                    other => Some((k, other.to_string())),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Deliver the shim's queued responses (`attach`'s JSON array).
+pub(crate) fn deliver_queued(json: &str) {
+    let Ok(Value::Array(items)) = serde_json::from_str::<Value>(json) else { return };
+    for item in items {
+        let Some(id) = item["id"].as_str() else { continue };
+        let action = parse_action(item["action"].as_str().unwrap_or(OPEN));
+        let text = item["text"].as_str().map(str::to_string);
+        let data = parse_data(&item["data"].to_string());
+        deliver_response(NotificationId(id.to_string()), action, text, data);
+    }
+}
+
+pub(super) fn init() {
+    let attached = (|| -> Result<String, NotifyError> {
+        let vm = java_vm()?;
+        let mut env = vm.attach_current_thread().map_err(map_jni)?;
+        let ctx = context();
+        let queued = env
+            .call_static_method(HELPER, "attach", "(Landroid/content/Context;)Ljava/lang/String;", &[JValue::Object(&ctx)])
+            .map_err(map_jni)?
+            .l()
+            .map_err(map_jni)?;
+        let queued = JString::from(queued);
+        let s: String = env.get_string(&queued).map_err(map_jni)?.into();
+        Ok(s)
+    })();
+    match attached {
+        Ok(queued) => deliver_queued(&queued),
+        Err(e) => eprintln!("notifications: attaching the Android shim failed: {e}"),
+    }
+}
+
+/// Build and post `n` — now, or after `delay_ms`.
+fn post(n: Notification, delay_ms: i64) -> Result<NotificationId, NotifyError> {
     let id = resolve_id(&n);
+    let tag = int_tag(id.as_str());
     let vm = java_vm()?;
     let mut env = vm.attach_current_thread().map_err(map_jni)?;
+    let ctx = context();
 
-    let ctx = ndk_context::android_context();
-    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+    let data = serde_json::to_string(&n.data).map_err(|e| NotifyError::Backend(format!("payload: {e}")))?;
+    let jid = env.new_string(id.as_str()).map_err(map_jni)?;
+    let title = env.new_string(&n.title).map_err(map_jni)?;
+    let body = env.new_string(&n.body).map_err(map_jni)?;
+    let subtitle = optional_string(&mut env, n.subtitle.as_deref())?;
+    let group = optional_string(&mut env, n.group.as_deref())?;
+    let labels = labels();
+    let channel_name = if n.sound == Sound::Silent { &labels.silent } else { labels.for_priority(n.priority) };
+    let channel_name = env.new_string(channel_name).map_err(map_jni)?;
+    let image = optional_string(&mut env, n.image.as_deref())?;
+    let data = env.new_string(data).map_err(map_jni)?;
+    let actions = env.new_string(actions_json(&n)).map_err(map_jni)?;
 
-    let manager = notification_manager(&mut env, &activity)?;
-    ensure_channel(&mut env, &manager)?;
-    let icon = app_icon(&mut env, &activity)?;
-
-    // Notification.Builder(context, channelId) (API 26+).
-    let channel = env.new_string(CHANNEL_ID).map_err(map_jni)?;
     let builder = env
-        .new_object(
-            "android/app/Notification$Builder",
-            "(Landroid/content/Context;Ljava/lang/String;)V",
+        .call_static_method(
+            HELPER,
+            "builder",
+            "(Landroid/content/Context;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;\
+             Ljava/lang/String;ILjava/lang/String;ZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)\
+             Landroid/app/Notification$Builder;",
             &[
-                JValue::Object(&activity),
-                JValue::Object(&JObject::from(channel)),
+                JValue::Object(&ctx),
+                JValue::Object(&jid),
+                JValue::Int(tag),
+                JValue::Object(&title),
+                JValue::Object(&body),
+                JValue::Object(&subtitle),
+                JValue::Object(&group),
+                JValue::Int(priority_index(n.priority)),
+                JValue::Object(&channel_name),
+                JValue::Bool((n.sound == Sound::Silent) as u8),
+                JValue::Object(&image),
+                JValue::Object(&data),
+                JValue::Object(&actions),
             ],
         )
-        .map_err(map_jni)?;
-
-    let title = env.new_string(&n.title).map_err(map_jni)?;
-    env.call_method(
-        &builder,
-        "setContentTitle",
-        "(Ljava/lang/CharSequence;)Landroid/app/Notification$Builder;",
-        &[JValue::Object(&JObject::from(title))],
-    )
-    .map_err(map_jni)?;
-
-    let body = env.new_string(&n.body).map_err(map_jni)?;
-    env.call_method(
-        &builder,
-        "setContentText",
-        "(Ljava/lang/CharSequence;)Landroid/app/Notification$Builder;",
-        &[JValue::Object(&JObject::from(body))],
-    )
-    .map_err(map_jni)?;
-
-    if let Some(sub) = &n.subtitle {
-        let sub = env.new_string(sub).map_err(map_jni)?;
-        env.call_method(
-            &builder,
-            "setSubText",
-            "(Ljava/lang/CharSequence;)Landroid/app/Notification$Builder;",
-            &[JValue::Object(&JObject::from(sub))],
-        )
-        .map_err(map_jni)?;
-    }
-
-    env.call_method(
-        &builder,
-        "setSmallIcon",
-        "(I)Landroid/app/Notification$Builder;",
-        &[JValue::Int(icon)],
-    )
-    .map_err(map_jni)?;
-
-    let notification = env
-        .call_method(&builder, "build", "()Landroid/app/Notification;", &[])
         .map_err(map_jni)?
         .l()
         .map_err(map_jni)?;
 
-    env.call_method(
-        &manager,
-        "notify",
-        "(ILandroid/app/Notification;)V",
-        &[JValue::Int(int_tag(id.as_str())), JValue::Object(&notification)],
+    if let Some(hook) = &n.hooks.android {
+        hook(&mut env, &builder).map_err(map_jni)?;
+    }
+
+    env.call_static_method(
+        HELPER,
+        "show",
+        "(Landroid/content/Context;ILandroid/app/Notification$Builder;J)V",
+        &[JValue::Object(&ctx), JValue::Int(tag), JValue::Object(&builder), JValue::Long(delay_ms)],
     )
     .map_err(map_jni)?;
-
     Ok(id)
 }
 
-pub(super) async fn schedule(
-    _n: Notification,
-    _after: std::time::Duration,
-) -> Result<NotificationId, NotifyError> {
-    // Delay scheduling needs an AlarmManager + a manifest-registered
-    // BroadcastReceiver (host seam — see module docs). Immediate notify is
-    // implemented; scheduling is the documented follow-on.
-    Err(NotifyError::NotSupported)
+/// A Java string for `s`, or a null reference.
+fn optional_string<'a>(env: &mut JNIEnv<'a>, s: Option<&str>) -> Result<JObject<'a>, NotifyError> {
+    match s {
+        Some(s) => Ok(JObject::from(env.new_string(s).map_err(map_jni)?)),
+        None => Ok(JObject::null()),
+    }
+}
+
+pub(super) async fn notify(n: Notification) -> Result<NotificationId, NotifyError> {
+    post(n, 0)
+}
+
+pub(super) async fn schedule(n: Notification, after: std::time::Duration) -> Result<NotificationId, NotifyError> {
+    // At least 1 ms: the shim posts immediately for a zero delay.
+    post(n, (after.as_millis() as i64).max(1))
 }
 
 pub(super) async fn cancel(id: &NotificationId) {
-    let _ = cancel_inner(id);
-}
-
-fn cancel_inner(id: &NotificationId) -> Result<(), NotifyError> {
-    let vm = java_vm()?;
-    let mut env = vm.attach_current_thread().map_err(map_jni)?;
-    let ctx = ndk_context::android_context();
-    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-    let manager = notification_manager(&mut env, &activity)?;
-    env.call_method(
-        &manager,
-        "cancel",
-        "(I)V",
-        &[JValue::Int(int_tag(id.as_str()))],
-    )
-    .map_err(map_jni)?;
-    Ok(())
+    let _ = call_with_context("cancel", "(Landroid/content/Context;I)V", Some(int_tag(id.as_str())));
 }
 
 pub(super) async fn cancel_all() {
-    let _ = cancel_all_inner();
+    let _ = call_with_context("cancelAll", "(Landroid/content/Context;)V", None);
 }
 
-fn cancel_all_inner() -> Result<(), NotifyError> {
+fn call_with_context(method: &str, sig: &str, tag: Option<i32>) -> Result<(), NotifyError> {
     let vm = java_vm()?;
     let mut env = vm.attach_current_thread().map_err(map_jni)?;
-    let ctx = ndk_context::android_context();
-    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-    let manager = notification_manager(&mut env, &activity)?;
-    env.call_method(&manager, "cancelAll", "()V", &[])
-        .map_err(map_jni)?;
+    let ctx = context();
+    match tag {
+        Some(tag) => env.call_static_method(HELPER, method, sig, &[JValue::Object(&ctx), JValue::Int(tag)]),
+        None => env.call_static_method(HELPER, method, sig, &[JValue::Object(&ctx)]),
+    }
+    .map_err(map_jni)?;
     Ok(())
 }
 
 pub(super) async fn push_token() -> Result<PushToken, NotifyError> {
     // FCM token needs a Firebase project + google-services.json the app
-    // supplies (host seam — see module docs). No in-library path.
+    // supplies (host seam — see module docs).
     Err(NotifyError::NotSupported)
+}
+
+/// `RustNotifications.nativeResponse` — one response, on the main thread.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_notifications_RustNotifications_nativeResponse(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: JString,
+    action: JString,
+    text: JString,
+    data: JString,
+) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let read = |env: &mut JNIEnv, s: &JString| -> Option<String> {
+            if s.is_null() {
+                return None;
+            }
+            env.get_string(s).ok().map(Into::into)
+        };
+        let Some(id) = read(&mut env, &id) else { return };
+        let action = parse_action(&read(&mut env, &action).unwrap_or_else(|| OPEN.into()));
+        let text = read(&mut env, &text);
+        let data = parse_data(&read(&mut env, &data).unwrap_or_default());
+        deliver_response(NotificationId(id), action, text, data);
+    }));
+    if result.is_err() {
+        eprintln!("notifications: panic in nativeResponse; aborting");
+        std::process::abort();
+    }
+}
+
+// Pin the export so the linker keeps it in the app `cdylib`'s dynsym for the
+// JVM's `dlsym` resolution.
+#[used]
+static KEEP_RESPONSE: extern "system" fn(JNIEnv, JClass, JString, JString, JString, JString) =
+    Java_io_idealyst_notifications_RustNotifications_nativeResponse;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Action;
+
+    #[test]
+    fn shim_action_encodings_parse() {
+        assert_eq!(parse_action("open"), ResponseAction::Open);
+        assert_eq!(parse_action("dismiss"), ResponseAction::Dismiss);
+        assert_eq!(parse_action("action:reply"), ResponseAction::Action("reply".into()));
+        // An action id that itself looks like an encoding stays an action.
+        assert_eq!(parse_action("action:open"), ResponseAction::Action("open".into()));
+    }
+
+    #[test]
+    fn actions_json_caps_at_three_and_carries_inputs() {
+        let n = Notification::new("T", "B")
+            .action(Action::new("reply", "Reply").text_input("Send", "Message"))
+            .action(Action::new("a", "A").opens_app(false))
+            .action(Action::new("b", "B"))
+            .action(Action::new("c", "C"));
+        let v: Value = serde_json::from_str(&actions_json(&n)).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 3);
+        assert_eq!(v[0]["input"], json!({ "button": "Send", "placeholder": "Message" }));
+        assert_eq!(v[1]["opens_app"], json!(false));
+        assert_eq!(v[2]["input"], Value::Null);
+    }
+
+    #[test]
+    fn int_tag_is_stable() {
+        assert_eq!(int_tag("note-1"), int_tag("note-1"));
+        assert_ne!(int_tag("note-1"), int_tag("note-2"));
+    }
 }

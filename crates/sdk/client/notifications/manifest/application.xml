@@ -1,0 +1,15 @@
+<!-- Receives a tap on a notification and every action that opens the app,
+     reports it, starts the app's launch intent and finishes. Translucent and
+     out of the recents list, in a task of its own, so it never shows. An
+     activity, not a receiver: Android 12+ blocks a receiver started from a
+     notification from opening an activity. -->
+<activity android:name="io.idealyst.notifications.NotificationOpenActivity"
+    android:exported="false"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar"
+    android:noHistory="true"
+    android:excludeFromRecents="true"
+    android:taskAffinity="" />
+<!-- Actions that do not open the app, dismissals, and the alarm that posts
+     a scheduled notification. Only this app's own PendingIntents reach it. -->
+<receiver android:name="io.idealyst.notifications.NotificationReceiver"
+    android:exported="false" />
