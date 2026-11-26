@@ -215,6 +215,9 @@ pub struct RuntimeArtifacts {
     /// Kotlin stdlib jar — also d8'd into the final dex so the runtime
     /// can use kotlin language features at runtime.
     pub kotlin_stdlib_jar: PathBuf,
+    /// `(label, AndroidManifest.xml)` of each library outside the pinned
+    /// set, for `SdkManifestContributions::add_library_manifest`.
+    pub library_manifests: Vec<(String, String)>,
 }
 
 /// One resolved androidx artifact. Tracks the original `.aar`/`.jar`
@@ -229,6 +232,10 @@ struct ResolvedArtifact {
     /// `source`; for `.aar`, it's the extracted `classes.jar`, or `None`
     /// when the AAR ships no classes.
     classes_jar: Option<PathBuf>,
+    /// Whether its manifest joins the app's: true for the libraries SDKs
+    /// declare beyond the pinned set (see `sdk_manifest`'s library
+    /// manifests).
+    merge_manifest: bool,
 }
 
 /// One `androidx` entry of an SDK's `[package.metadata.idealyst.android]`.
@@ -669,7 +676,18 @@ pub fn build_runtime(
         anyhow::bail!("kotlinc exited with {status}");
     }
 
+    let mut library_manifests = Vec::new();
+    for r in resolved.iter().filter(|r| r.merge_manifest) {
+        if r.source.extension().and_then(|s| s.to_str()) != Some("aar") {
+            continue;
+        }
+        if let Some(xml) = read_aar_entry(&r.source, "AndroidManifest.xml")? {
+            library_manifests.push((r.label.clone(), xml));
+        }
+    }
+
     Ok(RuntimeArtifacts {
+        library_manifests,
         kotlin_class_dir,
         extension_java_dir,
         androidx_jars,
@@ -779,10 +797,12 @@ fn resolve_androidx(out_dir: &Path, declared: &[Coord]) -> Result<Vec<ResolvedAr
     };
     let sources = locate_androidx(&crate::maven::Curl, crate::maven::REPOSITORIES, &caches, PINNED_ANDROIDX, declared)?;
     let mut out = Vec::with_capacity(sources.len());
-    for (coord, source) in sources {
+    // `locate_androidx` lists the pins first.
+    for (i, (coord, source)) in sources.into_iter().enumerate() {
         let label = format!("{}.{}", coord.group, coord.artifact);
         let classes_jar = extract_classes(&source, out_dir, &label)?;
-        out.push(ResolvedArtifact { label, source, classes_jar });
+        let merge_manifest = i >= PINNED_ANDROIDX.len();
+        out.push(ResolvedArtifact { label, source, classes_jar, merge_manifest });
     }
     Ok(out)
 }

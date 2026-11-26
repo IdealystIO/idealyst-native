@@ -228,6 +228,18 @@ An SDK's `androidx` entries resolve on top of the pinned set:
 - The Kotlin stdlib is never downloaded (the Kotlin distribution's is
   linked), nor `org.jetbrains:annotations` or `androidx.profileinstaller`.
 - An AAR with no `classes.jar` contributes its resources and no classes.
+- A resolved library outside the pinned set brings its own manifest, as
+  Gradle's merger would: the permissions, `<queries>` and other elements
+  legal inside `<manifest>`, and the activities, services, receivers,
+  providers and `<meta-data>` inside its `<application>`. A relative class
+  name (`.api.ProxyBillingActivity`) resolves against the library's
+  package, `tools:` attributes are dropped, an element marked
+  `tools:node="remove"` is left out, and an element the manifest already
+  has (same tag and `android:name`) is not repeated. So an SDK using Play
+  Billing declares only the library, not its permission and activity. The
+  pinned libraries' manifests are not merged: the runtime does without
+  their components (`androidx.startup`'s initializer provider,
+  profileinstaller's receiver).
 
 Two environment variables control the caches:
 

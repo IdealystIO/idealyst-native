@@ -438,7 +438,7 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
     // the Kotlin runtime sources and AndroidX artifacts.
     let wrapper_manifest = so.wrapper_dir.join("Cargo.toml");
     let metadata = kotlin_runtime::cargo_metadata(&wrapper_manifest)?;
-    let sdk_contrib = SdkManifestContributions::from_metadata(&metadata)?;
+    let mut sdk_contrib = SdkManifestContributions::from_metadata(&metadata)?;
 
     // Capability-derived `<uses-permission>` + `<service>` entries, discovered
     // from the same dependency graph.
@@ -460,31 +460,6 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
         uses_permissions
             .push_str("<uses-permission android:name=\"android.permission.INTERNET\" />");
     }
-
-    fs::write(
-        &manifest_xml,
-        render_manifest(
-            manifest_tmpl,
-            &ManifestInputs {
-                package: bundle_id,
-                app_name: &manifest.app.name,
-                aas_url: &aas_url,
-                robot_relay_url: opts.robot_relay_url.as_deref().unwrap_or(""),
-                idealyst_env: &forwarded_env(&opts.env_vars, |k| std::env::var(k).ok()),
-                icon_attrs: &icon_attrs,
-                activity_theme,
-                uses_permissions: &uses_permissions,
-                services: &services,
-                // Only the local template carries the splice; the
-                // runtime-server shell forwards no links (its Activity has no
-                // link handling).
-                intent_filters: &manifest.app.links.android_intent_filters(),
-                cleartext: opts.cleartext,
-                android: &manifest.app.android,
-                sdk: &sdk_contrib,
-            },
-        ),
-    )?;
 
     // SDK-declared resource files (`metadata.idealyst.android.res`), compiled
     // into their own `.flata` and linked beside the project's icon flat.
@@ -527,6 +502,36 @@ pub fn package(project_dir: &Path, opts: &PackageOptions) -> Result<PackagedApk>
         &wrapper_manifest,
         &metadata,
     )?;
+    // The manifest is written once the libraries are resolved: the ones SDKs
+    // declare beyond the pinned set bring their own manifest entries.
+    for (label, xml) in &runtime.library_manifests {
+        sdk_contrib.add_library_manifest(label, xml, &uses_permissions)?;
+    }
+    fs::write(
+        &manifest_xml,
+        render_manifest(
+            manifest_tmpl,
+            &ManifestInputs {
+                package: bundle_id,
+                app_name: &manifest.app.name,
+                aas_url: &aas_url,
+                robot_relay_url: opts.robot_relay_url.as_deref().unwrap_or(""),
+                idealyst_env: &forwarded_env(&opts.env_vars, |k| std::env::var(k).ok()),
+                icon_attrs: &icon_attrs,
+                activity_theme,
+                uses_permissions: &uses_permissions,
+                services: &services,
+                // Only the local template carries the splice; the
+                // runtime-server shell forwards no links (its Activity has no
+                // link handling).
+                intent_filters: &manifest.app.links.android_intent_filters(),
+                cleartext: opts.cleartext,
+                android: &manifest.app.android,
+                sdk: &sdk_contrib,
+            },
+        ),
+    )?;
+
     // Splice the project's compiled icon flat into the aapt2-link
     // resource set. Empty when no icons were generated — `aapt2
     // compile` only produces a flat when there's input, and

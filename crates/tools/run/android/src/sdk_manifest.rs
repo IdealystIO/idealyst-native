@@ -35,6 +35,23 @@
 //! default in a `res/values*/` file and the app replaces it by name in
 //! `[package.metadata.idealyst.app.android.strings]`
 //! ([`SdkManifestContributions::stage_string_overrides`]).
+//!
+//! # Library manifests
+//!
+//! A Maven library an SDK pulls in (`androidx = [...]`) can declare what it
+//! needs in its own AAR's `AndroidManifest.xml`: Play Billing declares the
+//! `com.android.vending.BILLING` permission, a `<queries>` entry for the
+//! Play Store and its `ProxyBillingActivity`. Gradle's manifest merger puts
+//! those in the app; [`SdkManifestContributions::add_library_manifest`] does
+//! the same for the libraries outside the pinned set, so an SDK does not
+//! repeat them by hand and fall out of step at the next version. It takes
+//! the elements legal at each splice point, makes a relative class name
+//! (`.ProxyBillingActivity`) absolute against the library's package, drops
+//! `tools:` attributes (merger instructions aapt2 does not read) and any
+//! element marked `tools:node="remove"`, and skips an element whose tag and
+//! `android:name` the manifest already has. The pinned libraries' manifests
+//! stay out: their components (`androidx.startup`'s initializer provider,
+//! profileinstaller's receiver) are ones the runtime does without.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -309,6 +326,118 @@ pub(crate) fn fresh_flat(flat: &Path, staged: bool) -> Result<Option<PathBuf>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("remove stale {}", flat.display())),
     }
+}
+
+impl SdkManifestContributions {
+    /// Merge a library's `AndroidManifest.xml` (see the module docs).
+    /// `label` names the library in the output's comments; `already` is
+    /// manifest text from other sources (the capability permissions) whose
+    /// elements a library must not repeat.
+    pub fn add_library_manifest(&mut self, label: &str, manifest: &str, already: &str) -> Result<()> {
+        let doc = roxmltree::Document::parse(manifest)
+            .with_context(|| format!("{label}: AndroidManifest.xml is not well-formed XML"))?;
+        let root = doc.root_element();
+        let lib_package = root.attribute("package").unwrap_or_default().to_string();
+        let mut seen = self.declared_names(already);
+        let mut take = |node: roxmltree::Node, allowed: &[&str]| -> Option<String> {
+            let tag = node.tag_name().name();
+            if !allowed.contains(&tag) || node.attribute((TOOLS_NS, "node")).is_some_and(|v| v.starts_with("remove")) {
+                return None;
+            }
+            if let Some(name) = node.attribute((ANDROID_NS, "name")) {
+                let name = absolute_class(tag, name, &lib_package);
+                if !seen.insert((tag.to_string(), name)) {
+                    return None;
+                }
+            }
+            let mut out = String::new();
+            write_element(node, &lib_package, &mut out);
+            Some(out)
+        };
+        let mut root_xml = Vec::new();
+        let mut app_xml = Vec::new();
+        for child in root.children().filter(|c| c.is_element()) {
+            if child.tag_name().name() == "application" {
+                for el in child.children().filter(|c| c.is_element()) {
+                    app_xml.extend(take(el, APPLICATION_ELEMENTS));
+                }
+            } else {
+                root_xml.extend(take(child, ROOT_ELEMENTS));
+            }
+        }
+        let package = format!("library {label}");
+        if !root_xml.is_empty() {
+            self.manifest_root.push(Fragment { package: package.clone(), xml: root_xml.join("\n") });
+        }
+        if !app_xml.is_empty() {
+            self.manifest_application.push(Fragment { package, xml: app_xml.join("\n") });
+        }
+        Ok(())
+    }
+
+    /// `(tag, android:name)` of every top-level element the fragments and
+    /// `extra` declare.
+    fn declared_names(&self, extra: &str) -> BTreeSet<(String, String)> {
+        let mut names = BTreeSet::new();
+        let texts = self.manifest_root.iter().chain(&self.manifest_application).map(|f| f.xml.as_str());
+        for xml in texts.chain(std::iter::once(extra)) {
+            let wrapped = format!("<fragment xmlns:android=\"{ANDROID_NS}\" xmlns:tools=\"{TOOLS_NS}\">{xml}</fragment>");
+            let Ok(doc) = roxmltree::Document::parse(&wrapped) else { continue };
+            for el in doc.root_element().children().filter(|c| c.is_element()) {
+                if let Some(name) = el.attribute((ANDROID_NS, "name")) {
+                    names.insert((el.tag_name().name().to_string(), name.to_string()));
+                }
+            }
+        }
+        names
+    }
+}
+
+/// Components whose `android:name` (and an alias's `targetActivity`) is a
+/// class, which a library manifest may write relative to its package.
+const CLASS_NAMED: &[&str] = &["activity", "activity-alias", "service", "receiver", "provider", "application"];
+
+fn absolute_class(tag: &str, name: &str, lib_package: &str) -> String {
+    if CLASS_NAMED.contains(&tag) && name.starts_with('.') && !lib_package.is_empty() {
+        format!("{lib_package}{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Serialize `node` with the `android:` prefix, without `tools:` attributes
+/// or attributes of any other namespace.
+fn write_element(node: roxmltree::Node, lib_package: &str, out: &mut String) {
+    let tag = node.tag_name().name();
+    out.push('<');
+    out.push_str(tag);
+    for a in node.attributes() {
+        let name = match a.namespace() {
+            None => a.name().to_string(),
+            Some(ANDROID_NS) => format!("android:{}", a.name()),
+            Some(_) => continue,
+        };
+        let value = if a.namespace() == Some(ANDROID_NS) && matches!(a.name(), "name" | "targetActivity") {
+            absolute_class(tag, a.value(), lib_package)
+        } else {
+            a.value().to_string()
+        };
+        out.push_str(&format!(" {name}=\"{}\"", attr_escape(&value)));
+    }
+    let children: Vec<_> = node.children().filter(|c| c.is_element()).collect();
+    if children.is_empty() {
+        out.push_str(" />");
+        return;
+    }
+    out.push('>');
+    for c in children {
+        write_element(c, lib_package, out);
+    }
+    out.push_str(&format!("</{tag}>"));
+}
+
+fn attr_escape(v: &str) -> String {
+    v.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;")
 }
 
 fn render_fragments(fragments: &[Fragment], application_id: &str) -> String {
@@ -616,6 +745,52 @@ mod tests {
         ]});
         let msg = format!("{:#}", SdkManifestContributions::from_metadata(&meta).unwrap_err());
         assert!(msg.contains("sdk-a") && msg.contains("sdk-b"), "{msg}");
+    }
+
+    /// Play Billing's manifest, trimmed: what an app using it must carry.
+    const BILLING_MANIFEST: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.android.billingclient">
+  <uses-sdk android:minSdkVersion="21" />
+  <uses-permission android:name="com.android.vending.BILLING" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <queries>
+    <intent><action android:name="com.android.vending.billing.InAppBillingService.BIND" /></intent>
+  </queries>
+  <application>
+    <meta-data android:name="com.google.android.play.billingclient.version" android:value="7.1.1" />
+    <activity android:name=".api.ProxyBillingActivity" android:exported="false"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar" tools:ignore="Instantiatable" />
+    <service android:name=".Gone" tools:node="remove" />
+  </application>
+</manifest>"#;
+
+    /// Regression: an AAR's own manifest was never merged, so a library
+    /// brought its classes but not the permission, `<queries>` entry and
+    /// activity it declares, and the app failed at runtime.
+    #[test]
+    fn regression_library_manifest_entries_reach_the_app() {
+        let mut c = SdkManifestContributions::default();
+        let already = r#"<uses-permission android:name="android.permission.INTERNET" />"#;
+        c.add_library_manifest("com.android.billingclient.billing", BILLING_MANIFEST, already).unwrap();
+        let root = c.render_root("io.app");
+        let app = c.render_application("io.app");
+        assert!(root.contains(r#"<uses-permission android:name="com.android.vending.BILLING" />"#), "{root}");
+        assert!(!root.contains("android.permission.INTERNET"), "an element the app already has is not repeated: {root}");
+        assert!(!root.contains("uses-sdk"), "{root}");
+        assert!(root.contains("<queries><intent><action android:name=\"com.android.vending.billing.InAppBillingService.BIND\" /></intent></queries>"), "{root}");
+        assert!(app.contains(r#"android:name="com.android.billingclient.api.ProxyBillingActivity""#), "relative names resolve against the library's package: {app}");
+        assert!(app.contains("Theme.Translucent.NoTitleBar"), "{app}");
+        assert!(!app.contains("tools:"), "merger instructions are dropped: {app}");
+        assert!(!app.contains(".Gone"), "an element marked tools:node=remove is left out: {app}");
+        // The output is a fragment the splice point accepts.
+        validate_fragment(&c.manifest_root[0].xml, ROOT_ELEMENTS).unwrap();
+        validate_fragment(&c.manifest_application[0].xml, APPLICATION_ELEMENTS).unwrap();
+
+        // A second library naming the same permission adds nothing twice.
+        c.add_library_manifest("other", BILLING_MANIFEST, already).unwrap();
+        assert_eq!(c.render_root("io.app").matches("com.android.vending.BILLING").count(), 1);
     }
 
     #[test]
