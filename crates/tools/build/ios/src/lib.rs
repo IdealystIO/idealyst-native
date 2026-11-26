@@ -337,11 +337,11 @@ pub struct WebMetadata {
     /// (`FEEDBACK.md`, `design-files/`, `dev.toml`, …) can never leak
     /// into production no matter what lands in the project root.
     ///
-    /// When EMPTY (the default) staging falls back to a tightened
-    /// denylist (see `is_excluded_from_bundle`) that still auto-ships
-    /// real web assets but excludes source, docs, configs, and VCS
-    /// metadata. Leave empty to keep the auto-discover behavior; set it
-    /// to lock the bundle down to a known surface.
+    /// When EMPTY (the default) only the conventional web folders ship
+    /// (`build_web::FALLBACK_WEB_DIRS`: `assets/`, `public/`, `static/`,
+    /// `fonts/`, `images/`, …) plus top-level files of a web type; any
+    /// other folder stays out and the build names it. Set the list to
+    /// ship another folder or to lock the bundle to a known surface.
     pub assets: Vec<String>,
 
     /// EXTERNAL directories (outside this app crate) to stage into the

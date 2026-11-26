@@ -1534,13 +1534,13 @@ impl BaseSymbols {
 ///   and the icon set are emitted by the build later, so they don't
 ///   need to be listed. Anything not named is skipped — a leak is
 ///   impossible regardless of what sits in the project root.
-/// - **`assets` empty (tightened denylist fallback)**: top-level entries
-///   auto-ship EXCEPT source trees, build outputs, VCS/IDE metadata,
-///   and — critically — docs (`*.md`, `README*`, `LICENSE*`,
-///   `FEEDBACK*`), configs (`*.toml`, `*.lock`, `*.log`), and the
-///   `design-files/` folder. Real web assets (`assets/`, `public/`,
-///   `fonts/`, `robots.txt`, images, css) still ship. See
-///   [`is_excluded_from_bundle`].
+/// - **`assets` empty (conventional fallback)**: only the conventional
+///   web folders ship ([`FALLBACK_WEB_DIRS`]: `assets/`, `public/`,
+///   `static/`, `fonts/`, `images/`, …) and top-level files of a web type
+///   (`robots.txt`, `favicon.ico`, css, images; see
+///   [`fallback_ships_file`]). Every other folder stays out (a workspace's
+///   `crates/`, `deploy/`, `docs/`), with a note naming it, so a project
+///   folder never reaches the public site root by being there.
 ///
 /// When the project supplies no `index.html`, `fallback_index` decides
 /// what happens: `Some(html)` writes that HTML into the *staged* bundle
@@ -1578,26 +1578,36 @@ pub fn stage_bundle(
         .with_context(|| format!("create bundle dir {}", out_dir.display()))?;
 
     if assets.is_empty() {
-        // No explicit allowlist: auto-ship the project root through the
-        // tightened denylist. `is_excluded_from_bundle` keeps source,
-        // build outputs, docs, configs, and VCS/IDE metadata out so
-        // nothing internal leaks to the public site root.
+        // No explicit allowlist: ship the conventional web folders and
+        // top-level web files, nothing else.
+        let mut left_out = Vec::new();
         for entry in fs::read_dir(project_dir)? {
             let entry = entry?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if is_excluded_from_bundle(&name_str) {
-                continue;
-            }
             let from = entry.path();
             let to = out_dir.join(&name);
             if from.is_dir() {
-                copy_dir(&from, &to)
-                    .with_context(|| format!("copy dir {} → {}", from.display(), to.display()))?;
-            } else if from.is_file() {
+                if FALLBACK_WEB_DIRS.contains(&name_str.as_ref()) {
+                    copy_dir(&from, &to)
+                        .with_context(|| format!("copy dir {} → {}", from.display(), to.display()))?;
+                } else if !is_excluded_from_bundle(&name_str) {
+                    left_out.push(name_str.into_owned());
+                }
+            } else if from.is_file() && fallback_ships_file(&name_str) {
                 fs::copy(&from, &to)
                     .with_context(|| format!("copy file {} → {}", from.display(), to.display()))?;
             }
+        }
+        if !left_out.is_empty() {
+            left_out.sort();
+            eprintln!(
+                "note: the web bundle leaves out {}: with no \
+                 [package.metadata.idealyst.app.web].assets list only {} ship; \
+                 name a folder there to ship it",
+                left_out.iter().map(|n| format!("{n}/")).collect::<Vec<_>>().join(", "),
+                FALLBACK_WEB_DIRS.iter().map(|n| format!("{n}/")).collect::<Vec<_>>().join(", "),
+            );
         }
     } else {
         // Explicit allowlist: stage ONLY the declared entries. A
@@ -2260,24 +2270,44 @@ pub fn find_hashed_entry(pkg_dir: &Path, lib_name: &str) -> Option<String> {
     None
 }
 
+/// The project-root folders a web bundle ships when the app declares no
+/// `[package.metadata.idealyst.app.web].assets` list. `assets/` is
+/// `asset!`'s directory; the rest are the folders web projects keep served
+/// files in. Any other folder stays out: a workspace's member crates, a
+/// `deploy/` with Terraform state, a `docs/` tree.
+pub const FALLBACK_WEB_DIRS: &[&str] =
+    &[build_ios::app_assets::ASSETS_DIR, "public", "static", "fonts", "images", "img", "icons", "media"];
+
+/// Whether a top-level FILE ships when no `assets` list is declared: a web
+/// type (page, style, script, image, font, `robots.txt`-style text, a web
+/// manifest) that [`is_excluded_from_bundle`] doesn't name. A top-level
+/// `.json` ships only as `manifest.json`: the root's other JSON is
+/// tooling (`package.json`, `tsconfig.json`, credentials).
+fn fallback_ships_file(name: &str) -> bool {
+    if is_excluded_from_bundle(name) {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".json") {
+        return lower == "manifest.json";
+    }
+    const WEB_TYPES: &[&str] = &[
+        ".html", ".htm", ".css", ".js", ".mjs", ".wasm", ".webmanifest", ".txt", ".xml", ".ico", ".png",
+        ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".woff", ".woff2", ".ttf", ".otf",
+    ];
+    WEB_TYPES.iter().any(|ext| lower.ends_with(ext))
+}
+
 /// Top-level entries that never belong in a deployable bundle when no
-/// explicit `assets` allowlist is declared. Source trees, build
-/// outputs, VCS/IDE metadata, package-manager caches, dotfiles — AND,
-/// critically, internal docs/configs that would otherwise leak to the
-/// public site root (`FEEDBACK.md`, `dev.toml`, `design-files/`, …).
+/// explicit `assets` allowlist is declared: source trees, build outputs,
+/// VCS/IDE metadata, package-manager caches, dotfiles, and internal
+/// docs/configs (`FEEDBACK.md`, `dev.toml`, `design-files/`, …). A file
+/// it names never ships even with a web extension (`FEEDBACK.txt`); a
+/// folder it names is left out without a note.
 ///
-/// Anything not excluded ships, so the "drop a folder in your project
-/// root and it auto-deploys" convenience still works for real web
-/// assets — `fonts/`, `assets/`, `public/`, `images/`, `robots.txt`,
-/// css, etc. — without forcing an allowlist. Projects that want a hard
-/// guarantee declare `[package.metadata.idealyst.app.web].assets` and
-/// switch to the allowlist path entirely.
-///
-/// SECURITY: this is the fallback denylist. It must stay tight enough
-/// that no docs/config/source escapes; when in doubt prefer the
-/// `assets` allowlist. The matcher is case-insensitive for the
-/// extension/prefix checks so `README.MD` / `Feedback.txt` don't slip
-/// through on case-sensitive filesystems.
+/// The matcher is case-insensitive for the extension/prefix checks so
+/// `README.MD` / `Feedback.txt` don't slip through on case-sensitive
+/// filesystems.
 fn is_excluded_from_bundle(name: &str) -> bool {
     if name.starts_with('.') {
         return true;
@@ -5067,6 +5097,38 @@ mod regression_tests {
             !out.join("pkg").exists(),
             "stage_bundle must not copy project/pkg/ — the caller copies wrapper_pkg straight in",
         );
+    }
+
+    /// Regression: with no `assets` list, every top-level folder the
+    /// denylist didn't name shipped whole, so a workspace's `crates/`
+    /// (every `.rs`), `docs/*.md` and `deploy/terraform` (its tfvars and
+    /// state) went into the public bundle.
+    #[test]
+    fn regression_fallback_bundle_leaves_out_project_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = fake_project(tmp.path());
+        for (path, bytes) in [
+            ("crates/app-core/Cargo.toml", &b"[package]"[..]),
+            ("crates/app-core/src/lib.rs", b"pub fn x() {}"),
+            ("docs/plan.md", b"# plan"),
+            ("deploy/terraform/main.tf", b"resource {}"),
+            ("deploy/terraform/terraform.tfvars", b"secret = 1"),
+            ("deploy/terraform/policy.json", b"{}"),
+            ("package.json", b"{}"),
+            ("favicon.ico", b"ico"),
+            ("static/app.css", b"body{}"),
+        ] {
+            let p = project.join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, bytes).unwrap();
+        }
+        let out = tmp.path().join("dist");
+        stage_bundle(&project, &out, None, &[]).expect("stage");
+        for gone in ["crates", "docs", "deploy", "package.json"] {
+            assert!(!out.join(gone).exists(), "{gone} must not ship");
+        }
+        assert!(out.join("favicon.ico").is_file());
+        assert!(out.join("static/app.css").is_file());
     }
 
     /// `asset!("images/logo.png")` on web is `/assets/images/logo.png`. An
