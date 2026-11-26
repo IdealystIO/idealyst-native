@@ -273,6 +273,34 @@ there rustc links the binary and honors `#[link]`.
 `crates/tools/run/ios/tests/sdk_framework_declarations.rs` scans every crate
 under `crates/sdk/` and fails when a framework linked on iOS is not declared.
 
+### Swift on iOS
+
+An Apple API with no Objective-C interface (StoreKit 2's `Product` and
+`Transaction`) can't be called through `objc2`. Ship a Swift file that wraps
+it in `@_cdecl` functions, declare those `extern "C"` in the SDK's Rust, and
+name the file:
+
+```toml
+[package.metadata.idealyst.ios]
+runtime_swift = ["runtime/swift/StoreBridge.swift"]
+frameworks = ["StoreKit"]
+```
+
+```swift
+import StoreKit
+
+@_cdecl("store_bridge_fetch_products")
+public func storeBridgeFetchProducts(_ ids: UnsafePointer<CChar>) { /* … */ }
+```
+
+Paths are relative to the SDK's directory. Both iOS builds compile the files
+into the app beside its generated `AppDelegate.swift`: the simulator's
+`swiftc` call lists them, and the device project's Sources phase references
+them (`crates/tools/run/ios/src/swift_sources.rs`). They share the app's
+Swift module, so two SDKs can't ship the same file name. Swift packages are
+not supported, and the simulator build has no Xcode scheme to attach a
+`.storekit` configuration to.
+
 ## Declaring build products (macOS bundles, Windows DLLs)
 
 Some integrations are separate executables the OS loads, not code the app

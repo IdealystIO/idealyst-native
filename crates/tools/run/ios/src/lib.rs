@@ -54,6 +54,7 @@ use build_ios::{capabilities, BuildOptions, FrameworkSource, Manifest};
 pub mod device;
 pub mod frameworks;
 pub mod simulator;
+pub mod swift_sources;
 /// App Store Connect distribution path for `idealyst publish ios`:
 /// distribution-signed archive → exported `.ipa` → optional upload. Reuses
 /// the device path's [`device::prepare_xcode_project`] layout machinery; the
@@ -321,8 +322,16 @@ pub fn run(project_dir: &Path, opts: RunOptions) -> Result<RunArtifact> {
         }
         (None, RunMode::Local) => frameworks::collect_ios_frameworks(Path::new("/nonexistent"))?,
     };
+    // SDK Swift files (`[package.metadata.idealyst.ios].runtime_swift`),
+    // compiled beside the delegate. runtime-server mode has no wrapper and
+    // so no SDKs.
+    let sdk_swift = match &wrapper_manifest {
+        Some(m) => swift_sources::collect_runtime_swift(m)?,
+        None => Vec::new(),
+    };
+    let sdk_swift = swift_sources::stage(&sdk_swift, &swift_dir)?;
     let exe_path = app_bundle.join(&executable_name);
-    compile_and_link(&swift_dir, &lib_dir, &lib_name, &exe_path, &frameworks)?;
+    compile_and_link(&swift_dir, &sdk_swift, &lib_dir, &lib_name, &exe_path, &frameworks)?;
 
     // ── 5. App-icon PNGs (optional) ──────────────────────────────
     // Generated directly into the .app bundle root because iOS
@@ -420,6 +429,7 @@ fn build_runtime_server_shell(workspace_root: &Path, target: &str, release: bool
 
 fn compile_and_link(
     swift_dir: &Path,
+    sdk_swift: &[PathBuf],
     lib_dir: &Path,
     lib_name: &str,
     output: &Path,
@@ -452,6 +462,7 @@ fn compile_and_link(
         .arg(output)
         .arg(swift_dir.join("AppDelegate.swift"))
         .arg(swift_dir.join("ViewController.swift"))
+        .args(sdk_swift)
         .arg("-L")
         .arg(lib_dir)
         .arg(format!("-l{lib_name}"));

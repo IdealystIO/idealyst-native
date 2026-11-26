@@ -255,6 +255,7 @@ pub(crate) fn prepare_xcode_project(
     // screen-capture app needs ReplayKit linked or `class!(RPScreenRecorder)`
     // panics at launch. See [`crate::frameworks`].
     let frameworks = collect_ios_frameworks(&wrapper_manifest)?;
+    let sdk_swift = crate::swift_sources::collect_runtime_swift(&wrapper_manifest)?;
 
     let project_root = opts
         .source
@@ -270,6 +271,10 @@ pub(crate) fn prepare_xcode_project(
     std::fs::write(swift_dir.join("AppDelegate.swift"), APP_DELEGATE_SWIFT)?;
     std::fs::write(swift_dir.join("ViewController.swift"), view_controller_swift(&RunMode::Local))?;
     std::fs::write(swift_dir.join("BridgingHeader.h"), BRIDGING_HEADER_LOCAL_H)?;
+    // SDK Swift files, staged under `swift/sdk/` and referenced from the
+    // Sources phase below.
+    crate::swift_sources::stage(&sdk_swift, &swift_dir)?;
+    let sdk_swift_files: Vec<String> = sdk_swift.iter().map(|s| s.file_name.clone()).collect();
 
     // App-icon ASSET CATALOG + Info.plist. The xcodebuild paths (device
     // install + App Store archive) use a real `Assets.xcassets/AppIcon`
@@ -351,6 +356,7 @@ pub(crate) fn prepare_xcode_project(
             library_search_path: &lib_dir,
             lib_name: &lib_name,
             frameworks: &frameworks,
+            sdk_swift: &sdk_swift_files,
             entitlements,
             app_assets: has_app_assets,
         },
@@ -423,6 +429,9 @@ struct PbxParams<'a> {
     /// each SDK's declared frameworks). Drives the four framework-related
     /// pbxproj sections.
     frameworks: &'a [Framework],
+    /// SDK Swift file names, staged under `swift/sdk/`
+    /// ([`crate::swift_sources`]), compiled in the Sources phase.
+    sdk_swift: &'a [String],
     /// The entitlements file (project-relative) to sign with, when the app
     /// needs any — universal-link domains
     /// (`com.apple.developer.associated-domains`) or a capability's
@@ -463,6 +472,8 @@ fn render_pbxproj(params: &PbxParams) -> String {
         render_frameworks_sections(params.frameworks);
     let (assets_build_file, assets_file_ref, assets_phase_file, assets_group_child) =
         render_app_assets_sections(params.app_assets);
+    let (swift_build_files, swift_file_refs, swift_phase_files, swift_group_children) =
+        render_sdk_swift_sections(params.sdk_swift);
     PBXPROJ_TMPL
         .replace("{{APP_NAME}}", params.app_name)
         .replace("{{BUNDLE_ID}}", params.bundle_id)
@@ -488,6 +499,31 @@ fn render_pbxproj(params: &PbxParams) -> String {
         .replace("{{APP_ASSETS_FILE_REF}}", &assets_file_ref)
         .replace("{{APP_ASSETS_PHASE_FILE}}", &assets_phase_file)
         .replace("{{APP_ASSETS_GROUP_CHILD}}", &assets_group_child)
+        .replace("{{SDK_SWIFT_BUILD_FILES}}", &swift_build_files)
+        .replace("{{SDK_SWIFT_FILE_REFS}}", &swift_file_refs)
+        .replace("{{SDK_SWIFT_PHASE_FILES}}", &swift_phase_files)
+        .replace("{{SDK_SWIFT_GROUP_CHILDREN}}", &swift_group_children)
+}
+
+/// The four pbxproj sections that compile the SDK Swift files: a build file
+/// and a file reference each (path `sdk/<file>` inside the `swift` group),
+/// the Sources-phase entries and the group's children. Each line ends in a
+/// newline, so all are empty when no SDK ships Swift. IDs are hashed from
+/// the file name, so reruns are byte-identical.
+fn render_sdk_swift_sections(files: &[String]) -> (String, String, String, String) {
+    let mut out: (String, String, String, String) = Default::default();
+    for name in files {
+        let (bf, fr) = crate::frameworks::pbx_ids(&format!("sdk-swift:{name}"));
+        out.0.push_str(&format!(
+            "\t\t{bf} /* {name} in Sources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};\n"
+        ));
+        out.1.push_str(&format!(
+            "\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = \"sdk/{name}\"; sourceTree = \"<group>\"; }};\n"
+        ));
+        out.2.push_str(&format!("\t\t\t\t{bf} /* {name} in Sources */,\n"));
+        out.3.push_str(&format!("\t\t\t\t{fr} /* {name} */,\n"));
+    }
+    out
 }
 
 /// The four pbxproj lines that put `assets/` in the bundle as a folder
@@ -1222,6 +1258,38 @@ mod tests {
         ])
     }
 
+    /// Regression: the device project compiled only the generated Swift,
+    /// so an SDK had no way to ship Swift of its own (StoreKit 2 has no
+    /// Objective-C interface for `objc2` to call). An SDK file must be in
+    /// the Sources phase, and nothing must be when no SDK ships one.
+    #[test]
+    fn regression_pbxproj_compiles_sdk_swift_files() {
+        let frameworks = camera_frameworks();
+        let params = |sdk_swift| PbxParams {
+            app_name: "Store",
+            bundle_id: "io.idealyst.store",
+            team: "USC735CN86",
+            library_search_path: Path::new("/tmp/lib"),
+            lib_name: "store_ios_wrapper",
+            frameworks: &frameworks,
+            sdk_swift,
+            entitlements: None,
+            app_assets: false,
+        };
+        let files = ["StoreBridge.swift".to_string()];
+        let with = render_pbxproj(&params(&files));
+        let (bf, fr) = crate::frameworks::pbx_ids("sdk-swift:StoreBridge.swift");
+        assert!(with.contains(&format!("{bf} /* StoreBridge.swift in Sources */ = {{isa = PBXBuildFile; fileRef = {fr}")), "build file");
+        assert!(with.contains("path = \"sdk/StoreBridge.swift\""), "file reference under swift/sdk/");
+        let sources_phase = &with[with.find("isa = PBXSourcesBuildPhase").unwrap()..];
+        let sources_phase = &sources_phase[..sources_phase.find("runOnlyForDeploymentPostprocessing").unwrap()];
+        assert!(sources_phase.contains(&format!("{bf} /* StoreBridge.swift in Sources */")), "in the Sources phase: {sources_phase}");
+        assert!(!with.contains("{{"), "every placeholder substituted");
+
+        let without = render_pbxproj(&params(&[]));
+        assert!(!without.contains("StoreBridge") && !without.contains("{{"));
+    }
+
     #[test]
     fn pbxproj_substitutes_every_placeholder() {
         let frameworks = camera_frameworks();
@@ -1232,6 +1300,7 @@ mod tests {
             library_search_path: Path::new("/tmp/target/aarch64-apple-ios/release"),
             lib_name: "camera_preview_demo_ios_wrapper",
             frameworks: &frameworks,
+            sdk_swift: &[],
             entitlements: None,
             app_assets: false,
         });
@@ -1276,6 +1345,7 @@ mod tests {
             library_search_path: Path::new("/tmp/lib"),
             lib_name: "demo_ios_wrapper",
             frameworks: &frameworks,
+            sdk_swift: &[],
             entitlements: None,
             app_assets,
         };
@@ -1312,6 +1382,7 @@ mod tests {
             library_search_path: Path::new("/tmp/lib"),
             lib_name: "demo_ios_wrapper",
             frameworks: &frameworks,
+            sdk_swift: &[],
             entitlements,
             app_assets: false,
         };
@@ -1352,6 +1423,7 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
+            sdk_swift: &[],
             entitlements: None,
             app_assets: false,
         });
@@ -1393,6 +1465,7 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "screen_share_ios_wrapper",
             frameworks: &frameworks,
+            sdk_swift: &[],
             entitlements: None,
             app_assets: false,
         });
@@ -1423,6 +1496,7 @@ mod tests {
             library_search_path: Path::new("/lib"),
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
+            sdk_swift: &[],
             entitlements: None,
             app_assets: false,
         });
@@ -1615,6 +1689,7 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
             library_search_path: Path::new("/lib"),
             lib_name: "app_ios_wrapper",
             frameworks: &frameworks,
+            sdk_swift: &[],
             entitlements: None,
             app_assets: false,
         });
@@ -1678,6 +1753,7 @@ iPhone 15 (17.0) (ABCDEF01-2345-6789-ABCD-EF0123456789)
             library_search_path: Path::new("/tmp/lib"),
             lib_name: "demo_ios_wrapper",
             frameworks: &frameworks,
+            sdk_swift: &[],
             entitlements: None,
             app_assets: false,
         });
