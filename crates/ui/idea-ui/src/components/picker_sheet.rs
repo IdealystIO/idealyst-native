@@ -15,7 +15,9 @@ use std::rc::Rc;
 use runtime_core::{hold_on_exit, signal, ui, Element, PointerEvents, ReadSignal};
 
 use crate::breakpoint::{current_breakpoint, Breakpoint};
-use crate::components::modal::{Modal, ModalPresentation, SHEET_EXIT_MS};
+use crate::components::icon_button::{IconButton, IconButtonSize};
+use crate::components::modal::{Modal, ModalPresentation, ModalSection, SHEET_EXIT_MS};
+use idea_theme::extensible::tone;
 
 /// Decides, at each open, whether a picker opens as a sheet. Built in the
 /// picker's body: the breakpoint signal is fetched there, inside the world,
@@ -51,6 +53,19 @@ pub(crate) fn picker_sheet(
     on_dismiss: Option<Rc<dyn Fn()>>,
     content: impl Fn() -> Vec<Element> + 'static,
 ) -> Element {
+    picker_sheet_with_head(on_dismiss, None, content)
+}
+
+/// Builds a sheet's pinned head, handed the sheet's own close.
+pub(crate) type SheetHead = Rc<dyn Fn(Rc<dyn Fn()>) -> Element>;
+
+/// [`picker_sheet`] with a `head` pinned above the content: it stays put
+/// while the content scrolls under it.
+pub(crate) fn picker_sheet_with_head(
+    on_dismiss: Option<Rc<dyn Fn()>>,
+    head: Option<SheetHead>,
+    content: impl Fn() -> Vec<Element> + 'static,
+) -> Element {
     let shown = signal(true);
     hold_on_exit(SHEET_EXIT_MS as u32, move || shown.set(false));
     let dismiss: Rc<dyn Fn()> = Rc::new(move || {
@@ -69,13 +84,39 @@ pub(crate) fn picker_sheet(
         };
         ui! { view(style = style) { kids } }
     };
+    let header: ModalSection = match head {
+        Some(head) => {
+            let close = dismiss.clone();
+            ModalSection(Some(Rc::new(move || head(close.clone()))))
+        }
+        None => ModalSection(None),
+    };
     ui! {
         Modal(
             open = shown,
             presentation = ModalPresentation::Sheet,
             on_dismiss = Some(dismiss),
+            header = header,
             content = body,
         )
+    }
+}
+
+/// A sheet's search head: the field across the width and a ✕ that closes
+/// the sheet.
+pub(crate) fn search_head(field: Element, close: Rc<dyn Fn()>) -> Element {
+    ui! {
+        view(style = PickerSheetSearch()) {
+            view(style = PickerSheetSearchField()) { field }
+            IconButton(
+                icon = Some(super::date_input::CLEAR_GLYPH),
+                label = Some("Close".to_string()),
+                on_click = close,
+                tone = tone::Neutral,
+                variant = crate::variant::Ghost,
+                size = IconButtonSize::Sm,
+            )
+        }
     }
 }
 
@@ -94,6 +135,27 @@ runtime_core::stylesheet! {
             yes(_t) {
                 pointer_events: PointerEvents::None,
             }
+        }
+    }
+}
+
+runtime_core::stylesheet! {
+    // The search field and its ✕ on one line.
+    PickerSheetSearch<crate::theme::IdeaThemeRef> {
+        base(t) {
+            flex_direction: runtime_core::FlexDirection::Row,
+            align_items: runtime_core::AlignItems::Center,
+            gap: t.spacing.sm(),
+        }
+    }
+}
+
+runtime_core::stylesheet! {
+    PickerSheetSearchField<crate::theme::IdeaThemeRef> {
+        base(_t) {
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
+            min_width: runtime_core::Length::Px(0.0),
         }
     }
 }

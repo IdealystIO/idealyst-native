@@ -3977,6 +3977,15 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A bottom sheet fits above the keyboard** (`idea-ui` patch). The keyboard lifts a `Modal` sheet
+  by its height, but the sheet's height cap was measured against the whole screen, so a tall sheet
+  rose past the top edge and took its first rows with it. The cap is now the room above the
+  keyboard, and the sheet no longer pads for a home indicator the keyboard covers.
+
+- **A phone `Autocomplete`'s search stays above its rows, with a ✕ beside it** (`idea-ui` patch).
+  The sheet's search is its pinned head, so it no longer scrolls away with the rows, and the ✕
+  closes the sheet without picking.
+
 - **A phone `Autocomplete`'s sheet stays open on iOS** (`idea-ui` patch). The field hands focus to
   the sheet by blurring itself, and iOS reports that blur in the same turn, before the sheet's mode
   was flushed: the field read it as a departure and closed the sheet as it opened, leaving nothing

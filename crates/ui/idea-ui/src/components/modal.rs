@@ -270,6 +270,20 @@ fn sheet_exit_travel(avail_h: f32) -> f32 {
     modal_max_height(ModalPresentation::Sheet, avail_h, None)
 }
 
+/// The height a modal may take: the viewport less the safe-area insets
+/// and, for a sheet, the keyboard. The keyboard lifts a sheet by its
+/// whole height, so a sheet capped against the full screen would rise
+/// past the top edge, taking its first rows (an `Autocomplete`'s search)
+/// with it. The keyboard covers the bottom inset rather than adding to it.
+fn modal_room(presentation: ModalPresentation, viewport_h: f32) -> f32 {
+    let insets = safe_area_insets().get();
+    let below = match presentation {
+        ModalPresentation::Sheet => insets.bottom.max(runtime_core::keyboard_inset().get().height),
+        ModalPresentation::Centered | ModalPresentation::Top => insets.bottom,
+    };
+    viewport_h - insets.top - below
+}
+
 /// A sheet's height cap, as a fraction of the SAFE viewport height. A sheet
 /// deliberately never covers the whole screen: the strip of page left
 /// visible above it is what says "layered over what you were reading"
@@ -1144,8 +1158,7 @@ fn assemble_overlay(
             // insets so a maximally-tall modal can't grow under the notch /
             // Dynamic Island / home indicator (the centering container also
             // pads by the insets — both are needed; see the overlay below).
-            let insets = safe_area_insets().get();
-            let avail_h = viewport_for_scroll.get().height - insets.top - insets.bottom;
+            let avail_h = modal_room(presentation, viewport_for_scroll.get().height);
             // Same cap the surface uses, or the scroller would want to be
             // taller than the frame that clips it and the overflow would be
             // clipped instead of scrolled.
@@ -1184,11 +1197,7 @@ fn assemble_overlay(
             // vertical safe-area insets) so the card fits inside the notch /
             // home-indicator-free region. Mirrors the scroller's height cap.
             let insets = safe_area_insets().get();
-            let max_h = modal_max_height(
-                presentation,
-                vp.height - insets.top - insets.bottom,
-                top_offset_for_surface.get(),
-            );
+            let max_h = modal_max_height(presentation, modal_room(presentation, vp.height), top_offset_for_surface.get());
             // A card is width-capped and centered; a sheet takes the
             // viewport's width up to the surface slot's `max_width`, centered
             // by the animation wrapper (`card_anim_sheet`).
@@ -1205,9 +1214,11 @@ fn assemble_overlay(
             // rather than being subtracted from the surface).
             let (bottom_radius, pad_bottom) = match presentation {
                 ModalPresentation::Centered | ModalPresentation::Top => (None, 0.0),
-                ModalPresentation::Sheet => {
-                    (Some(Tokenized::Literal(Length::Px(0.0))), insets.bottom)
-                }
+                // Under the keyboard there is no home indicator to clear.
+                ModalPresentation::Sheet => (
+                    Some(Tokenized::Literal(Length::Px(0.0))),
+                    (insets.bottom - runtime_core::keyboard_inset().get().height).max(0.0),
+                ),
             };
             // The `surface` slot carries `max_width: 560` as the THEME's
             // default cap, and a max-width beats `width` in every layout engine — so

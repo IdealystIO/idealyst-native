@@ -164,6 +164,55 @@ fn regression_a_blur_reported_during_the_hand_off_keeps_the_sheet() {
     assert!(tree.contains("\"Plum\""), "its rows are up:\n{tree}");
 }
 
+/// The sheet's search is pinned above the rows, which scroll under it,
+/// and a ✕ beside it closes the sheet.
+#[test]
+fn a_phone_autocomplete_sheet_pins_its_search_and_closes_on_its_x() {
+    let (h, _r, value) = autocomplete(PHONE, true);
+    let log = focus_field(&h);
+    assert!(is_sheet(&log), "{log}");
+    let tree = screen(&h);
+    let search = tree.rfind("text_input").expect("the sheet's search");
+    let scroller = tree.find("scroll_view").expect("the rows scroll");
+    assert!(search < scroller, "the search sits above the scroller, not in it:\n{tree}");
+    // The mock keeps no accessible names: the last three presses are the
+    // rows, and the one mounted just before them is the ✕.
+    let close = {
+        let presses = h.shared.press_handlers.borrow();
+        presses[presses.len() - 4].clone()
+    };
+    h.world.enter(|| close());
+    h.flush();
+    host_mock::pump::pump_timers();
+    h.flush();
+    assert!(!screen(&h).contains("portal"), "the ✕ closes the sheet:\n{}", screen(&h));
+    assert_eq!(h.world.enter(|| value.get()), "", "closing picks nothing");
+}
+
+/// The keyboard lifts a sheet by its height, so the sheet's cap is the
+/// room above the keyboard: capped against the whole screen, its top
+/// (the search) would rise past the screen's edge.
+#[test]
+fn a_sheet_fits_above_the_keyboard() {
+    let (h, _r, _value) = autocomplete(PHONE, true);
+    runtime_vocabulary::safe_area::push(runtime_shared::EdgeInsets { bottom: 34.0, ..runtime_shared::EdgeInsets::ZERO });
+    h.flush();
+    h.set_style_line(|node, rules| {
+        format!("apply_style n{node} max_height={:?} pad_bottom={:?}", rules.max_height, rules.padding_bottom)
+    });
+    let resting = focus_field(&h);
+    assert!(resting.contains("pad_bottom=Some(Literal(Px(34.0)))"), "the sheet clears the home indicator:\n{resting}");
+    runtime_vocabulary::keyboard::push(runtime_shared::KeyboardInset::new(
+        300.0,
+        runtime_shared::keyboard::WEB_KEYBOARD_ESTIMATE,
+    ));
+    h.flush();
+    let log = h.take_log().join("\n");
+    let cap = (800.0 - 300.0) * idea_ui::components::modal::SHEET_MAX_HEIGHT_FRACTION;
+    assert!(log.contains(&format!("max_height=Some(Literal(Px({cap:?})))")), "capped to the room above the keyboard ({cap}):\n{log}");
+    assert!(!log.contains("pad_bottom=Some(Literal(Px(34.0)))"), "no home-indicator inset under the keyboard:\n{log}");
+}
+
 #[test]
 fn a_wide_autocomplete_opens_its_menu_under_the_field() {
     let (h, _r, _) = autocomplete(DESKTOP, true);

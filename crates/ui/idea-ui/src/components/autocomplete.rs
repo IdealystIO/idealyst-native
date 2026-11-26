@@ -1277,7 +1277,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let build_sheet = move || {
         let (typing, rows, sheet_styles) = (on_type.clone(), build_rows.clone(), styles.clone());
         let (sheet_size, sheet_placeholder) = (sheet_size.clone(), sheet_placeholder.clone());
-        super::picker_sheet::picker_sheet(Some(sheet_dismiss.clone()), move || {
+        // The search is the sheet's pinned head, so it stays in view while
+        // the rows scroll, with a ✕ beside it to close the sheet.
+        let head: super::picker_sheet::SheetHead = Rc::new(move |close: Rc<dyn Fn()>| {
             let typing = typing.clone();
             let style = AutocompleteStyles::input()
                 .set(sheet_size.clone().map(AutocompleteSize::from))
@@ -1288,8 +1290,9 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                 .autofocus(true)
                 .with_style(style)
                 .into_element();
-            vec![search, rows()]
-        })
+            super::picker_sheet::search_head(search, close)
+        });
+        super::picker_sheet::picker_sheet_with_head(Some(sheet_dismiss.clone()), Some(head), move || vec![rows()])
     };
 
     ui! {
