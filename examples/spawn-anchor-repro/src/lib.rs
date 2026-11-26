@@ -291,9 +291,9 @@ pub fn app() -> Element {
     install_idea_theme(light_theme());
     ui! {
         view(style = Screen(), safe_area = SafeAreaSides::TOP) {
-            Typography(content = "A press that closes its own overlay loses its reply", kind = typography_kind::H2)
+            Typography(content = "A press that closes its own overlay keeps its reply", kind = typography_kind::H2)
             Typography(
-                content = "Each request takes 1.5 s. When replies applied stays behind requests sent, the reply was thrown away and the spinner never stops.",
+                content = "Each request takes 1.5 s. Every card should end with as many replies applied as requests sent, its spinner stopped.",
                 muted = true,
             )
             view(style = Cards()) {
