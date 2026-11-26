@@ -791,6 +791,11 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     // sheet's, and its blur is not a close.
     let sheet_choice = super::picker_sheet::SheetChoice::new(props.sheet_on_phone);
     let sheet_mode: Signal<bool> = signal(false);
+    // `sheet_mode` as this turn knows it. The field hands focus to the
+    // sheet by blurring itself, and iOS reports that blur in the same
+    // turn, before the staged mode is flushed: read from the signal, the
+    // hand-off looks like a departure and closes the sheet it opened.
+    let in_sheet: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
     // Keyboard highlight as a position into the *current* filtered list. Rows
     // only: group headings aren't in that list, so the cursor can't land on one.
     let highlight: Signal<usize> = signal(0usize);
@@ -1006,11 +1011,13 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
         // to be unmounted by its own dismissal.
         .on_focus({
             let open_menu = open_menu.clone();
+            let in_sheet = in_sheet.clone();
             move |focused: bool| {
                 if focused {
                     // Decided before opening: `open_menu` only stages the
                     // mode, and this turn would read the old one.
                     let as_sheet = if open.peek() { sheet_mode.peek() } else { sheet_choice.now() };
+                    in_sheet.set(as_sheet);
                     (open_menu)();
                     // A sheet takes the typing: the field lets go of focus
                     // so the keyboard serves the sheet's input.
@@ -1019,7 +1026,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
                             h.blur();
                         }
                     }
-                } else if sheet_mode.peek() {
+                } else if in_sheet.get() || sheet_mode.peek() {
                     // Focus went to the sheet; the sheet closes itself.
                 } else {
                     open.set(false);
@@ -1259,6 +1266,7 @@ pub fn Autocomplete(props: AutocompleteProps) -> Element {
     let sheet_dismiss: Rc<dyn Fn()> = Rc::new(move || {
         open.set(false);
         sheet_mode.set(false);
+        in_sheet.set(false);
         if free_text {
             (dismiss_commit_typed)();
         } else {

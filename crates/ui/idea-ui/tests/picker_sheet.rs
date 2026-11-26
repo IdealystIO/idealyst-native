@@ -145,6 +145,25 @@ fn a_phone_autocomplete_searches_and_picks_in_a_sheet() {
     assert_eq!(h.world.enter(|| value.get()), "plum");
 }
 
+/// iOS answers the field's `blur()` at once, inside the focus handler's
+/// own turn: the blur it reports is the hand-off to the sheet, not a
+/// departure, and the sheet stays open.
+#[test]
+fn regression_a_blur_reported_during_the_hand_off_keeps_the_sheet() {
+    let (h, _r, _value) = autocomplete(PHONE, true);
+    h.take_log();
+    let focus = h.text_input_focus_handler(0);
+    h.world.enter(|| {
+        focus(true);
+        focus(false);
+    });
+    h.flush();
+    let log = h.take_log().join("\n");
+    assert!(is_sheet(&log), "the sheet survives the field's own blur:\n{log}");
+    let tree = h.live_roots().into_iter().map(|r| h.live_tree(r)).collect::<Vec<_>>().join("\n");
+    assert!(tree.contains("\"Plum\""), "its rows are up:\n{tree}");
+}
+
 #[test]
 fn a_wide_autocomplete_opens_its_menu_under_the_field() {
     let (h, _r, _) = autocomplete(DESKTOP, true);
@@ -185,8 +204,19 @@ fn open_calendar(h: &host_mock::Harness) -> String {
 #[test]
 fn a_phone_date_input_opens_its_calendar_in_a_sheet() {
     let (h, _r) = date_input(PHONE, true);
+    h.set_style_line(|node, rules| {
+        format!(
+            "apply_style n{node} align={:?} width={:?}",
+            rules.align_items, rules.width
+        )
+    });
     let log = open_calendar(&h);
     assert!(is_sheet(&log), "a sheet on a phone:\n{log}");
+    // The grid is narrower than the sheet: it sits centred, not at the start.
+    assert!(
+        log.contains("align=Some(Center) width=Some(Literal(Percent(100.0)))"),
+        "the calendar is centred in the sheet:\n{log}",
+    );
 }
 
 #[test]

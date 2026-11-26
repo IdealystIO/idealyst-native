@@ -3977,6 +3977,14 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A phone `Autocomplete`'s sheet stays open on iOS** (`idea-ui` patch). The field hands focus to
+  the sheet by blurring itself, and iOS reports that blur in the same turn, before the sheet's mode
+  was flushed: the field read it as a departure and closed the sheet as it opened, leaving nothing
+  to type into.
+
+- **A date picker's calendar sits centred in its phone sheet** (`idea-ui` patch). Its cells are a
+  fixed size, so the grid is narrower than the sheet and sat against its start.
+
 - **A press that closes its own dialog, menu or popover keeps its `spawn_then` reply**
   (`runtime-vocabulary` minor, `idea-ui`). A "Hand in" that closed its confirmation dialog lost
   its reply, because the reply was tied to the pressed control and the control left with the dialog:

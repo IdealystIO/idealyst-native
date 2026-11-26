@@ -82,6 +82,18 @@ stylesheet! {
     }
 }
 
+stylesheet! {
+    // A calendar's cells are a fixed size, so in a sheet wider than the
+    // grid it sits centred rather than at the start.
+    DateSheetCentre<()> {
+        base(_t) {
+            flex_direction: runtime_core::FlexDirection::Column,
+            align_items: runtime_core::AlignItems::Center,
+            width: Length::pct(100.0),
+        }
+    }
+}
+
 fn popup_backdrop_sheet() -> Rc<StyleSheet> {
     DatePopupBackdropSheet::sheet()
 }
@@ -125,7 +137,7 @@ pub(crate) fn anchored_panel(
     if super::picker_sheet::SheetChoice::new(sheet_on_phone).now() {
         // Built inside the picker's `if`, like the panel: it slides in as
         // it mounts and out when the picker closes.
-        let body = std::cell::RefCell::new(Some(content));
+        let body = std::cell::RefCell::new(Some(vec![view(content).with_style(DateSheetCentre::sheet()).into_element()]));
         return super::picker_sheet::picker_sheet(Some(close), move || {
             body.borrow_mut().take().unwrap_or_default()
         });
