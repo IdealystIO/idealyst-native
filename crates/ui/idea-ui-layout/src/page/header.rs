@@ -170,7 +170,7 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
     // An empty menu is left out, not drawn empty: even with no trigger it
     // is a node in the row, which takes the row's gap (the primary then
     // stopped a gap short of the gutter, off the toolbar's edge).
-    let folded_menu: Option<Vec<Action>> = (!folded.is_empty()).then(|| folded.clone());
+    let folded_menu: Option<Vec<Action>> = (!folded.is_empty()).then_some(folded);
     let record_menu: Option<Vec<Action>> = (!menu.is_empty()).then(|| menu.clone());
     ui! {
         view(style = HeaderRow()) {

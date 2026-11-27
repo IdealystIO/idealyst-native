@@ -4005,6 +4005,22 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Fixed
 
+- **A page header with nothing to fold draws no empty ⋮** (`idea-ui-layout` patch). A phone header
+  holding only its primary action, and a wide header with no record menu, still mounted an empty
+  `ActionMenu`. It drew nothing but took the row's gap, so the primary stopped a gap short of the
+  gutter, off the edge the toolbar and body keep.
+
+- **The first frame on iOS has the real safe-area insets** (`backend-ios-mobile` patch). The tree
+  mounts before its view joins a window, where the safe area reads zero, so every `safe_area`
+  container and `safe_area_insets()` started without the insets and jumped to them a frame later.
+  They now start from the insets of the window the view is about to join.
+
+- **A `text_area` lays its text out where its padding says on iOS** (`backend-ios-mobile`,
+  `backend-ios-core` patch). Its `padding_*` now insets the text, as a label's and a text field's
+  do, in place of UIKit's own 8 pt top and bottom and 5 pt side insets. A `code_editor`'s caret now
+  sits on the text it edits, and a `Textarea` insets its text as the `Field` beside it does. A bare
+  `text_area` with no padding now has its text at its edge, as on the other backends.
+
 - **A bottom sheet fits above the keyboard** (`idea-ui` patch). The keyboard lifts a `Modal` sheet
   by its height, but the sheet's height cap was measured against the whole screen, so a tall sheet
   rose past the top edge and took its first rows with it. The cap is now the room above the

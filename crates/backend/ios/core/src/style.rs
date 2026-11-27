@@ -1297,6 +1297,21 @@ static IDEALYST_TEXT_FIELD_CLASS: std::sync::atomic::AtomicPtr<objc2::runtime::A
 /// Same lazy, retry-until-success class cache as [`idealyst_label_class`] but
 /// for `IdealystTextField` — an editable input honors `padding_*` via the same
 /// `setTextInsets:` selector, so the inset path serves both classes.
+fn idealyst_text_field_class() -> Option<&'static objc2::runtime::AnyClass> {
+    use std::sync::atomic::Ordering;
+    let cached = IDEALYST_TEXT_FIELD_CLASS.load(Ordering::Relaxed);
+    if !cached.is_null() {
+        return Some(unsafe { &*cached });
+    }
+    let name = std::ffi::CString::new("IdealystTextField").ok()?;
+    let p = unsafe { objc2::ffi::objc_lookUpClass(name.as_ptr()) };
+    if p.is_null() {
+        return None;
+    }
+    IDEALYST_TEXT_FIELD_CLASS.store(p as *mut _, Ordering::Relaxed);
+    Some(unsafe { &*(p as *const objc2::runtime::AnyClass) })
+}
+
 static IDEALYST_TEXT_VIEW_CLASS: std::sync::atomic::AtomicPtr<objc2::runtime::AnyClass> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
@@ -1314,21 +1329,6 @@ fn idealyst_text_view_class() -> Option<&'static objc2::runtime::AnyClass> {
         return None;
     }
     IDEALYST_TEXT_VIEW_CLASS.store(p as *mut _, Ordering::Relaxed);
-    Some(unsafe { &*(p as *const objc2::runtime::AnyClass) })
-}
-
-fn idealyst_text_field_class() -> Option<&'static objc2::runtime::AnyClass> {
-    use std::sync::atomic::Ordering;
-    let cached = IDEALYST_TEXT_FIELD_CLASS.load(Ordering::Relaxed);
-    if !cached.is_null() {
-        return Some(unsafe { &*cached });
-    }
-    let name = std::ffi::CString::new("IdealystTextField").ok()?;
-    let p = unsafe { objc2::ffi::objc_lookUpClass(name.as_ptr()) };
-    if p.is_null() {
-        return None;
-    }
-    IDEALYST_TEXT_FIELD_CLASS.store(p as *mut _, Ordering::Relaxed);
     Some(unsafe { &*(p as *const objc2::runtime::AnyClass) })
 }
 
