@@ -1950,17 +1950,6 @@ impl IosBackend {
         let plain = runtime_shared::styled_text::plain_text_of(runs);
         let node = self.create_text_impl(&plain, a11y, selectable);
         if let Some(label) = node.as_display_text() {
-            // Break lines as TextKit 1 and the web do: a `UILabel`'s
-            // default `lineBreakStrategy` (`.standard`, iOS 14+) pushes a
-            // word down to keep a lone word off the last line, which a
-            // `UITextView` never does. A styled text drawn under an
-            // editable text area (`codeblock`'s `code_editor`) then broke
-            // a line one word earlier than the area holding its caret, and
-            // the caret sat a word off after the wrap. A selectable text
-            // is a text view already.
-            if !selectable {
-                let _: () = unsafe { msg_send![label, setLineBreakStrategy: 0usize] };
-            }
             styled_text::realize(label, runs, None, &self.font_registry);
             let key = label as *const UIView as usize;
             self.styled_texts.insert(

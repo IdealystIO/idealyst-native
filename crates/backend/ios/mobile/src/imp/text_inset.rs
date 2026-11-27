@@ -144,7 +144,16 @@ impl IdealystLabel {
         let this = this.set_ivars(LabelIvars {
             insets: Cell::new(TextInsets::default()),
         });
-        unsafe { msg_send_id![super(this), init] }
+        let label: Retained<Self> = unsafe { msg_send_id![super(this), init] };
+        // Break lines as the web, Android and a `UITextView` do. A
+        // `UILabel`'s default `lineBreakStrategy` (`.standard`) pushes a
+        // word down to keep a lone word off the last line, which no other
+        // backend does: the same paragraph wrapped differently on iOS, and
+        // a `code_editor` (a styled text drawn under an editable text area)
+        // broke a line a word earlier than the area, leaving the caret a
+        // word off after the wrap.
+        let _: () = unsafe { msg_send![&label, setLineBreakStrategy: 0usize] };
+        label
     }
 
 }

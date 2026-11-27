@@ -11,6 +11,13 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **iOS text breaks lines as every other backend does** (`backend-ios-mobile` patch). A `UILabel`
+  moved a word down so the last line never held one word alone; the web, Android and iOS text
+  views never do. Text on iOS now keeps a lone last word where the others do, so a paragraph wraps
+  the same on every backend, and plain and styled text wrap alike. It also keeps a `code_editor`'s
+  caret on the word it edits after a wrap. Expect a one-time re-wrap wherever a line ended on a
+  single word.
+
 - **`Notification` has new public fields** (`notifications` major). `actions`, `priority`, `sound`,
   `group`, `image` and `alert_once` joined it, so a struct literal of `Notification` no longer
   compiles; build one with `Notification::new(title, body)` and its setters. On web, re-posting an
