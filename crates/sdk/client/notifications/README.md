@@ -77,8 +77,8 @@ A field a platform can't show is dropped, never faked.
 | Field | iOS / macOS | Android | Windows | Linux | Web |
 | --- | --- | --- | --- | --- | --- |
 | subtitle | `subtitle` | sub-text | a line of its own | folded into the body | folded into the body |
-| actions | category actions (max 4) | `addAction` (max 3) | toast `<action>` (max 5) | `actions` | dropped (page API has none) |
-| reply field | `UNTextInputNotificationAction` | `RemoteInput` | toast `<input>` | KDE `inline-reply` (one) | dropped |
+| actions | category actions (max 4) | `addAction` (max 3) | toast `<action>` (max 5) | `actions` | through the service worker: buttons on Chrome and Edge (max 2 on Chrome); others show the notification without them. Dropped on the page-level fallback. |
+| reply field | `UNTextInputNotificationAction` | `RemoteInput` | toast `<input>` | KDE `inline-reply` (one) | dropped: the action shows as a plain button, reported without text |
 | priority | interruption level: Low passive, Default/High active, Urgent time-sensitive | one channel per level (Low → low importance, High/Urgent → high importance, heads-up) | Low → no popup, High/Urgent → high priority | `urgency` hint 0/1/2 | Urgent → `requireInteraction` |
 | replace (same id) | alerts again | alerts again | alerts again | alerts again | alerts again (`renotify`) |
 | silent | no sound set | the silent channel (normal importance whatever the priority, since sound belongs to the channel) | `<audio silent>` | `suppress-sound` | `silent` |
@@ -93,9 +93,11 @@ A field a platform can't show is dropped, never faked.
 | Android | a translucent activity (taps and opening actions), a receiver (background actions) | delete intent | queued in `SharedPreferences`, delivered on the next launch |
 | Windows | toast `Activated` | `Dismissed` with `UserCanceled` | not delivered: an unpackaged app needs a COM activator; scheduled toasts have no events |
 | Linux | `ActionInvoked` / `NotificationReplied` signals | `NotificationClosed` reason 2 | not delivered (signals reach running clients only) |
-| Web | `click` (focuses the page) | not reported (`close` also fires on expiry) | not delivered (page-level API) |
+| Web | the worker's `notificationclick` (focuses an open tab, or opens the app, unless the action has `opens_app(false)`); the page-level fallback reports a body click only | the worker's `notificationclose` (a user dismissal only) | the click opens the app, and the response waits in the worker's outbox until the opened page listens. Lost on the page-level fallback. |
 
 Every response removes its notification, as iOS does on its own: Android cancels it after an action, Windows and Linux close it, and web closes it on click.
+
+On web, notifications go through the app's service worker whenever one is active: the web build composes it from every dependency's handlers, this crate's `sw/notifications.js` included, and the page registers it at boot ([`docs/service-worker.md`](../../../../docs/service-worker.md)). Without an active worker (an insecure origin, or a post in the moment before the worker first activates, which waits up to 3 s), the page-level `new Notification` is used. Chrome for Android only has the worker path.
 
 ## Per-platform hooks
 
@@ -122,7 +124,7 @@ let n = n.android(|env, builder| {
 
 | Target | Post / schedule | Push token |
 | --- | --- | --- |
-| web (wasm32) | `new Notification(title, options)`, kept by tag so `cancel` can close it. `schedule` → `NotSupported`. **Runnable** (browser tests). | `NotSupported` (needs a service worker + VAPID key) |
+| web (wasm32) | `registration.showNotification` through the app's service worker, else `new Notification(title, options)`; `cancel` closes both (`getNotifications`, and a page-wide map by tag). `schedule` → `NotSupported`. **Runnable** (browser tests; the worker path also live in Chromium). | `NotSupported` (needs a VAPID key) |
 | iOS / macOS / tvOS | `UNUserNotificationCenter`. Categories are registered on demand and awaited before the post (`getNotificationCategories` answers once the set is applied). `schedule` → `UNTimeIntervalNotificationTrigger`. Without an app bundle (a test binary) every call reports `Backend` instead of aborting. **Compile-checked only ⚠️** | `NotSupported` (host seam) |
 | Android | Kotlin shim (`runtime/kotlin/…/RustNotifications.kt`) + manifest fragment, both picked up by the run tool. `schedule` → `AlarmManager`; the alarm carries the built notification. It is exact with `SCHEDULE_EXACT_ALARM`, inexact otherwise, and lost on reboot. **Compile-checked only ⚠️** (Rust and Kotlin) | `NotSupported` (needs Firebase) |
 | Linux (desktop) | `org.freedesktop.Notifications` over the session D-Bus (`zbus`); re-posting an id replaces via `replaces_id`. `schedule` → `NotSupported`. | `NotSupported` |
@@ -168,11 +170,11 @@ An unchecked **native** box means the code compiles for that target but isn't co
 **Automated**
 - [x] `cargo test -p notifications`: builder, labels, the response queue (launch response held for the first handler), Apple category ids and the no-bundle guard (macOS), Linux hint/action mapping and signal handling (Linux), Windows toast XML and activation arguments (Windows), Android shim encodings (Android), robot log + respond.
 - [x] `cargo build -p notifications --features catalog`: recipes compile.
-- [x] `cargo test -p notifications --target wasm32-unknown-unknown` (headless Chrome through the workspace runner): `tests/web_notify.rs`.
+- [x] `cargo test -p notifications --target wasm32-unknown-unknown` (through the workspace runner): `tests/web_notify.rs` (page-level path) and `tests/web_worker.rs` (the worker path: the real prelude and `sw/notifications.js` in a stand-in worker scope — show with actions and data, click, actions with and without `opens_app`, dismiss, a click with no tab open, cancel).
 - [x] Kotlin shim compiles against `android.jar` (API 36).
 
 **Behavior**
-- [ ] **Web**: a click focuses the page and reports `Open` with the payload; re-posting the same id replaces; `cancel` closes.
+- [ ] **Web**: through the worker, the buttons show (Chrome, Edge), a click focuses the tab and reports `Open` with the payload, a button reports its id, swiping it away reports `Dismiss`, and a click with every tab closed opens the app and reaches `on_response`; re-posting the same id replaces; `cancel` closes. Chrome for Android shows notifications at all.
 - [ ] **iOS / macOS**: banner while in the foreground; action buttons and the reply field show on the first post; tap, button, reply and swipe-away each report once; the tap that launches a killed app reaches a boot-time handler.
 - [ ] **Android**:
   - tap, opening action, background action, reply and swipe-away each report once;

@@ -40,6 +40,12 @@ capabilities = ["notifications"]
 runtime_kotlin = ["runtime/kotlin/io/idealyst/notifications/RustNotifications.kt"]
 manifest_application = ["manifest/application.xml"]
 
+# Web: the handlers for clicks, action buttons and dismissals of
+# notifications shown through the app's service worker (src/web.rs), composed
+# into the app's `idealyst-sw.js` by the web build (docs/service-worker.md).
+[package.metadata.idealyst.web]
+service_worker = ["sw/notifications.js"]
+
 # iOS links the Rust code as a staticlib inside Xcode/swiftc, which drops
 # `#[link(kind = "framework")]`; the iOS run tool links what is declared here.
 [package.metadata.idealyst.ios]

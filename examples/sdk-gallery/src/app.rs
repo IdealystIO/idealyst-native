@@ -146,9 +146,9 @@ pub fn ConnectivityPanel() -> Element {
 }
 
 /// `notifications` — post now, schedule, cancel, and hear the response:
-/// a plain post, a chat message with a reply field and buttons (shown on
-/// native; web's page-level API has no buttons, so a click there reports
-/// `Open`), an urgent one and a silent one.
+/// a plain post, a chat message with a reply field and buttons (on web the
+/// buttons show through the service worker on Chrome and Edge, without the
+/// reply field), an urgent one and a silent one.
 #[component]
 pub fn NotificationsPanel() -> Element {
     use notifications::{Action, Notification, Priority, ResponseAction, Sound};
