@@ -10107,6 +10107,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "pull-refresh"
+version = "0.1.0"
+dependencies = [
+ "backend-android-mobile",
+ "backend-ios-mobile",
+ "host-mock",
+ "jni 0.21.1",
+ "objc2 0.5.2",
+ "objc2-foundation 0.2.2",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-shared",
+ "runtime-tls",
+ "runtime-vocabulary",
+ "runtime-world",
+]
+
+[[package]]
+name = "pull-refresh-demo"
+version = "1.5.2"
+dependencies = [
+ "idealyst",
+ "pull-refresh",
+ "runtime-core",
+ "runtime-scene",
+ "runtime-vocabulary",
+]
+
+[[package]]
 name = "pulldown-cmark"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

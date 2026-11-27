@@ -48,6 +48,7 @@ arrives.
 | `form` | [`form/`](./client/form) | A `Form` container — real `<form>` (Enter-to-submit, autofill) on web, transparent passthrough on native. |
 | `toolbar` | [`toolbar/`](./client/toolbar) | A `Toolbar` window-chrome primitive — `NSToolbar` on macOS, zero-size no-op elsewhere. |
 | `codeblock` | [`codeblock/`](./client/codeblock) | Syntax-highlighted code rendering. Used by the docs site. |
+| `pull-refresh` | [`pull-refresh/`](./client/pull-refresh) | `Refreshable` — pull-to-refresh around a scrolling child with the platform's own control (`UIRefreshControl` on iOS, `SwipeRefreshLayout` on Android); the child renders unchanged elsewhere. |
 
 ## Utility SDKs (no registered primitive)
 
@@ -175,6 +176,7 @@ JNI/Obj-C symbol resolution that the compiler can't check. So a green
 | `form` | 🧪 unit (macro/builder lowering) | 🟢 web (`<form>`) + native passthrough |
 | `toolbar` | — none | 🟢 macOS (`NSToolbar`); no-op elsewhere |
 | `codeblock` | — none | 🟢 runs in the docs site |
+| `pull-refresh` | 🧪 unit (sync/tint/scroller policy, reactive binding) · 🔌 integration (passthrough mount on host-mock) | ⚠️ iOS/Android compile-checked only; passthrough elsewhere |
 
 ### Utility / capability SDKs
 

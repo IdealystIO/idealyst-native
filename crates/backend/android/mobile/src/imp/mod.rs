@@ -1348,6 +1348,23 @@ impl AndroidBackend {
         self.external_scrollers.insert(Self::node_key_of(view));
     }
 
+    /// SDK extension helper: register an SDK-built `ViewGroup` as a
+    /// layout-TRANSPARENT node (`display: contents`), the way
+    /// [`Host::create_anchor`](runtime_scene::Host::create_anchor)
+    /// registers its `FrameLayout`. Call it before inserting children.
+    ///
+    /// Its children then lay out as children of its nearest real ancestor,
+    /// and its own frame is that ancestor's box at the origin
+    /// (`LayoutTree::new_contents_node`). So the view MUST place each child
+    /// at the child's own `MarginLayoutParams` (left/top margin + size), as
+    /// a `FrameLayout` does, and must not take touches outside its
+    /// children — it spans the whole ancestor box. The `pull-refresh`
+    /// SDK's `RustSwipeRefresh` is the user: a wrapper that adds a native
+    /// behaviour around a child without changing the child's layout.
+    pub fn register_contents_view(&mut self, view: &GlobalRef) {
+        let _ = self.layout_for_view_with(view, |layout| layout.new_contents_node());
+    }
+
     /// SDK extension entry point: run a closure with a JNI env and the
     /// backend's Activity/Application context. Third-party
     /// `register_external` handlers use this to construct Android

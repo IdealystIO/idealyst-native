@@ -245,6 +245,7 @@ most apps need, with more specialized SDKs maintained separately.
 - `table`: tables (a real `<table>` on web)
 - `form`: a form container (Enter-to-submit and autofill on web)
 - `virtualized`: virtualized lists, grids and responsive grids
+- `pull-refresh`: native pull-to-refresh around any scrolling child
 - `toolbar`: window toolbar (`NSToolbar` on macOS)
 - `menu`: the OS menu bar
 - `qr`: show, export and scan QR codes

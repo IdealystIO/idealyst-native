@@ -378,6 +378,12 @@ sdk!(
     "Virtualized-collection constructors over the framework's builtin `flat_list` / virtualizer windowing engine: `list(data, key, size, render)`, `grid(.., columns)`, and `responsive_grid(.., min_item_cross)` — the latter derives its lane count from the measured container width like CSS `repeat(auto-fill, minmax(min, 1fr))`, so a resize or rotation re-lanes it. NOTHING TO REGISTER: the recycling engine is a framework PRIMITIVE (it needs UICollectionView / RecyclerView / NSCollectionView, which cannot be composed from `view`/`scroll_view`), and this crate is only the opinion layer above it — no scene-registry payload, no boot call. Each constructor returns the SAME `GlueFlatList` builder the primitive does, so `.axis(Axis::Horizontal)`, `.gap(n)`, `.spacing(main, cross)`, `.overscan(f)`, and `.bind(ref)` (for `scroll_to_index`) still chain. A list is just a one-lane grid — the constructors differ only in the preset lane count, not the engine, and `grid(.., 1)` degrades to a list. Deliberately data- and style-agnostic: you supply `Signal<Vec<T>>` + key + item-size + render closures, and it has NO styling, headers, or selection model — that is higher-level policy (the `table` SDK can sit on top). Reach for this before hand-rolling windowing over `scroll_view`."
 );
 sdk!(
+    "pull-refresh",
+    SdkCategory::Ui,
+    SdkKind::External,
+    "Native pull-to-refresh around one scrolling child: `Refreshable(refreshing = loading, on_refresh = reload, tint = Some(color)) { flat_list(..) }`. iOS attaches a `UIRefreshControl` to the first vertical `UIScrollView` in the child (the child itself first; text views and sideways scrollers skipped); Android wraps the child in androidx `SwipeRefreshLayout`; every other backend renders the child unchanged. The wrapper is layout-transparent, so the child keeps its own layout. Set `refreshing` true inside `on_refresh` and false when done — a pull the app leaves at false ends the spinner at once. `on_refresh` is `Rc<dyn Fn()>`; work that outlives it needs `after_ms_detached` or a task, since scoped timers are no-ops in an event handler. REGISTRATION REQUIRED: `pull_refresh::register(registry)` in `register_scene_extensions`, or realize panics on the unregistered payload."
+);
+sdk!(
     "toolbar",
     SdkCategory::Ui,
     SdkKind::External,

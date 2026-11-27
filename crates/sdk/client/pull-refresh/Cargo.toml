@@ -1,0 +1,67 @@
+[package]
+name = "pull-refresh"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Pull-to-refresh for any vertically scrolling child, drawn by the platform's own refresh control."
+
+# `Refreshable` wraps ONE child and gives the scroll view that child renders
+# the operating system's own pull-to-refresh control. It is not a scroll view
+# of its own and changes nothing about `scroll_view` / `flat_list` /
+# `virtual_grid`.
+#
+#   - iOS:     a `UIRefreshControl` set as `refreshControl` on the first
+#              `UIScrollView` in the child's tree.
+#   - Android: androidx `SwipeRefreshLayout` (the `RustSwipeRefresh`
+#              subclass in runtime/kotlin) around the child.
+#   - others:  the child renders unchanged; nothing is attached.
+#
+# A scene-registry extension (CLAUDE.md §3): the payload type is the registry
+# key, and apps install it with `pull_refresh::register` at the boot seam.
+
+[package.metadata.idealyst.android]
+# The `SwipeRefreshLayout` subclass that lays its child out at the child's own
+# layout frame and trampolines a pull into `nativeOnRefresh` (src/android.rs).
+runtime_kotlin = ["runtime/kotlin/io/idealyst/pullrefresh/RustSwipeRefresh.kt"]
+# 1.1.0 is the current stable line; its closure (core, interpolator,
+# annotation) is all pinned by the framework, so the pins win.
+androidx = [
+    ["androidx.swiperefreshlayout", "swiperefreshlayout", "1.1.0"],
+]
+
+[dependencies]
+# `thread_local!` that costs Android one pthread key per process instead of
+# one per static (bionic allows 128).
+runtime-tls = { workspace = true }
+# The author surface: `#[component]` and the `Reactive` props model it
+# emits (`::runtime_core::Reactive`).
+runtime-core = { workspace = true }
+# `#[component]` spells absolute `::runtime_vocabulary::…` paths; the
+# handlers use `style_attach::on_teardown` for scope-tied teardown.
+runtime-vocabulary = { workspace = true }
+# The scene registry: `item`, `MountCx`, `Registry`, `Host::create_anchor`.
+runtime-scene = { workspace = true }
+# `Color` and the canonical color parser the tint resolves through.
+runtime-shared = { workspace = true }
+# `signal` / `effect` / `untrack` for the refreshing-state binding.
+runtime-world = { workspace = true }
+
+# iOS: `UIRefreshControl` through the Obj-C runtime, a declared target class
+# for its value-changed action, and the backend's concrete `IosBackend` so
+# `register` can install the native handler on `Registry<IosBackend>`.
+[target.'cfg(all(target_os = "ios", not(target_arch = "wasm32")))'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSObject", "NSGeometry"] }
+backend-ios-mobile = { workspace = true }
+
+# Android: the `RustSwipeRefresh` view through JNI, and the backend's
+# concrete `AndroidBackend` (lib name `backend_android`) for its JNI context,
+# `register_contents_view` and `Registry<AndroidBackend>`.
+[target.'cfg(all(target_os = "android", not(target_arch = "wasm32")))'.dependencies]
+jni = "0.21"
+backend-android-mobile = { workspace = true }
+
+[dev-dependencies]
+# tests/scene.rs mounts `Refreshable` through the scene registry on the
+# shared host-mock recording substrate (the passthrough handler).
+host-mock = { path = "../../../dev/host-mock" }

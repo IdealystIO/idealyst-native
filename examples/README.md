@@ -45,6 +45,7 @@ on the registry internally, so one generic seam serves every target;
 | `inspector` | The Inspector's front end: a live debugging dashboard. Talks only to the Inspector server (`idealyst inspect`, which embeds and serves its web build); see [docs/inspector.md](../docs/inspector.md). | web, macos |
 | `baseline` | One text node. The framework's web bundle-size floor. | web |
 | `keyboard-avoid` | `keyboard_avoiding_view` at the root: a bottom composer rides the keyboard in step with the platform's own keyboard animation, plus a `keyboard_inset()` readout. See `docs/keyboard.md`. | web, ios, android |
+| `pull-refresh-demo` | The `pull-refresh` SDK: a 200-row `flat_list` and a plain `scroll_view`, each in a `Refreshable` whose refresh waits 1.5 s and adds a row; a header counts the refreshes. Native control on iOS and Android, unchanged lists elsewhere. | web, ios, android |
 | `sdk-gallery` | One panel per client SDK (SVG, clipboard, connectivity, notifications, web view, video, audio, location, share sheet, camera, screen recording) for checking each on a platform by hand. | web, macos, windows |
 | `user-activity` | A kiosk-style idle clock driven by `user_activity()`: every interaction anywhere in the app restarts it, with no handlers of the app's own. See `docs/user-activity.md`. | web, ios, android, macos |
 | `press-down-demo` | `PressActivation`: two Buttons open the same `Menu`, one on release and one as the pointer goes down. | web, macos, ios, android |

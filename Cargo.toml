@@ -296,6 +296,7 @@ members = [
     "crates/sdk/client/haptics",
     "crates/sdk/client/keep-awake",
     "crates/sdk/client/keep-awake/examples/keep-awake-demo",
+    "crates/sdk/client/pull-refresh",
     "crates/sdk/client/datetime",
     "crates/sdk/client/audio",
     "crates/sdk/client/synth",
@@ -445,6 +446,7 @@ members = [
     "examples/inspector",
     "examples/login-demo",
     "examples/keyboard-avoid",
+    "examples/pull-refresh-demo",
     "examples/user-activity",
     "examples/press-down-demo",
     "examples/spawn-anchor-repro",
@@ -718,6 +720,7 @@ accessibility-service = { path = "crates/sdk/client/accessibility-service", vers
 video-codec = { path = "crates/sdk/client/video-codec", version = "0.1.0", registry = "idealyst" }
 haptics = { path = "crates/sdk/client/haptics", version = "8.0.0", registry = "idealyst" }
 keep-awake = { path = "crates/sdk/client/keep-awake", version = "0.1.0", registry = "idealyst" }
+pull-refresh = { path = "crates/sdk/client/pull-refresh", version = "0.1.0", registry = "idealyst" }
 datetime = { path = "crates/sdk/client/datetime", version = "1.7.0", registry = "idealyst" }
 audio = { path = "crates/sdk/client/audio", version = "8.0.0", registry = "idealyst" }
 synth = { path = "crates/sdk/client/synth", version = "7.0.0", registry = "idealyst" }

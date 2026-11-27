@@ -1,0 +1,32 @@
+[package]
+name = "pull-refresh-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pull-to-refresh: a long virtualized list and a plain scroll_view, each wrapped in `Refreshable`, with a refresh counter."
+# Not published to the idealyst registry: this crate is workspace-internal
+# (tooling, demo, smoke test, or benchmark). Consumers never name it.
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The platform surface, used by `src/main.rs` only — it carries whatever
+# the target needs so this manifest names no backend directly.
+idealyst = { workspace = true }
+# `runtime-core` is aliased to `runtime_core` at the crate root (see
+# src/lib.rs); `runtime-vocabulary` because the `ui!` emission spells
+# absolute `::runtime_vocabulary::glue::…` paths; `runtime-scene` because
+# `register_scene_extensions` is generic over the registry host.
+runtime-core = { workspace = true }
+runtime-vocabulary = { workspace = true }
+runtime-scene = { workspace = true }
+# The SDK on show.
+pull-refresh = { workspace = true }
+
+[package.metadata.idealyst.app]
+name      = "Pull Refresh"
+bundle_id = "io.idealyst.pullrefreshdemo"
+version   = "0.0.1"
+targets   = ["web", "ios", "android"]

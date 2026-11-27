@@ -1488,6 +1488,18 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **Native pull-to-refresh around any scrolling child** (`pull-refresh` new crate;
+  `backend-android-mobile` minor). `Refreshable(refreshing = loading, on_refresh = reload,
+  tint = …) { flat_list(…) }` gives the scroll view its child renders the platform's own control:
+  a `UIRefreshControl` on the first vertical `UIScrollView` in the child's tree on iOS, androidx
+  `SwipeRefreshLayout` around the child on Android. Every other backend renders the child
+  unchanged. The wrapper takes no part in layout, so the child lays out as it would unwrapped.
+  Set `refreshing` true in `on_refresh` and false when done; a pull the app leaves at false ends
+  the spinner at once. Install with `pull_refresh::register`. The SDK declares
+  `androidx.swiperefreshlayout` itself. `AndroidBackend::register_contents_view` is the new SDK
+  helper behind it: it registers an SDK-built `ViewGroup` as a layout-transparent node, as
+  `create_anchor` does for its own.
+
 - **Notification actions, replies and responses on every platform** (`notifications` major).
   `Action::new(id, title)` adds a button, with `.text_input(...)` for a reply field,
   `.opens_app(false)` to handle it without opening the app, `.destructive()` and
@@ -4023,6 +4035,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   nested expressions stay rust-analyzer's.
 
 ### Fixed
+
+- **A scrolled `virtual_grid` tells Android it can scroll** (`backend-android-mobile` patch).
+  `RustVirtualGrid` scrolls itself with `scrollTo` but kept `View`'s default scroll range, so
+  `canScrollVertically` and `canScrollHorizontally` answered `false` at every offset and its
+  scrollbars had no range. A parent that asks before taking a gesture, such as `SwipeRefreshLayout`,
+  took every downward drag of a scrolled grid as a pull.
 
 - **A page header with nothing to fold draws no empty ⋮** (`idea-ui-layout` patch). A phone header
   holding only its primary action, and a wide header with no record menu, still mounted an empty
