@@ -72,7 +72,7 @@
 // ---------------------------------------------------------------------------
 pub use crate::host::{
     install_announcer, install_current_color_scheme, install_current_platform,
-    install_fullscreen_setter, install_url_opener,
+    install_fullscreen_setter, install_url_in_place_opener, install_url_opener,
 };
 
 /// The live half of `color_scheme()`: call from the platform's appearance

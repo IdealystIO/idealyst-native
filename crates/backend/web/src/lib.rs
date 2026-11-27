@@ -2258,6 +2258,19 @@ impl WebBackend {
         }))
     }
 
+    pub(crate) fn url_in_place_opener_impl(&self) -> Option<std::rc::Rc<dyn Fn(&str)>> {
+        // `open_url_in_place`: this tab leaves the app for `url`, so a
+        // hosted page (checkout, billing portal, sign-in) returns the
+        // person to the app in the same tab. `assign`, not `replace`: Back
+        // from the hosted page comes back to the app.
+        // Regression: `open_url_in_place_navigates_this_tab`.
+        Some(std::rc::Rc::new(|url: &str| {
+            if let Some(win) = web_glue::dom::window() {
+                assign_location(&win, url);
+            }
+        }))
+    }
+
     pub(crate) fn fullscreen_setter_impl(&self) -> Option<std::rc::Rc<dyn Fn(bool)>> {
         // Best-effort Fullscreen API. `requestFullscreen` MUST be called
         // from a user-gesture event handler or the browser rejects it
@@ -3763,6 +3776,15 @@ impl runtime_shared::ViewOps for WebViewOps {
             drop(cb);
         })
     }
+}
+
+/// Navigate `win`'s browsing context to `url` (`location.assign`) — the
+/// in-place opener's body. Takes the window so the test can drive it
+/// against an iframe's: a page cannot stub its own `location.assign`
+/// (`Location`'s members are unforgeable), and calling it on the test
+/// page would navigate the test runner away.
+pub(crate) fn assign_location(win: &web_glue::dom::Window, url: &str) {
+    let _ = win.location().assign(url);
 }
 
 fn element_from_any(node: &dyn std::any::Any) -> Option<web_glue::dom::Element> {

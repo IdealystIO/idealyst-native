@@ -611,7 +611,7 @@ impl App {
         crate::Net { app: self }
     }
 
-    /// The external URLs the app opened (`open_url`) during this test,
+    /// The external URLs the app opened (`open_url`, `open_url_in_place`) during this test,
     /// oldest first. Under the harness the app records them instead of
     /// leaving for a browser or another app: a phone app that leaves is
     /// suspended, and every call after it would time out.
@@ -623,6 +623,14 @@ impl App {
     pub fn opened_urls(&mut self) -> Vec<String> {
         let v = self.call_function("urls.opened", json!({}));
         serde_json::from_value(v.clone()).unwrap_or_else(|_| panic!("urls.opened: unexpected shape {v}"))
+    }
+
+    /// The URLs the app opened with `open_url_in_place` during this test —
+    /// on web the app's own tab (a hosted checkout), oldest first. They are
+    /// in [`opened_urls`](Self::opened_urls) too; this tells the two apart.
+    pub fn opened_urls_in_place(&mut self) -> Vec<String> {
+        let v = self.call_function("urls.opened_in_place", json!({}));
+        serde_json::from_value(v.clone()).unwrap_or_else(|_| panic!("urls.opened_in_place: unexpected shape {v}"))
     }
 
     /// Wait for the app to open an external URL containing `substring`,

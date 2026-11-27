@@ -59,8 +59,9 @@
 //! `clock.clear` / `clock.now` fake the wall clock (`robot_clock`);
 //! `net.intercept` / `net.held` / `net.release` / `net.remove` /
 //! `net.clear` hold, delay or fail HTTP requests (`robot_net`);
-//! `urls.capture` / `urls.opened` / `urls.clear` record `open_url` instead
-//! of leaving the app (`robot_urls`). They are
+//! `urls.capture` / `urls.opened` / `urls.opened_in_place` / `urls.clear`
+//! record `open_url` / `open_url_in_place` instead of leaving the app
+//! (`robot_urls`). They are
 //! registered the first time the registry is used, so every robot build
 //! has them.
 

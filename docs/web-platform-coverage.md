@@ -58,6 +58,7 @@ answers there, not unfinished stubs.
 | Capability | Needed by | Framework API | Web | Native | Status |
 | --- | --- | --- | --- | --- | --- |
 | Open a URL in a new tab, where the new page gets no `window.opener` handle back into the app | `app-kit/src/new_tab.rs`, `app-checkin/src/admin.rs` | `runtime_core::open_url(url)`. To open another copy of the app, pass `origin() + path` | `window.open(url, "_blank", "noopener")`. Before this change the web backend omitted `noopener`, which is why the app called `window.open` itself | iOS `UIApplication.open`, Android `ACTION_VIEW`, macOS `NSWorkspace.open`. No-op on terminal, CPU and runtime-server | covered (web `noopener` added) |
+| Leave the app in its own tab for a hosted page that returns to it (Stripe Checkout, the billing portal) | LumiTask checkout | `runtime_core::open_url_in_place(url)` | `location.assign(url)` — the app unloads; Back returns to it | the same as `open_url` (the system browser; the return URL comes back as a deep link). No-op on terminal, CPU and runtime-server | covered |
 | Full screen | none | `runtime_core::set_fullscreen(bool)` | Fullscreen API | per backend | covered |
 
 ## Theme and colour scheme

@@ -1495,6 +1495,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`open_url_in_place(url)` leaves the app in its own tab** (`runtime-shared` minor,
+  `runtime-vocabulary` minor, `web-glue` minor, `backend-web` minor, `robot-test` minor,
+  `mcp-catalog` minor). On web the app's tab navigates to the URL (`location.assign`), so a hosted
+  checkout, billing portal or sign-in page sends the person back to the app in the same tab instead
+  of leaving them with two copies of it. On every native backend it does what `open_url` does (the
+  system browser or handler). It rides a new optional `AppEnvOps::url_in_place_opener`; a backend
+  that leaves it at the default gets its `url_opener`. While a test captures URLs it is recorded
+  like `open_url`, and the new robot function `urls.opened_in_place` (`App::opened_urls_in_place()`)
+  lists the in-place ones. `web-glue` gains `Location::assign`. Under runtime-server it is a no-op,
+  as `open_url` is there.
+
 - **Native pull-to-refresh around any scrolling child** (`pull-refresh` new crate;
   `backend-android-mobile` minor). `Refreshable(refreshing = loading, on_refresh = reload,
   tint = …) { flat_list(…) }` gives the scroll view its child renders the platform's own control:

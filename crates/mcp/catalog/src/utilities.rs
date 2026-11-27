@@ -121,7 +121,7 @@ inventory::submit! {
     UtilityEntry {
         name: "open_url",
         module_path: "runtime_core",
-        docs: "Open an external URL in the host's default handler — a new browser tab on web, Safari/Mail via `UIApplication.open` on iOS, an `ACTION_VIEW` intent on Android, the default browser via `NSWorkspace` on macOS. For *leaving* the app (external pages, `mailto:`, `tel:`); in-app navigation must use the `link` primitive so web stays single-page. Fire-and-forget — a logged no-op on backends with no opener (terminal, CPU, runtime-server).",
+        docs: "Open an external URL in the host's default handler — a new browser tab on web, Safari/Mail via `UIApplication.open` on iOS, an `ACTION_VIEW` intent on Android, the default browser via `NSWorkspace` on macOS. For *leaving* the app (external pages, `mailto:`, `tel:`); in-app navigation must use the `link` primitive so web stays single-page. Fire-and-forget — a logged no-op on backends with no opener (terminal, CPU, runtime-server). To leave the app in its own tab instead (a hosted checkout that returns to the app), use `open_url_in_place`.",
         params: &[
             ParamSpec {
                 name: "url",
@@ -133,6 +133,26 @@ inventory::submit! {
         return_type_short: "()",
         category: UtilityCategory::Platform,
         snippet: "open_url(${1:url});",
+        _seal: (),
+    }
+}
+
+inventory::submit! {
+    UtilityEntry {
+        name: "open_url_in_place",
+        module_path: "runtime_core",
+        docs: "Open an external URL in place of the app: on web the app's own tab navigates to it (`location.assign`), so a hosted checkout, billing portal or sign-in page returns the person to the app in the same tab instead of leaving two copies open. The app unloads; carry what it needs in the return URL or storage. On every native backend it is exactly `open_url` (the system browser or handler; the hosted page comes back through a deep link). A logged no-op where `open_url` is (terminal, CPU, runtime-server).",
+        params: &[
+            ParamSpec {
+                name: "url",
+                type_str: "& str",
+                type_short_name: "str",
+            },
+        ],
+        return_type: "()",
+        return_type_short: "()",
+        category: UtilityCategory::Platform,
+        snippet: "open_url_in_place(${1:url});",
         _seal: (),
     }
 }

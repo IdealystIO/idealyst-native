@@ -902,10 +902,10 @@ pub use runtime_shared::time;
 // installers a host wires at boot.
 //
 // `announce` is the a11y live-region author surface, `open_url` /
-// `set_fullscreen` route through the host-installed setters (no-op when
+// `open_url_in_place` / `set_fullscreen` route through the host-installed setters (no-op when
 // the host installed none), and `color_scheme()` reads the installed
 // scheme. Pinned by `glue_host_surface.rs`.
-pub use runtime_shared::{announce, color_scheme, open_url, set_fullscreen};
+pub use runtime_shared::{announce, color_scheme, open_url, open_url_in_place, set_fullscreen};
 /// `runtime_core::host::…` — the module path alongside the root-level
 /// re-exports above. Author code
 /// and SDKs reach `host::color_scheme()` through this; the installers

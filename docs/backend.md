@@ -321,7 +321,7 @@ surface.
 
 ### Environment services: `install_env_services`
 
-Five author-facing free functions read thread-local slots rather than
+These author-facing free functions read thread-local slots rather than
 taking a backend reference, so author code can call them from any
 component body, effect, or event handler:
 
@@ -330,6 +330,7 @@ component body, effect, or event handler:
 | `platform()` | `AppEnvOps::platform` |
 | `color_scheme()` | `AppEnvOps::color_scheme` |
 | `open_url(url)` | `AppEnvOps::url_opener` |
+| `open_url_in_place(url)` | `AppEnvOps::url_in_place_opener`, else `url_opener` (only a backend whose app lives in a tab it can replace — web — declares one) |
 | `set_fullscreen(on)` | `AppEnvOps::fullscreen_setter` |
 | `announce(msg, priority)` | `A11yOps::announce_for_accessibility` |
 
@@ -344,7 +345,7 @@ leaves the default no-op.
 
 Filling those slots is the boot entry's job — there is no central
 `mount()` to hang it on, because the backend's boot entry *is* the mount
-path. One call does all five:
+path. One call does all of them:
 
 ```rust
 runtime_vocabulary::backend::install_env_services(&backend);
@@ -375,7 +376,7 @@ the backend and its whole view tree for the life of the thread.
 `install_env_services` handles that; a hand-rolled `install_announcer`
 call must do the same.
 
-Forgetting the call is silent — the app renders correctly and those five
+Forgetting the call is silent — the app renders correctly and those
 APIs just do nothing. `boot_seam_surface.rs` scans every backend boot file
 for it, and `backend_env_seam.rs` pins the behavior.
 

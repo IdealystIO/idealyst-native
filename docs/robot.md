@@ -502,13 +502,14 @@ app.net().clear();
 
 Also in every robot build. `open_url` leaves the app: a phone app goes to
 the background, where the OS suspends it, and every call after that times
-out. While capturing, `open_url` records the URL instead and the app stays
-in front, on every backend.
+out. While capturing, `open_url` and `open_url_in_place` record the URL
+instead and the app stays in front, on every backend.
 
 | Function | Does |
 |---|---|
 | `urls.capture {on}` | `true`: record instead of opening. `false`: open again and drop the record. Returns `{capturing}` |
 | `urls.opened` | the URLs recorded, oldest first: `[String]` |
+| `urls.opened_in_place` | the ones `open_url_in_place` recorded (on web: this tab), oldest first: `[String]` |
 | `urls.clear` | forget them; capturing stays as it was |
 
 The `#[idea_test]` harness turns capture on and clears it before each

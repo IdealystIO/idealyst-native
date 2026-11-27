@@ -1,7 +1,8 @@
 //! The robot's `urls.*` functions: keep the app in front when it opens an
-//! external URL. While `urls.capture` is on, `open_url` records the URL
-//! instead of handing it to the system, and a test asserts on it with
-//! `urls.opened`. A phone app that opens a URL goes to the background and
+//! external URL. While `urls.capture` is on, `open_url` and
+//! `open_url_in_place` record the URL instead of handing it to the system,
+//! and a test asserts on it with `urls.opened` (both kinds) or
+//! `urls.opened_in_place` (the in-place ones). A phone app that opens a URL goes to the background and
 //! the OS suspends it, which ends a run; a browser tab keeps running.
 //! Capturing makes every backend behave the same.
 //!
@@ -33,8 +34,8 @@ fn function(
 pub(crate) fn register_all() {
     register(function(
         "urls.capture",
-        "While `on`, `open_url` records the URL (see `urls.opened`) instead of opening it, so \
-         the app stays in front. Off opens them again and drops the record. Returns {capturing}.",
+        "While `on`, `open_url` and `open_url_in_place` record the URL (see `urls.opened`) \
+         instead of opening it, so the app stays in front. Off opens them again and drops the record. Returns {capturing}.",
         &[RobotArg { name: "on", ty: "bool" }],
         "{capturing}",
         |a| {
@@ -45,10 +46,18 @@ pub(crate) fn register_all() {
     ));
     register(function(
         "urls.opened",
-        "The URLs `open_url` recorded while capturing, oldest first.",
+        "The URLs `open_url` and `open_url_in_place` recorded while capturing, oldest first.",
         &[],
         "[String]",
         |_| Ok(json!(host::captured_url_opens())),
+    ));
+    register(function(
+        "urls.opened_in_place",
+        "The URLs `open_url_in_place` recorded while capturing (the app's own tab on web), \
+         oldest first.",
+        &[],
+        "[String]",
+        |_| Ok(json!(host::captured_url_opens_in_place())),
     ));
     register(function(
         "urls.clear",
@@ -87,6 +96,12 @@ mod tests {
         assert_eq!(opened.get(), 0);
         call("urls.clear", json!({})).unwrap();
         assert_eq!(call("urls.opened", json!({})).unwrap(), json!([]));
+
+        runtime_shared::open_url_in_place("http://h/checkout");
+        assert_eq!(call("urls.opened", json!({})).unwrap(), json!(["http://h/checkout"]));
+        assert_eq!(call("urls.opened_in_place", json!({})).unwrap(), json!(["http://h/checkout"]));
+        assert_eq!(opened.get(), 0, "an in-place open is captured too");
+        call("urls.clear", json!({})).unwrap();
 
         call("urls.capture", json!({ "on": false })).unwrap();
         runtime_shared::open_url("http://h/b");

@@ -129,12 +129,14 @@ Two fakes are in every robot build, with nothing to register:
   included, to test what the UI does while a request is in flight or
   after it fails. WebSockets and SSE are not matched.
 
-- **External URLs** (`urls.capture`, `urls.opened`, `urls.clear`): the
-  harness turns capture on before each test, so `open_url` records the URL
+- **External URLs** (`urls.capture`, `urls.opened`,
+  `urls.opened_in_place`, `urls.clear`): the harness turns capture on
+  before each test, so `open_url` and `open_url_in_place` record the URL
   instead of leaving the app. A phone app that leaves is suspended, and
   every call after that times out with "the app is in the background".
   Assert on what it opened with `app.opened_urls()` /
-  `app.wait_opened_url(".pdf")`.
+  `app.wait_opened_url(".pdf")`; `app.opened_urls_in_place()` lists the
+  ones that left in place (a hosted checkout in the app's own tab).
 
 robot-test wraps the fakes:
 

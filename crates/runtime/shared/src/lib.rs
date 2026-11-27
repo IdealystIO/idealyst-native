@@ -29,7 +29,8 @@
 //! - scheduling / time / session, viewport + breakpoint + safe-area
 //!   TLS state, logging, debug phase counters,
 //! - the host-registry surface (`host`): `Platform`, `ColorScheme`,
-//!   `Screenshot`, `open_url` / `set_fullscreen` / `announce` and the
+//!   `Screenshot`, `open_url` / `open_url_in_place` / `set_fullscreen` /
+//!   `announce` and the
 //!   per-thread slots backends install into at mount,
 //! - the robot automation registry + bridge, native introspection,
 //! - the per-primitive prop/handle STRUCTS (`primitives::*`,
@@ -269,7 +270,7 @@ pub use assets::{
 };
 pub use host::{
     announce, color_scheme, install_announcer, install_current_color_scheme, observe_color_scheme, report_color_scheme,
-    can_open_urls, install_current_platform, install_fullscreen_setter, install_url_opener, open_url, platform,
+    can_open_urls, install_current_platform, install_fullscreen_setter, install_url_in_place_opener, install_url_opener, open_url, open_url_in_place, platform,
     set_fullscreen, ColorScheme, Platform, Screenshot, VirtualizerCallbacks,
 };
 pub use accessibility::{

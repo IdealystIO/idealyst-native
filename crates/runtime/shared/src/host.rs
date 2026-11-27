@@ -352,10 +352,27 @@ pub fn reset_color_scheme_for_tests() {
 runtime_tls::thread_local! {
     static URL_OPENER: std::cell::RefCell<Option<Rc<dyn Fn(&str)>>> =
         const { std::cell::RefCell::new(None) };
-    /// While a test captures external opens ([`capture_url_opens`]): the
-    /// URLs [`open_url`] was asked for, oldest first. `None` when off.
-    static CAPTURED_URLS: std::cell::RefCell<Option<Vec<String>>> =
+    /// [`open_url_in_place`]'s opener, for a backend whose app can be
+    /// replaced by the page in its own window (web). `None` falls back to
+    /// [`URL_OPENER`].
+    static URL_IN_PLACE_OPENER: std::cell::RefCell<Option<Rc<dyn Fn(&str)>>> =
         const { std::cell::RefCell::new(None) };
+    /// While a test captures external opens ([`capture_url_opens`]): each
+    /// URL [`open_url`] / [`open_url_in_place`] was asked for, oldest
+    /// first, with `true` for an in-place open. `None` when off.
+    static CAPTURED_URLS: std::cell::RefCell<Option<Vec<(String, bool)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record `url` when a test captures external opens; `true` when it did.
+fn capture(url: &str, in_place: bool) -> bool {
+    CAPTURED_URLS.with(|c| match c.borrow_mut().as_mut() {
+        Some(urls) => {
+            urls.push((url.to_string(), in_place));
+            true
+        }
+        None => false,
+    })
 }
 
 /// Open `url` in the host platform's external handler — a new browser
@@ -382,16 +399,13 @@ runtime_tls::thread_local! {
 /// While a test captures external opens ([`capture_url_opens`]) the
 /// URL is recorded instead and the app stays in front.
 ///
+/// To leave the app *in its own tab* instead — a hosted checkout or
+/// sign-in page that sends the person back to the app's URL when it is
+/// done — use [`open_url_in_place`].
+///
 /// [`Link`]: crate::primitives::link
 pub fn open_url(url: &str) {
-    let captured = CAPTURED_URLS.with(|c| match c.borrow_mut().as_mut() {
-        Some(urls) => {
-            urls.push(url.to_string());
-            true
-        }
-        None => false,
-    });
-    if captured {
+    if capture(url, false) {
         return;
     }
     // Clone the Rc out before invoking so the opener can re-enter
@@ -419,8 +433,60 @@ pub fn install_url_opener(opener: Option<Rc<dyn Fn(&str)>>) {
     URL_OPENER.with(|cell| *cell.borrow_mut() = opener);
 }
 
-/// Record [`open_url`]'s URLs instead of opening them (`true`), or open
-/// them again (`false`). The robot's `urls.capture`, which the test
+/// Open `url` in place of the app: on web the app's own tab navigates to
+/// it (`location.assign`), so the page it opens — a hosted checkout, a
+/// billing portal, an OAuth sign-in — can send the person back to the
+/// app's URL in the same tab, instead of leaving them with two copies of
+/// the app. The app unloads; whatever it needs afterwards comes back from
+/// the return URL and its own storage.
+///
+/// On every native backend this is exactly [`open_url`]: the system
+/// browser or handler opens the URL and the app stays alive behind it.
+/// There is no tab to replace there, and a hosted page's return URL
+/// reaches a native app through its own deep link.
+///
+/// Routes to the in-place opener the backend installed at boot (see
+/// [`install_url_in_place_opener`]); a backend that installed none uses
+/// its [`open_url`] opener. Before boot, or on a backend with neither
+/// (terminal, CPU, runtime-server), it is the same logged no-op as
+/// [`open_url`].
+///
+/// While a test captures external opens ([`capture_url_opens`]) the URL
+/// is recorded instead, in [`captured_url_opens`] alongside the
+/// `open_url` ones and in [`captured_url_opens_in_place`] on its own.
+pub fn open_url_in_place(url: &str) {
+    if capture(url, true) {
+        return;
+    }
+    // Clone out before invoking, as in `open_url`.
+    let opener = URL_IN_PLACE_OPENER
+        .with(|cell| cell.borrow().clone())
+        .or_else(|| URL_OPENER.with(|cell| cell.borrow().clone()));
+    match opener {
+        Some(open) => open(url),
+        None => crate::logging::log(
+            crate::logging::LogLevel::Debug,
+            "open_url_in_place: no URL opener installed for the active backend; \
+             ignoring external navigation",
+        ),
+    }
+}
+
+/// Install the closure [`open_url_in_place`] routes to, or `None` for a
+/// backend where leaving in place is the same as [`open_url`] (every
+/// native backend) — `open_url_in_place` then uses the
+/// [`install_url_opener`] one.
+///
+/// Part of the **backend-author surface** — see [`crate::backend`].
+/// Normally reached through
+/// `runtime_vocabulary::backend::install_env_services`, which reads
+/// `AppEnvOps::url_in_place_opener` off the backend.
+pub fn install_url_in_place_opener(opener: Option<Rc<dyn Fn(&str)>>) {
+    URL_IN_PLACE_OPENER.with(|cell| *cell.borrow_mut() = opener);
+}
+
+/// Record [`open_url`]'s and [`open_url_in_place`]'s URLs instead of
+/// opening them (`true`), or open them again (`false`). The robot's `urls.capture`, which the test
 /// harness turns on: a phone app that opens a URL goes to the background
 /// and the OS suspends it, which would end the run; a browser tab would
 /// keep running. Capturing makes every backend stay in front. Turning it
@@ -436,10 +502,19 @@ pub fn capture_url_opens(on: bool) {
     });
 }
 
-/// The URLs [`open_url`] recorded while capturing, oldest first; empty
-/// when not capturing.
+/// The URLs [`open_url`] and [`open_url_in_place`] recorded while
+/// capturing, oldest first; empty when not capturing.
 pub fn captured_url_opens() -> Vec<String> {
-    CAPTURED_URLS.with(|c| c.borrow().clone().unwrap_or_default())
+    CAPTURED_URLS.with(|c| c.borrow().iter().flatten().map(|(url, _)| url.clone()).collect())
+}
+
+/// The URLs [`open_url_in_place`] recorded while capturing, oldest first
+/// — the subset of [`captured_url_opens`] a test checks to tell a
+/// same-tab hand-off (a hosted checkout) from a new tab.
+pub fn captured_url_opens_in_place() -> Vec<String> {
+    CAPTURED_URLS.with(|c| {
+        c.borrow().iter().flatten().filter(|(_, in_place)| *in_place).map(|(url, _)| url.clone()).collect()
+    })
 }
 
 /// Forget the recorded URLs; capturing stays as it was.
@@ -778,6 +853,73 @@ mod tests {
 
         // Restore default so other tests on this thread aren't
         // surprised by a leftover opener.
+        install_url_opener(None);
+    }
+
+    /// LumiTask's hosted checkout must leave the app in its own tab: the
+    /// in-place opener gets the URL, the new-tab opener does not.
+    #[test]
+    fn open_url_in_place_dispatches_to_the_in_place_opener() {
+        let tab: Rc<RefCell<Vec<String>>> = Rc::default();
+        let in_place: Rc<RefCell<Vec<String>>> = Rc::default();
+        let (t, p) = (tab.clone(), in_place.clone());
+        install_url_opener(Some(Rc::new(move |u: &str| t.borrow_mut().push(u.to_string()))));
+        install_url_in_place_opener(Some(Rc::new(move |u: &str| p.borrow_mut().push(u.to_string()))));
+
+        open_url_in_place("https://checkout.example/c/1");
+        open_url("https://example.com/help");
+
+        assert_eq!(*in_place.borrow(), vec!["https://checkout.example/c/1".to_string()]);
+        assert_eq!(*tab.borrow(), vec!["https://example.com/help".to_string()]);
+        install_url_in_place_opener(None);
+        install_url_opener(None);
+    }
+
+    /// A native backend installs no in-place opener: `open_url_in_place`
+    /// is then exactly `open_url`.
+    #[test]
+    fn open_url_in_place_without_an_in_place_opener_uses_the_url_opener() {
+        install_url_in_place_opener(None);
+        let seen: Rc<RefCell<Vec<String>>> = Rc::default();
+        let sink = seen.clone();
+        install_url_opener(Some(Rc::new(move |u: &str| sink.borrow_mut().push(u.to_string()))));
+        open_url_in_place("https://checkout.example/c/2");
+        assert_eq!(*seen.borrow(), vec!["https://checkout.example/c/2".to_string()]);
+        install_url_opener(None);
+    }
+
+    /// Before boot / on a backend with no opener at all it is a no-op.
+    #[test]
+    fn open_url_in_place_without_any_opener_is_noop() {
+        install_url_in_place_opener(None);
+        install_url_opener(None);
+        open_url_in_place("https://example.com");
+    }
+
+    /// A captured in-place open reaches no opener, shows up in the full
+    /// record in order, and on its own in the in-place record.
+    #[test]
+    fn a_captured_open_url_in_place_is_recorded_as_in_place() {
+        let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+        let (a, b) = (opened.clone(), opened.clone());
+        install_url_opener(Some(Rc::new(move |u: &str| a.borrow_mut().push(u.to_string()))));
+        install_url_in_place_opener(Some(Rc::new(move |u: &str| b.borrow_mut().push(u.to_string()))));
+        capture_url_opens(true);
+        clear_captured_url_opens();
+
+        open_url("https://example.com/help");
+        open_url_in_place("https://checkout.example/c/3");
+
+        assert!(opened.borrow().is_empty(), "a captured URL must not leave the app");
+        assert_eq!(
+            captured_url_opens(),
+            vec!["https://example.com/help".to_string(), "https://checkout.example/c/3".to_string()]
+        );
+        assert_eq!(captured_url_opens_in_place(), vec!["https://checkout.example/c/3".to_string()]);
+
+        capture_url_opens(false);
+        assert!(captured_url_opens_in_place().is_empty());
+        install_url_in_place_opener(None);
         install_url_opener(None);
     }
 

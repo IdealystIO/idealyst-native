@@ -244,3 +244,55 @@ fn defaulted_capabilities_degrade_individually() {
     runtime_shared::set_fullscreen(true);
     runtime_shared::announce("x", backend::LiveRegionPriority::Polite);
 }
+
+/// `open_url_in_place()` rides the same seam: a backend that declares
+/// `AppEnvOps::url_in_place_opener` (web) gets the in-place call there,
+/// and one that leaves it at the default (every native backend) gets it
+/// through its `url_opener`, exactly like `open_url()`.
+#[test]
+fn open_url_in_place_routes_to_the_in_place_opener_or_the_url_opener() {
+    // Defaulted in-place opener: falls back to `url_opener`.
+    let backend = Rc::new(RefCell::new(EnvBackend::default()));
+    let opened = backend.borrow().opened.clone();
+    runtime_vocabulary::backend::install_env_services(&backend);
+    runtime_shared::open_url_in_place("https://checkout.example/native");
+    assert_eq!(opened.borrow().as_slice(), ["https://checkout.example/native"]);
+
+    // Declared in-place opener: `open_url_in_place` goes there,
+    // `open_url` still goes to the new-tab opener.
+    #[derive(Default)]
+    struct InPlace {
+        tab: Rc<RefCell<Vec<String>>>,
+        replaced: Rc<RefCell<Vec<String>>>,
+    }
+    impl Host for InPlace {
+        type Node = ();
+        fn insert(&mut self, _parent: &mut (), _child: ()) {}
+        fn insert_at(&mut self, _parent: &mut (), _child: (), _index: usize) {}
+        fn remove_child(&mut self, _parent: &(), _child: &()) {}
+        fn clear_children(&mut self, _node: &()) {}
+        fn create_anchor(&mut self) {}
+        fn supports_splice(&self) -> bool {
+            false
+        }
+    }
+    impl caps::AppEnvOps for InPlace {
+        fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
+            let sink = self.tab.clone();
+            Some(Rc::new(move |url: &str| sink.borrow_mut().push(url.to_string())))
+        }
+        fn url_in_place_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
+            let sink = self.replaced.clone();
+            Some(Rc::new(move |url: &str| sink.borrow_mut().push(url.to_string())))
+        }
+    }
+    impl caps::A11yOps for InPlace {}
+
+    let web = Rc::new(RefCell::new(InPlace::default()));
+    let (tab, replaced) = (web.borrow().tab.clone(), web.borrow().replaced.clone());
+    runtime_vocabulary::backend::install_env_services(&web);
+    runtime_shared::open_url_in_place("https://checkout.example/web");
+    runtime_shared::open_url("https://example.com/help");
+    assert_eq!(replaced.borrow().as_slice(), ["https://checkout.example/web"]);
+    assert_eq!(tab.borrow().as_slice(), ["https://example.com/help"]);
+}

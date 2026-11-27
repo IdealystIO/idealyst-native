@@ -130,7 +130,7 @@ fn list_functions_reports_docs_and_signatures() {
     // there; the app's own follow, sorted by name.
     let all: Vec<&Value> = list.as_array().unwrap().iter().collect();
     let names: Vec<&str> = all.iter().map(|f| f["name"].as_str().unwrap()).collect();
-    for builtin in ["clock.set", "clock.clear", "net.intercept", "net.release", "urls.capture", "urls.opened"] {
+    for builtin in ["clock.set", "clock.clear", "net.intercept", "net.release", "urls.capture", "urls.opened", "urls.opened_in_place"] {
         assert!(names.contains(&builtin), "{builtin}: {names:?}");
     }
     let robot_own = |n: &str| ["clock.", "net.", "urls."].iter().any(|p| n.starts_with(p));

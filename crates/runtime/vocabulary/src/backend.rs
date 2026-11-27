@@ -73,8 +73,9 @@ pub use runtime_shared;
 /// Wire the booting backend's environment capabilities into the ambient
 /// thread-locals that author code reads.
 ///
-/// Five author-facing free functions — `platform()`, `color_scheme()`,
-/// `open_url()`, `set_fullscreen()`, `announce()` — plus the app-level
+/// The author-facing free functions `platform()`, `color_scheme()`,
+/// `open_url()`, `open_url_in_place()`, `set_fullscreen()` and
+/// `announce()` — plus the app-level
 /// keyboard listeners (`on_key`, `key_state`), pointer listeners and
 /// system-Back handlers (`on_back`) are usable from any
 /// component body, effect, or event handler without a backend reference.
@@ -92,14 +93,15 @@ pub use runtime_shared;
 ///
 /// ## Why it is unconditional
 ///
-/// This anchors the backend's `url_opener` / `fullscreen_setter` closures
+/// This anchors the backend's `url_opener` / `url_in_place_opener` /
+/// `fullscreen_setter` closures
 /// and the AX announce path in every bundle, including one that never
 /// calls them — the linker cannot prove an author never reaches
 /// `open_url()`, because the install is what makes it reachable.
 ///
 /// It is deliberately NOT routed through a `BuiltinSet` gate the way
 /// `nav_services` is. A `BuiltinSet` selects *primitive families*, and
-/// these five reads are not tied to a primitive: `open_url()` is callable
+/// these reads are not tied to a primitive: `open_url()` is callable
 /// from an app whose whole vocabulary is `view` + `text`. Gating them
 /// would re-introduce exactly the silent no-op this seam exists to fix,
 /// for the apps least likely to notice.
@@ -112,7 +114,8 @@ pub use runtime_shared;
 ///
 /// ## Why the announcer is different
 ///
-/// `url_opener` / `fullscreen_setter` hand back self-contained closures —
+/// `url_opener` / `url_in_place_opener` / `fullscreen_setter` hand back
+/// self-contained closures —
 /// opening a URL is a stateless platform call on every backend, so the
 /// closure captures platform handles, never the view tree.
 /// `A11yOps::announce_for_accessibility` takes `&mut self`, so the
@@ -130,6 +133,7 @@ where
         runtime_shared::host::install_current_platform(caps::AppEnvOps::platform(&*b));
         runtime_shared::host::install_current_color_scheme(caps::AppEnvOps::color_scheme(&*b));
         runtime_shared::host::install_url_opener(caps::AppEnvOps::url_opener(&*b));
+        runtime_shared::host::install_url_in_place_opener(caps::AppEnvOps::url_in_place_opener(&*b));
         runtime_shared::host::install_fullscreen_setter(caps::AppEnvOps::fullscreen_setter(&*b));
     }
 

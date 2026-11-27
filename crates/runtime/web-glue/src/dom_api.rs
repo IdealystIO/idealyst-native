@@ -47,6 +47,9 @@ crate::import! {
     fn js_window_open(w: u32, up: usize, ul: usize, tp: usize, tl: usize, fp: usize, fl: usize) -> u32 =
         "(w, up, ul, tp, tl, fp, fl) => G.add(G.get(w).open(G.str(up, ul), G.str(tp, tl), G.str(fp, fl)))";
     #[catch]
+    fn js_location_assign(lo: u32, up: usize, ul: usize) =
+        "(lo, up, ul) => { G.get(lo).assign(G.str(up, ul)); }";
+    #[catch]
     fn js_history_state(hi: u32, st: u32, up: usize, ul: usize, replace: u32) =
         "(h, s, up, ul, r) => { const x = G.get(h); \
            if (r) x.replaceState(G.get(s), '', G.str(up, ul)); else x.pushState(G.get(s), '', G.str(up, ul)); }";
@@ -988,6 +991,12 @@ impl Location {
     }
     pub fn reload(&self) -> Result<(), JsError> {
         call0!(self, "reload").map(drop)
+    }
+    /// `location.assign(url)`: navigate this browsing context to `url`,
+    /// adding a history entry (Back returns to the current page).
+    pub fn assign(&self, url: &str) -> Result<(), JsError> {
+        let (p, l) = string::abi(url);
+        unsafe { js_location_assign(h(self), p, l) }
     }
 }
 

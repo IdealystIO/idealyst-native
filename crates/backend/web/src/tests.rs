@@ -5025,6 +5025,35 @@ fn open_url_opens_a_new_tab_without_an_opener() {
     assert_eq!(arg(2), "noopener", "the opened page must not get window.opener");
 }
 
+/// LumiTask's hosted checkout opened in a NEW tab (`open_url` is the only
+/// opener), so the buyer came back from Stripe to a second copy of the
+/// app. `open_url_in_place` navigates the app's own tab with
+/// `location.assign`.
+///
+/// Driven against an iframe's window: `Location`'s members are
+/// unforgeable, so the test page can neither stub its own
+/// `location.assign` nor call it without navigating the runner away. A
+/// same-document (fragment) navigation of the iframe lands synchronously,
+/// so its `location.hash` proves the call navigated that context in place.
+#[wasm_bindgen_test]
+fn open_url_in_place_navigates_this_tab() {
+    install_mount();
+    let backend = WebBackend::new("#app");
+    assert!(backend.url_in_place_opener_impl().is_some(), "web leaves the app in place");
+
+    let doc = web_glue::dom::window().unwrap().document().unwrap();
+    let frame: web_glue::dom::HtmlIFrameElement =
+        doc.create_element("iframe").unwrap().dyn_into().expect("an iframe");
+    doc.body().unwrap().append_child(&frame).unwrap();
+    let frame_win = frame.content_window().expect("an attached iframe has a window");
+    assert_eq!(frame_win.location().hash().unwrap(), "");
+
+    crate::assign_location(&frame_win, "about:blank#checkout");
+
+    assert_eq!(frame_win.location().hash().unwrap(), "#checkout", "the context itself navigated");
+    frame.remove();
+}
+
 // ---- static constructors vs web-glue dispatch ------------------------------
 
 static CTOR_RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

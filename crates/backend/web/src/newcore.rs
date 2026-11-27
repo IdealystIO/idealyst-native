@@ -894,6 +894,10 @@ impl caps::AppEnvOps for WebBackend {
         WebBackend::url_opener_impl(self)
     }
 
+    fn url_in_place_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
+        WebBackend::url_in_place_opener_impl(self)
+    }
+
     fn fullscreen_setter(&self) -> Option<Rc<dyn Fn(bool)>> {
         WebBackend::fullscreen_setter_impl(self)
     }

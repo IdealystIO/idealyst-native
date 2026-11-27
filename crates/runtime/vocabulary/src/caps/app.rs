@@ -8,7 +8,7 @@ use runtime_scene::Host;
 
 /// Mount-time app environment: platform identity, appearance, the
 /// self-contained closures `mount(...)` stashes in thread-locals
-/// (`open_url` / `set_fullscreen`), and app-level chrome (page metadata,
+/// (`open_url` / `open_url_in_place` / `set_fullscreen`), and app-level chrome (page metadata,
 /// host-surface background, scrollbar theme, app keyboard sink).
 ///
 /// `set_app_background` / `set_scrollbar_theme` / `set_page_metadata` are
@@ -33,6 +33,14 @@ pub trait AppEnvOps: Host {
     /// Self-contained external-URL opener, or `None` when the backend
     /// has no external-open capability.
     fn url_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
+        None
+    }
+
+    /// Self-contained opener for `open_url_in_place`: replace the app with
+    /// the URL in its own window (web: `location.assign`). `None` — every
+    /// backend with no tab to replace — makes `open_url_in_place` use
+    /// [`url_opener`](Self::url_opener).
+    fn url_in_place_opener(&self) -> Option<Rc<dyn Fn(&str)>> {
         None
     }
 
