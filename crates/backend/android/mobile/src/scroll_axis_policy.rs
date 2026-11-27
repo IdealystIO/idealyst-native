@@ -340,4 +340,27 @@ mod tests {
         }
         assert_eq!(scroller_class(ScrollAxis::Both), TWO_AXIS_SCROLLER_CLASS);
     }
+
+    /// `View.canScrollVertically` answers from `computeVerticalScroll*`,
+    /// whose `View` defaults make range == extent: a view that scrolls
+    /// itself with `scrollTo` reports "cannot scroll" at every offset
+    /// unless it overrides them. `RustVirtualGrid` did not, so androidx
+    /// `SwipeRefreshLayout` (the `pull-refresh` SDK) read a scrolled grid
+    /// as "at its top" and turned every downward drag into a refresh. The
+    /// answer is only observable on a live `View`, which host tests cannot
+    /// build, so this pins the overrides in the source the APK compiles.
+    #[test]
+    fn regression_virtual_grid_reports_its_scroll_range_to_can_scroll() {
+        let kt = include_str!("../runtime/kotlin/io/idealyst/runtime/RustVirtualGrid.kt");
+        for decl in [
+            "override fun computeVerticalScrollRange(): Int = contentHeight.coerceAtLeast(height)",
+            "override fun computeVerticalScrollExtent(): Int = height",
+            "override fun computeVerticalScrollOffset(): Int = scrollY",
+            "override fun computeHorizontalScrollRange(): Int = contentWidth.coerceAtLeast(width)",
+            "override fun computeHorizontalScrollExtent(): Int = width",
+            "override fun computeHorizontalScrollOffset(): Int = scrollX",
+        ] {
+            assert!(kt.contains(decl), "RustVirtualGrid.kt lost `{decl}`");
+        }
+    }
 }

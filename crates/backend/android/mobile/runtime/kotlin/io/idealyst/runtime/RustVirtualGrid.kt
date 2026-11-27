@@ -139,6 +139,19 @@ class RustVirtualGrid(context: Context, private val nativePtr: Long) : ViewGroup
     private fun maxScrollX() = (contentWidth - width).coerceAtLeast(0)
     private fun maxScrollY() = (contentHeight - height).coerceAtLeast(0)
 
+    // `View.canScrollHorizontally/Vertically` and the scrollbars read
+    // these. `View`'s defaults report a range equal to the extent (the
+    // view's own size), so without them the grid answered "cannot
+    // scroll" at every offset — and a parent that asks before taking a
+    // gesture (androidx `SwipeRefreshLayout`'s `canChildScrollUp`) took
+    // every downward drag of a scrolled grid as a pull-to-refresh.
+    override fun computeHorizontalScrollRange(): Int = contentWidth.coerceAtLeast(width)
+    override fun computeHorizontalScrollExtent(): Int = width
+    override fun computeHorizontalScrollOffset(): Int = scrollX
+    override fun computeVerticalScrollRange(): Int = contentHeight.coerceAtLeast(height)
+    override fun computeVerticalScrollExtent(): Int = height
+    override fun computeVerticalScrollOffset(): Int = scrollY
+
     private fun clampScroll() {
         val x = scrollX.coerceIn(0, maxScrollX())
         val y = scrollY.coerceIn(0, maxScrollY())
