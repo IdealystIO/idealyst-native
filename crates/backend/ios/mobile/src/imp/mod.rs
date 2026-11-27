@@ -4121,7 +4121,9 @@ impl IosBackend {
             &next_layout_key,
         );
         if layout_changed {
-            if node.as_display_text().is_some() {
+            // A text area takes its padding as its text inset too (see
+            // `IdealystTextView`), which its measure already counts.
+            if node.as_display_text().is_some() || matches!(node, IosNode::TextView(_)) {
                 let mut text_style: StyleRules = (**style).clone();
                 text_style.padding_left = None;
                 text_style.padding_right = None;

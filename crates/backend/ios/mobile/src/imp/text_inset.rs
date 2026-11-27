@@ -418,10 +418,19 @@ pub(crate) fn set_text_field_focus_handler(view: &UIView, handler: Rc<dyn Fn(boo
 }
 
 declare_class!(
-    /// The `text_area` view: a stock `UITextView` plus `didMoveToWindow` —
-    /// the attach hook of the attach-safe `focus()` (`pending_focus`) — the
+    /// The `text_area` view: a `UITextView` plus `didMoveToWindow` — the
+    /// attach hook of the attach-safe `focus()` (`pending_focus`) — the
     /// hardware-Escape key command, and the overlay-responder reclaim on
     /// resign, all as `IdealystTextField` has.
+    ///
+    /// Its text lays out as a label's does: on TextKit 1, with no
+    /// line-fragment padding, and the author's padding as its
+    /// `textContainerInset` (`setTextInsets:`, fed by
+    /// `apply_text_insets_if_label` as for the other text views) in place
+    /// of UIKit's default 8 pt top and bottom. Stock, its glyphs sat 5 pt
+    /// in from where its padding says, under no padding at all: a
+    /// `code_editor`, which draws its text in a label and edits it in a
+    /// transparent text area laid over it, showed its caret off the text.
     pub(crate) struct IdealystTextView;
 
     unsafe impl ClassType for IdealystTextView {
@@ -435,6 +444,20 @@ declare_class!(
     }
 
     unsafe impl IdealystTextView {
+        /// The author's padding, as the text container's inset.
+        #[method(setTextInsets:)]
+        fn set_text_insets(&self, insets: TextInsets) {
+            let current: TextInsets = unsafe { msg_send![self, textContainerInset] };
+            let same = (current.top - insets.top).abs() < 0.001
+                && (current.left - insets.left).abs() < 0.001
+                && (current.bottom - insets.bottom).abs() < 0.001
+                && (current.right - insets.right).abs() < 0.001;
+            if !same {
+                let _: () = unsafe { msg_send![self, setTextContainerInset: insets] };
+                let _: () = unsafe { msg_send![self, setNeedsLayout] };
+            }
+        }
+
         /// Seat the placeholder label over the first line, in the view's
         /// own font, shown only while the view is empty.
         #[method(layoutSubviews)]
@@ -493,7 +516,20 @@ impl IdealystTextView {
     pub(crate) fn new(mtm: MainThreadMarker) -> Retained<UITextView> {
         let this = mtm.alloc::<Self>().set_ivars(TextViewIvars { placeholder: RefCell::new(None) });
         let this: Retained<Self> = unsafe { msg_send_id![super(this), init] };
-        Retained::into_super(this)
+        let view: Retained<UITextView> = Retained::into_super(this);
+        unsafe {
+            // Reading `layoutManager` puts the view on TextKit 1, the layout
+            // a `UILabel` draws with (as `IdealystSelectableText`).
+            let _: *mut NSObject = msg_send![&view, layoutManager];
+            // No inset but the author's padding (`setTextInsets:`), and no
+            // line-fragment padding: the text starts where the padding says.
+            let _: () = msg_send![&view, setTextContainerInset: TextInsets::default()];
+            let container: *mut NSObject = msg_send![&view, textContainer];
+            if !container.is_null() {
+                let _: () = msg_send![container, setLineFragmentPadding: 0.0 as CGFloat];
+            }
+        }
+        view
     }
 
     /// The placeholder label, made on first use: no taps (they reach the
