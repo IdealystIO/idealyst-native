@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "9.4.0"
+version = "9.5.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "9.6.1"
+version = "9.6.2"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -7826,7 +7826,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.5.0"
+version = "2.6.0"
 dependencies = [
  "catalog-scan",
  "inventory",
