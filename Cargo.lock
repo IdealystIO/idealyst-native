@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "backend-android-mobile"
-version = "9.3.3"
+version = "9.4.0"
 dependencies = [
  "android_logger",
  "backend-android-core",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ios-mobile"
-version = "9.5.3"
+version = "9.6.0"
 dependencies = [
  "backend-apple-core",
  "backend-image-source",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "backend-ssr"
-version = "8.0.0"
+version = "8.1.0"
 dependencies = [
  "css",
  "parity-goldens",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "backend-web"
-version = "10.4.1"
+version = "10.5.0"
 dependencies = [
  "css",
  "dev-client",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "build-ios"
-version = "4.2.0"
+version = "4.3.0"
 dependencies = [
  "anyhow",
  "semver",
@@ -2079,7 +2079,7 @@ dependencies = [
 
 [[package]]
 name = "build-web"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "anyhow",
  "brotli 7.0.0",
@@ -3554,7 +3554,7 @@ dependencies = [
 
 [[package]]
 name = "dev-client"
-version = "9.3.0"
+version = "9.4.0"
 dependencies = [
  "host-mock",
  "mock-backend",
@@ -3636,7 +3636,7 @@ dependencies = [
 
 [[package]]
 name = "dev-server"
-version = "11.3.0"
+version = "11.4.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -5916,7 +5916,7 @@ dependencies = [
 
 [[package]]
 name = "host-mock"
-version = "8.3.0"
+version = "8.4.0"
 dependencies = [
  "runtime-scene",
  "runtime-shared",
@@ -6450,7 +6450,7 @@ dependencies = [
 
 [[package]]
 name = "idea-theme"
-version = "14.2.0"
+version = "14.3.0"
 dependencies = [
  "mcp-catalog",
  "runtime-core",
@@ -6471,7 +6471,7 @@ dependencies = [
 
 [[package]]
 name = "idea-ui"
-version = "24.3.1"
+version = "24.4.0"
 dependencies = [
  "backend-ssr",
  "dnd",
@@ -6590,7 +6590,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "backend-web",
  "dev-client",
@@ -6606,7 +6606,7 @@ dependencies = [
 
 [[package]]
 name = "idealyst-cli"
-version = "2.8.0"
+version = "2.9.0"
 dependencies = [
  "anyhow",
  "backend-roku-transpile",
@@ -7826,7 +7826,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-catalog"
-version = "2.4.12"
+version = "2.5.0"
 dependencies = [
  "catalog-scan",
  "inventory",
@@ -10933,7 +10933,7 @@ dependencies = [
 
 [[package]]
 name = "run-android"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "anyhow",
  "build-android",
@@ -10947,7 +10947,7 @@ dependencies = [
 
 [[package]]
 name = "run-ios"
-version = "5.0.0"
+version = "5.1.0"
 dependencies = [
  "anyhow",
  "build-ios",
@@ -11031,7 +11031,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-macros-expand"
-version = "4.6.0"
+version = "4.7.0"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -11075,7 +11075,7 @@ dependencies = [
 
 [[package]]
 name = "runtime-shared"
-version = "6.7.0"
+version = "6.8.0"
 dependencies = [
  "base64",
  "bitflags 2.11.1",
@@ -11111,7 +11111,7 @@ version = "0.1.1"
 
 [[package]]
 name = "runtime-vocabulary"
-version = "9.8.0"
+version = "9.9.0"
 dependencies = [
  "dev-hot",
  "host-mock",
@@ -11754,7 +11754,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "9.0.0"
+version = "9.1.0"
 dependencies = [
  "axum",
  "futures-channel",
@@ -14980,7 +14980,7 @@ dependencies = [
 
 [[package]]
 name = "web-glue"
-version = "2.4.0"
+version = "2.5.0"
 dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-test",
@@ -15930,7 +15930,7 @@ dependencies = [
 
 [[package]]
 name = "wire"
-version = "5.5.0"
+version = "5.6.0"
 dependencies = [
  "dev-client",
  "dev-server",
