@@ -13,9 +13,16 @@
 //! the default sound unless [`Sound::Silent`], `interruptionLevel` (iOS 15
 //! / macOS 12, from [`Priority`]), an image attachment, and the category
 //! that carries the actions — run the app's [`Notification::apple`] hook on
-//! it, and add a `UNNotificationRequest` keyed by the resolved id. Immediate
+//! it, and add a `UNNotificationRequest` keyed by the resolved id (a
+//! request under a delivered id replaces it, and alerts again). Immediate
 //! posts use a `nil` trigger; delayed posts a
 //! `UNTimeIntervalNotificationTrigger`.
+//!
+//! [`Notification::alert_once`] has no direct counterpart: when
+//! `getDeliveredNotificationsWithCompletionHandler:` lists the id, the
+//! replacement goes out without a sound at the passive interruption level
+//! (added to the list without lighting the screen), and `willPresent`
+//! shows it in the list only.
 //!
 //! ## Actions are categories
 //!
@@ -90,6 +97,12 @@ const ACTION_FOREGROUND: usize = 1 << 2;
 const CATEGORY_CUSTOM_DISMISS: usize = 1 << 0;
 // UNNotificationPresentationOptions: badge | sound | list | banner.
 const PRESENT_IN_FOREGROUND: usize = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4);
+// UNNotificationPresentationOptions: list only — a quiet replacement.
+const PRESENT_QUIETLY: usize = 1 << 3;
+/// The `userInfo` key marking a quiet [`Notification::alert_once`]
+/// replacement, so `willPresent` holds back the banner and sound. Reserved
+/// (`idealyst.`), so responses never report it.
+const QUIET_KEY: &str = "idealyst.quiet";
 // UNNotificationInterruptionLevel.
 const LEVEL_PASSIVE: usize = 0;
 const LEVEL_ACTIVE: usize = 1;
@@ -124,8 +137,11 @@ declare_class!(
 
     unsafe impl CenterDelegate {
         #[method(userNotificationCenter:willPresentNotification:withCompletionHandler:)]
-        fn will_present(&self, _center: *mut AnyObject, _notification: *mut AnyObject, handler: &Block<dyn Fn(usize)>) {
-            guard_callback("willPresentNotification", || handler.call((PRESENT_IN_FOREGROUND,)));
+        fn will_present(&self, _center: *mut AnyObject, notification: *mut AnyObject, handler: &Block<dyn Fn(usize)>) {
+            guard_callback("willPresentNotification", || {
+                let options = if unsafe { is_quiet(notification) } { PRESENT_QUIETLY } else { PRESENT_IN_FOREGROUND };
+                handler.call((options,))
+            });
         }
 
         #[method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:)]
@@ -242,15 +258,52 @@ unsafe fn center() -> *mut AnyObject {
     msg_send![class!(UNUserNotificationCenter), currentNotificationCenter]
 }
 
+/// Whether `notification` (a `UNNotification`) is a quiet replacement.
+unsafe fn is_quiet(notification: *mut AnyObject) -> bool {
+    if notification.is_null() {
+        return false;
+    }
+    let request: *mut AnyObject = msg_send![notification, request];
+    let content: *mut AnyObject = msg_send![request, content];
+    let info: *mut AnyObject = msg_send![content, userInfo];
+    if info.is_null() {
+        return false;
+    }
+    let value: *mut AnyObject = msg_send![info, objectForKey: &*NSString::from_str(QUIET_KEY)];
+    !value.is_null()
+}
+
+/// Whether a notification posted under `id` is still delivered (on screen
+/// or in Notification Center).
+async unsafe fn is_delivered(id: &NotificationId) -> bool {
+    let want = id.as_str().to_string();
+    let (tx, rx) = async_channel::bounded::<bool>(1);
+    let done = RcBlock::new(move |list: *mut AnyObject| {
+        let found = unsafe {
+            let count: usize = if list.is_null() { 0 } else { msg_send![list, count] };
+            (0..count).any(|i| {
+                let n: *mut AnyObject = msg_send![list, objectAtIndex: i];
+                let request: *mut AnyObject = msg_send![n, request];
+                ns_to_string(msg_send![request, identifier]).as_deref() == Some(want.as_str())
+            })
+        };
+        let _ = tx.try_send(found);
+    });
+    let _: () = msg_send![center(), getDeliveredNotificationsWithCompletionHandler: &*done];
+    rx.recv().await.unwrap_or(false)
+}
+
 /// Build the `UNMutableNotificationContent` for `n`, owned by the caller.
-unsafe fn make_content(n: &Notification, category: &str) -> Result<Retained<AnyObject>, NotifyError> {
+/// `quiet`: an [`Notification::alert_once`] replacement — no sound, the
+/// passive level, and marked for `willPresent`.
+unsafe fn make_content(n: &Notification, category: &str, quiet: bool) -> Result<Retained<AnyObject>, NotifyError> {
     let content: Retained<AnyObject> = msg_send_id![class!(UNMutableNotificationContent), new];
     let _: () = msg_send![&*content, setTitle: &*NSString::from_str(&n.title)];
     let _: () = msg_send![&*content, setBody: &*NSString::from_str(&n.body)];
     if let Some(sub) = &n.subtitle {
         let _: () = msg_send![&*content, setSubtitle: &*NSString::from_str(sub)];
     }
-    if !n.data.is_empty() {
+    if !n.data.is_empty() || quiet {
         // NSMutableDictionary<NSString*, NSString*> by raw messaging — the
         // typed `NSDictionary` helpers require `NSString: IsRetainable`,
         // which this objc2-foundation version doesn't provide.
@@ -260,18 +313,23 @@ unsafe fn make_content(n: &Notification, category: &str) -> Result<Retained<AnyO
             let val = NSString::from_str(v);
             let _: () = msg_send![dict, setObject: &*val, forKey: &*key];
         }
+        if quiet {
+            let one = NSString::from_str("1");
+            let _: () = msg_send![dict, setObject: &*one, forKey: &*NSString::from_str(QUIET_KEY)];
+        }
         let _: () = msg_send![&*content, setUserInfo: dict];
     }
     if let Some(group) = &n.group {
         let _: () = msg_send![&*content, setThreadIdentifier: &*NSString::from_str(group)];
     }
-    if n.sound == Sound::Default {
+    if n.sound == Sound::Default && !quiet {
         let sound: *mut AnyObject = msg_send![class!(UNNotificationSound), defaultSound];
         let _: () = msg_send![&*content, setSound: sound];
     }
     let responds: Bool = msg_send![&*content, respondsToSelector: sel!(setInterruptionLevel:)];
     if responds.as_bool() {
         let level = match n.priority {
+            _ if quiet => LEVEL_PASSIVE,
             Priority::Low => LEVEL_PASSIVE,
             Priority::Default | Priority::High => LEVEL_ACTIVE,
             Priority::Urgent => LEVEL_TIME_SENSITIVE,
@@ -345,7 +403,8 @@ pub(super) async fn notify(n: Notification) -> Result<NotificationId, NotifyErro
     let id = resolve_id(&n);
     let category = ensure_category(&n.actions).await;
     unsafe {
-        let content = make_content(&n, &category)?;
+        let quiet = n.alert_once && is_delivered(&id).await;
+        let content = make_content(&n, &category, quiet)?;
         // nil trigger = deliver immediately.
         add_request(&id, &content, std::ptr::null_mut()).await?;
     }
@@ -360,7 +419,8 @@ pub(super) async fn schedule(n: Notification, after: std::time::Duration) -> Res
     // interval; clamp a zero/sub-millisecond delay up so the OS accepts it.
     let secs = after.as_secs_f64().max(0.001);
     unsafe {
-        let content = make_content(&n, &category)?;
+        // `alert_once` is decided when posting; a scheduled one always alerts.
+        let content = make_content(&n, &category, false)?;
         let trigger: *mut AnyObject = msg_send![
             class!(UNTimeIntervalNotificationTrigger),
             triggerWithTimeInterval: secs,

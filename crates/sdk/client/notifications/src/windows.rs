@@ -18,7 +18,9 @@
 //!   then the buttons, at most five). The XML goes through the app's
 //!   [`Notification::windows`] hook before the toast is created. The
 //!   [`NotificationId`] is the toast's `Tag` (group `idealyst`), so posting
-//!   again under the same id replaces the toast in place.
+//!   again under the same id replaces the toast in place, popping up
+//!   again — unless it is [`Notification::alert_once`] and the toast is
+//!   still in the notification history, which suppresses the popup.
 //! - [`Priority::Low`] suppresses the popup (the toast goes straight to the
 //!   notification center); `High` / `Urgent` set the toast's `High`
 //!   priority.
@@ -120,10 +122,27 @@ pub(super) async fn notify(n: Notification) -> Result<NotificationId, NotifyErro
         Priority::Default => {}
         Priority::High | Priority::Urgent => toast.SetPriority(ToastNotificationPriority::High).map_err(backend)?,
     }
+    if n.alert_once && in_history(&tag) {
+        // Replaces the toast in the notification center without a popup.
+        toast.SetSuppressPopup(true).map_err(backend)?;
+    }
     listen(&toast, id.clone(), n.data.clone()).map_err(backend)?;
     notifier.Show(&toast).map_err(backend)?;
     LIVE.lock().unwrap_or_else(|e| e.into_inner()).insert(tag, toast);
     Ok(id)
+}
+
+/// Whether a toast tagged `tag` is still shown — on screen or in the
+/// notification center. The history, not [`LIVE`]: a toast whose popup
+/// timed out leaves `LIVE` (its `Dismissed` fires) but stays in the
+/// notification center.
+fn in_history(tag: &str) -> bool {
+    let Ok(history) = ToastNotificationManager::History() else { return false };
+    let Ok(list) = history.GetHistoryWithId(&app_id()) else { return false };
+    list.into_iter().any(|t| {
+        t.Tag().map(|have| have.to_string_lossy() == tag).unwrap_or(false)
+            && t.Group().map(|g| g.to_string_lossy() == GROUP).unwrap_or(false)
+    })
 }
 
 /// Register the toast's `Activated` / `Dismissed` handlers: each reports a

@@ -22,7 +22,9 @@
 //! `schedule` an `AlarmManager` alarm whose intent carries the *built*
 //! notification, so the alarm posts exactly what was built (hooks
 //! included). The int `tag` is a stable hash of the string id, so
-//! re-posting the same id *replaces* the notification.
+//! re-posting the same id *replaces* the notification — alerting again,
+//! unless [`Notification::alert_once`] sets the builder's
+//! `setOnlyAlertOnce`.
 //!
 //! ## Responses
 //!
@@ -222,6 +224,13 @@ fn post(n: Notification, delay_ms: i64) -> Result<NotificationId, NotifyError> {
         .l()
         .map_err(map_jni)?;
 
+    // Android's own "alert once": a re-post under a tag that is still shown
+    // updates it without sound, vibration or heads-up. `schedule` always
+    // alerts (`Notification::alert_once` is decided when posting).
+    if n.alert_once && delay_ms == 0 {
+        env.call_method(&builder, "setOnlyAlertOnce", "(Z)Landroid/app/Notification$Builder;", &[JValue::Bool(1)])
+            .map_err(map_jni)?;
+    }
     if let Some(hook) = &n.hooks.android {
         hook(&mut env, &builder).map_err(map_jni)?;
     }

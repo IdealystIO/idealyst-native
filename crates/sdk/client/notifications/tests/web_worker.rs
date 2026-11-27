@@ -80,7 +80,9 @@ async fn fresh_worker(page_open: bool) {
             scope: "http://127.0.0.1/app/",
             showNotification: async (title, options) => {{
               sw.shown = sw.shown.filter((n) => n.tag !== options.tag);
-              const n = {{ title, ...options, close() {{ n.closed = true; sw.calls.push("close:" + n.tag); }} }};
+              sw.log.push("show:" + options.data.id);
+              const n = {{ title, ...options, close() {{ n.closed = true; sw.calls.push("close:" + n.data.id);
+                sw.log.push("close:" + n.data.id); }} }};
               sw.shown.push(n);
             }},
             getNotifications: async (filter) =>
@@ -98,6 +100,7 @@ async fn fresh_worker(page_open: bool) {
         const sw = globalThis.__sw;
         sw.shown = [];
         sw.calls = [];
+        sw.log = [];
         sw.pageOpen = {page_open};
         const self = new EventTarget();
         self.indexedDB = indexedDB;
@@ -112,8 +115,8 @@ async fn fresh_worker(page_open: bool) {
         new Function("self", globalThis.__prelude)(self);
         new Function("self", globalThis.__handlers)(self);
         // What the browser does when the user acts on a shown notification.
-        sw.user = (type, tag, action) => {{
-          const notification = sw.shown.find((n) => n.tag === tag);
+        sw.user = (type, id, action) => {{
+          const notification = sw.shown.find((n) => n.data.id === id && !n.closed);
           const e = new Event(type);
           Object.defineProperty(e, "notification", {{ value: notification }});
           Object.defineProperty(e, "action", {{ value: action || "" }});
@@ -166,9 +169,10 @@ async fn an_active_worker_shows_it_with_actions_and_data() {
     fresh_worker(true).await;
     notify(chat()).await.unwrap();
     assert_eq!(
-        eval("JSON.stringify((({ close, ...n }) => n)(globalThis.__sw.shown[0]))"),
-        r#"{"title":"Sam","actions":[{"action":"reply","title":"Reply"},{"action":"mute","title":"Mute"}],"body":"Lunch?","data":{"background":["mute"],"id":"chat-sam","idealyst":1,"payload":{"chat":"sam"}},"renotify":true,"tag":"chat-sam"}"#
+        eval("JSON.stringify((({ close, tag, ...n }) => n)(globalThis.__sw.shown[0]))"),
+        r#"{"title":"Sam","actions":[{"action":"reply","title":"Reply"},{"action":"mute","title":"Mute"}],"body":"Lunch?","data":{"background":["mute"],"id":"chat-sam","idealyst":1,"payload":{"chat":"sam"}},"renotify":true}"#
     );
+    assert!(eval("globalThis.__sw.shown[0].tag").starts_with("chat-sam#"));
 }
 
 #[wasm_bindgen_test]
@@ -237,13 +241,15 @@ async fn cancel_closes_the_worker_shown_notification() {
     notify(Notification::new("Other", "x").id("other")).await.unwrap();
     cancel(&NotificationId::from("chat-sam")).await;
     settle().await;
-    assert_eq!(eval("globalThis.__sw.shown.map((n) => n.tag + ':' + !!n.closed).join()"), "chat-sam:true,other:false");
+    assert_eq!(eval("globalThis.__sw.shown.map((n) => n.data.id + ':' + !!n.closed).join()"), "chat-sam:true,other:false");
 }
 
 /// The bug: on macOS a notification whose banner was swiped away stays in
 /// Notification Center, and posting the same id again updated that entry
-/// silently — "Posted as chat-sam", no banner. Each post must close what is
-/// shown under its tag first, so it arrives as a new notification; that
+/// silently — "Posted as chat-sam", no banner — because the browser keys
+/// the entry by tag; and closing the swiped entry just before posting held
+/// back the new banner as well. Each post must arrive under a tag of its
+/// own, and close what was shown for the id only after it is shown; that
 /// close is the code's, so it reports no dismissal.
 #[wasm_bindgen_test]
 async fn regression_a_repost_after_a_swipe_shows_as_a_new_notification() {
@@ -252,8 +258,21 @@ async fn regression_a_repost_after_a_swipe_shows_as_a_new_notification() {
     notify(chat()).await.unwrap();
     // Swiped away: still listed by the registration, not closed.
     notify(Notification::new("Sam", "Still on for lunch?").id("chat-sam")).await.unwrap();
-    assert_eq!(eval("globalThis.__sw.calls.join()"), "close:chat-sam", "the shown one is closed before the new post");
-    assert_eq!(eval("globalThis.__sw.shown.map((n) => n.body).join()"), "Still on for lunch?");
+    assert_eq!(eval("globalThis.__sw.calls.join()"), "close:chat-sam", "the shown one is closed");
+    assert_eq!(eval("globalThis.__sw.shown.map((n) => n.body + ':' + !!n.closed).join()"), "Lunch?:true,Still on for lunch?:false");
+    assert_eq!(eval("globalThis.__sw.shown[0].tag !== globalThis.__sw.shown[1].tag"), "true", "a fresh tag");
+    assert_eq!(eval("globalThis.__sw.log.join()"), "show:chat-sam,show:chat-sam,close:chat-sam", "closed after the post");
     settle().await;
     assert!(seen.borrow().is_empty(), "closing it from code is not a dismissal");
+}
+
+/// `alert_once` through the worker: the post takes the shown one's tag
+/// with `renotify` off, and does not close it first.
+#[wasm_bindgen_test]
+async fn alert_once_replaces_the_worker_shown_one_quietly() {
+    fresh_worker(true).await;
+    notify(Notification::new("Upload", "10%").id("upload").alert_once()).await.unwrap();
+    notify(Notification::new("Upload", "60%").id("upload").alert_once()).await.unwrap();
+    assert_eq!(eval("globalThis.__sw.calls.join()"), "");
+    assert_eq!(eval("globalThis.__sw.shown.map((n) => n.body + ':' + n.renotify).join()"), "60%:false");
 }

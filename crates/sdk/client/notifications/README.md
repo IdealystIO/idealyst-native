@@ -39,7 +39,8 @@ if authorize().await.is_granted() {
 
 - `Notification::new(title, body)` and its setters:
   - `.subtitle(...)`;
-  - `.id(...)`, a stable string for update and cancel;
+  - `.id(...)`, a stable string for update and cancel. Re-posting an id replaces the notification and alerts again, like a new one;
+  - `.alert_once()`, which instead replaces a still-shown notification with that id quietly (no banner, no sound), for progress or a running count. It alerts when none is shown, and applies to `notify` only: a scheduled one always alerts;
   - `.with(k, v)` / `.data(map)`, an opaque payload (keys starting with `idealyst.` are reserved);
   - `.action(Action)`, a button;
   - `.priority(Priority)`, one of `Low`, `Default`, `High`, `Urgent`;
@@ -80,7 +81,8 @@ A field a platform can't show is dropped, never faked.
 | actions | category actions (max 4) | `addAction` (max 3) | toast `<action>` (max 5) | `actions` | through the service worker: buttons on Chrome and Edge (max 2 on Chrome); others show the notification without them. Dropped on the page-level fallback. |
 | reply field | `UNTextInputNotificationAction` | `RemoteInput` | toast `<input>` | KDE `inline-reply` (one) | dropped: the action shows as a plain button, reported without text |
 | priority | interruption level: Low passive, Default/High active, Urgent time-sensitive | one channel per level (Low → low importance, High/Urgent → high importance, heads-up) | Low → no popup, High/Urgent → high priority | `urgency` hint 0/1/2 | Urgent → `requireInteraction` |
-| replace (same id) | alerts again | alerts again | alerts again | alerts again | alerts again: the worker path closes the shown one first (a same-tag update to an entry still in macOS Notification Center would otherwise be silent), and sets `renotify` |
+| replace (same id) | alerts again | alerts again | alerts again | the daemon updates it in place (whether it pops up again is the daemon's) | alerts again: each post gets a fresh tag, and the one shown for the id is closed after it (a same-tag post to an entry still in macOS Notification Center is silent, and closing that entry first holds back the new banner too) |
+| `alert_once()` while one is shown | no sound, passive level, list only in the foreground | `setOnlyAlertOnce` | popup suppressed (the toast is still in the notification history) | `suppress-sound` | reuses the shown one's tag with `renotify: false` |
 | silent | no sound set | the silent channel (normal importance whatever the priority, since sound belongs to the channel) | `<audio silent>` | `suppress-sound` | `silent` |
 | group | `threadIdentifier` | `setGroup` | dropped | dropped | dropped |
 | image | attachment (the OS moves the file into its store) | large icon + big picture | hero image | `image-path` | `image` (URL) |
@@ -124,7 +126,7 @@ let n = n.android(|env, builder| {
 
 | Target | Post / schedule | Push token |
 | --- | --- | --- |
-| web (wasm32) | `registration.showNotification` through the app's service worker, else `new Notification(title, options)`; `cancel` closes both (`getNotifications`, and a page-wide map by tag). `schedule` → `NotSupported`. **Runnable** (browser tests; the worker path also live in Chromium). | `NotSupported` (needs a VAPID key) |
+| web (wasm32) | `registration.showNotification` through the app's service worker, else `new Notification(title, options)`; `cancel` closes both (`getNotifications`, and a page-wide map by id). `schedule` → `NotSupported`. **Runnable** (browser tests; the worker path also live in Chromium). | `NotSupported` (needs a VAPID key) |
 | iOS / macOS / tvOS | `UNUserNotificationCenter`. Categories are registered on demand and awaited before the post (`getNotificationCategories` answers once the set is applied). `schedule` → `UNTimeIntervalNotificationTrigger`. Without an app bundle (a test binary) every call reports `Backend` instead of aborting. **Compile-checked only ⚠️** | `NotSupported` (host seam) |
 | Android | Kotlin shim (`runtime/kotlin/…/RustNotifications.kt`) + manifest fragment, both picked up by the run tool. `schedule` → `AlarmManager`; the alarm carries the built notification. It is exact with `SCHEDULE_EXACT_ALARM`, inexact otherwise, and lost on reboot. **Compile-checked only ⚠️** (Rust and Kotlin) | `NotSupported` (needs Firebase) |
 | Linux (desktop) | `org.freedesktop.Notifications` over the session D-Bus (`zbus`); re-posting an id replaces via `replaces_id`. `schedule` → `NotSupported`. | `NotSupported` |

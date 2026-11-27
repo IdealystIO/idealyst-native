@@ -213,6 +213,13 @@ pub fn NotificationsPanel() -> Element {
     fn silent() -> Notification {
         Notification::new("Synced", "No sound for this one").id("silent").sound(Sound::Silent)
     }
+    /// Each press advances the count; while the last one is still shown it
+    /// is updated quietly.
+    fn progress() -> Notification {
+        static STEP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let step = STEP.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        Notification::new("Uploading", format!("Step {step}")).id("progress").alert_once()
+    }
     let cancel_all = Rc::new(move || {
         spawn_detached(async move {
             notifications::cancel_all().await;
@@ -226,6 +233,7 @@ pub fn NotificationsPanel() -> Element {
                 Button(label = "Chat + reply".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, chat, None))
                 Button(label = "Urgent".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, urgent, None))
                 Button(label = "Silent".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, silent, None))
+                Button(label = "Progress (quiet)".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, progress, None))
                 Button(label = "In 10 s".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = post(status, plain, Some(10)))
                 Button(label = "Cancel all".to_string(), tone = tone::Neutral, variant = variant::Soft, on_click = cancel_all)
             }

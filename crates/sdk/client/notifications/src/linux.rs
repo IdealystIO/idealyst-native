@@ -21,6 +21,10 @@
 //!   response carries no text);
 //! - [`Priority`] → the `urgency` hint (low / normal / critical);
 //! - [`Sound::Silent`] → `suppress-sound`; the image → `image-path`;
+//! - re-posting an id passes its previous server id as `replaces_id`, so
+//!   the daemon updates it in place (whether a replaced notification pops
+//!   up again is the daemon's choice); an [`Notification::alert_once`]
+//!   replacement adds `suppress-sound`;
 //! - the payload → `x-idealyst-<key>` hints (app-private, ignored by
 //!   daemons);
 //! - then the app's [`Notification::linux`] hook edits the hints map.
@@ -139,7 +143,8 @@ struct NotifyArgs {
     reply_action: Option<String>,
 }
 
-fn build_args(n: &Notification) -> NotifyArgs {
+/// `replacing`: the post replaces a notification of ours still shown.
+fn build_args(n: &Notification, replacing: bool) -> NotifyArgs {
     let mut hints: HashMap<String, Value<'static>> = n
         .data
         .iter()
@@ -151,7 +156,9 @@ fn build_args(n: &Notification) -> NotifyArgs {
         Priority::Urgent => 2,
     };
     hints.insert("urgency".into(), Value::U8(urgency));
-    if n.sound == Sound::Silent {
+    // An `alert_once` replacement is updated in place by the `replaces_id`
+    // alone; it only has to keep quiet.
+    if n.sound == Sound::Silent || (n.alert_once && replacing) {
         hints.insert("suppress-sound".into(), Value::Bool(true));
     }
     if let Some(image) = &n.image {
@@ -266,8 +273,8 @@ fn handle_signal(signal: Signal) {
 
 pub(super) async fn notify(n: Notification) -> Result<NotificationId, NotifyError> {
     let id = resolve_id(&n);
-    let args = build_args(&n);
     let replaces = replaces_id(&id);
+    let args = build_args(&n, replaces != 0);
 
     let conn = Connection::session().await.map_err(map_zbus)?;
     let actions: Vec<&str> = args.actions.iter().map(String::as_str).collect();
@@ -354,8 +361,17 @@ mod tests {
     }
 
     #[test]
+    fn alert_once_keeps_a_replacement_quiet() {
+        let n = Notification::new("Upload", "60%").alert_once();
+        assert_eq!(hint(&build_args(&n, true), "suppress-sound"), Some(&Value::Bool(true)));
+        assert_eq!(hint(&build_args(&n, false), "suppress-sound"), None, "a first post alerts");
+        let plain = Notification::new("Upload", "60%");
+        assert_eq!(hint(&build_args(&plain, true), "suppress-sound"), None, "a plain replacement alerts");
+    }
+
+    #[test]
     fn build_args_summary_body_and_defaults() {
-        let args = build_args(&Notification::new("Title", "Body").subtitle("Sub"));
+        let args = build_args(&Notification::new("Title", "Body").subtitle("Sub"), false);
         assert_eq!(args.summary, "Title");
         assert_eq!(args.body, "Sub\nBody");
         assert_eq!(args.expire_timeout, EXPIRE_DEFAULT);
@@ -373,7 +389,7 @@ mod tests {
             .priority(Priority::Urgent)
             .sound(Sound::Silent)
             .image("/tmp/a.png");
-        let args = build_args(&n);
+        let args = build_args(&n, false);
         assert_eq!(hint(&args, "x-idealyst-route"), Some(&Value::from("/inbox")));
         assert_eq!(hint(&args, "urgency"), Some(&Value::U8(2)));
         assert_eq!(hint(&args, "suppress-sound"), Some(&Value::Bool(true)));
@@ -386,7 +402,7 @@ mod tests {
             .action(Action::new("reply", "Reply").text_input("Send", "Message"))
             .action(Action::new("mute", "Mute"))
             .action(Action::new("note", "Note").text_input("Save", "Note"));
-        let args = build_args(&n);
+        let args = build_args(&n, false);
         assert_eq!(
             args.actions,
             ["default", "", "inline-reply", "Reply", "mute", "Mute", "note", "Note"].map(String::from).to_vec()
@@ -402,7 +418,7 @@ mod tests {
             hints.insert("category".into(), Value::from("im.received"));
             hints.remove("urgency");
         });
-        let args = build_args(&n);
+        let args = build_args(&n, false);
         assert_eq!(hint(&args, "category"), Some(&Value::from("im.received")));
         assert_eq!(hint(&args, "urgency"), None);
     }

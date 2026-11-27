@@ -266,6 +266,9 @@ pub struct Notification {
     /// An image shown with the notification: a local file path on native
     /// targets, a URL on web.
     pub image: Option<String>,
+    /// Update in place without alerting again when a notification with this
+    /// id is still shown ([`Notification::alert_once`]).
+    pub alert_once: bool,
     pub(crate) hooks: hooks::PlatformHooks,
 }
 
@@ -283,7 +286,9 @@ impl Notification {
     }
 
     /// Set the stable id (so a later post with the same id replaces this
-    /// one, and [`cancel`] can target it).
+    /// one, and [`cancel`] can target it). A replacement alerts again — a
+    /// banner and sound, as a new notification would — unless it is
+    /// [`alert_once`](Notification::alert_once).
     pub fn id(mut self, id: impl Into<NotificationId>) -> Self {
         self.id = Some(id.into());
         self
@@ -331,6 +336,18 @@ impl Notification {
         self
     }
 
+    /// When a notification with this id is still shown (on screen or in the
+    /// notification center), replace it quietly: new content, no banner, no
+    /// sound. With none shown it alerts as usual. For something that
+    /// updates often — progress, a running count, a live score.
+    ///
+    /// Decided when [`notify`] posts; a [`schedule`]d notification always
+    /// alerts. Per-platform mechanism in the README's *Shared fields*.
+    pub fn alert_once(mut self) -> Self {
+        self.alert_once = true;
+        self
+    }
+
     /// iOS / macOS / tvOS: change the `UNMutableNotificationContent` after
     /// the shared fields are set and before it is posted — e.g.
     /// `setRelevanceScore:`, `setTargetContentIdentifier:`,
@@ -368,8 +385,10 @@ impl Notification {
     }
 
     /// Web: change the `NotificationOptions` object passed to
-    /// `new Notification(title, options)` — e.g. `vibrate`, `renotify`,
-    /// `icon`, `badge`, `dir`, `lang`.
+    /// `showNotification` / `new Notification` — e.g. `vibrate`, `icon`,
+    /// `badge`, `dir`, `lang`. The `tag` is the SDK's: it is picked when
+    /// posting, after this hook, to replace by id (see
+    /// [`alert_once`](Notification::alert_once)).
     #[cfg(target_arch = "wasm32")]
     pub fn web(
         mut self,

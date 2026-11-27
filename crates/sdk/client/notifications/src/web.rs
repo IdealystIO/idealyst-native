@@ -15,25 +15,32 @@
 //!   while the page lives.
 //!
 //! Options come from the shared fields either way — `body` (subtitle folded
-//! on; web has no subtitle field), `tag` = the resolved id (the browser
-//! coalesces by tag, so re-posting the same id *replaces*), `renotify`
-//! (without it a same-tag replacement is swapped in silently — no banner, no
-//! sound — where every native platform alerts again), `silent` for
+//! on; web has no subtitle field), `renotify`, `silent` for
 //! [`Sound::Silent`], `requireInteraction` for [`Priority::Urgent`],
 //! `image`. The worker path adds `actions` and the `data` its handlers read
 //! back (the id, the payload, and which actions must not open the app). The
-//! app's [`Notification::web`] hook edits the finished options object.
+//! app's [`Notification::web`] hook edits the finished options object; the
+//! tag is the SDK's, set after it (below).
 //!
 //! ## Replacing
 //!
 //! Re-posting an id must alert like a new notification, as on every native
-//! platform. `renotify` alone doesn't get there on the worker path: on
-//! macOS a notification whose banner was swiped away still sits in
-//! Notification Center, and a same-tag post then updates that entry
-//! silently — no banner, no sound. So the worker path closes whatever is
-//! shown under the tag before posting; the browser does not fire
-//! `notificationclose` for a `close()` call, so nothing is reported as a
-//! dismissal.
+//! platform, and replace the one shown. The browser coalesces by `tag`,
+//! but a same-tag post is not a dependable alert even with `renotify`:
+//! Brave/Chrome on macOS hand the tag to Notification Center as the
+//! notification's identity, and a notification whose banner was swiped
+//! away still sits there, so a post under its tag updates that entry
+//! silently — no banner, no sound. So every post gets a fresh tag
+//! (`<id>#<time>.<n>`), and the notifications already shown for the id —
+//! found by the id in their `data` (worker path) or the page-wide map (page
+//! path) — are closed **after** the new one is shown: closing the swiped
+//! entry just before posting suppresses the new banner too (Brave on
+//! macOS). The browser does not fire `notificationclose` for a `close()`
+//! call, so nothing is reported as a dismissal.
+//!
+//! [`Notification::alert_once`] is the other way round: when one is shown
+//! for the id, the post reuses its tag with `renotify: false`, which the
+//! browser swaps in without alerting.
 //!
 //! ## Responses
 //!
@@ -51,9 +58,9 @@
 //!   notification and reports [`ResponseAction::Open`] through one
 //!   page-lifetime callback.
 //!
-//! The shown page-path notifications are kept in a page-wide map by tag,
-//! and the worker's are found through `registration.getNotifications`, so
-//! `cancel` / `cancel_all` close both.
+//! The shown page-path notifications are kept in a page-wide map by id, and
+//! the worker's are found through `registration.getNotifications` by the id
+//! in their `data`, so `cancel` / `cancel_all` close both.
 //!
 //! Still not on web: a reply field (the web has no text-input action),
 //! `schedule` (no delayed-delivery API; `NotSupported`), `group` (no
@@ -89,48 +96,66 @@ const CHANNEL: &str = "notifications";
 const ACTIVATION_WAIT_MS: u32 = 3000;
 
 web_glue::import! {
-    // Show through the active service worker, closing what is shown under
-    // the same tag first (see the module docs' "Replacing"). Resolves `true` when shown,
+    // Show through the active service worker. Resolves `true` when shown,
     // `false` when the page has no worker (or it doesn't activate within
     // `wait` ms) — the caller then uses the page-level API; rejects when the
-    // browser refuses (no permission). The strings are read up front: they
-    // point into wasm memory that is only valid for this call.
+    // browser refuses (no permission). The notifications already shown for
+    // `id` are found by their `data.id`; the tag is picked as the module
+    // docs' "Replacing" says. The strings are read up front: they point
+    // into wasm memory that is only valid for this call.
     #[catch]
-    fn js_show_via_worker(tp: usize, tl: usize, op: usize, ol: usize, wait: u32) -> u32 =
-        "(tp, tl, op, ol, wait) => { const title = G.str(tp, tl); const options = JSON.parse(G.str(op, ol)); \
+    fn js_show_via_worker(tp: usize, tl: usize, op: usize, ol: usize, ip: usize, il: usize, once: u32, wait: u32) -> u32 =
+        "(tp, tl, op, ol, ip, il, once, wait) => { const title = G.str(tp, tl); \
+           const options = JSON.parse(G.str(op, ol)); const id = G.str(ip, il); \
            return G.add((async () => { \
              const c = globalThis.navigator && navigator.serviceWorker; if (!c) return false; \
              const reg = await c.getRegistration(); if (!reg) return false; \
              const active = reg.active ? reg : await Promise.race([c.ready, \
                new Promise((r) => setTimeout(() => r(null), wait))]); \
              if (!active) return false; \
-             for (const old of await active.getNotifications({ tag: options.tag })) old.close(); \
-             await active.showNotification(title, options); return true; })()); }";
-    // `new Notification(title, options)`, kept in the page-wide map by tag
-    // (replacing — and closing — the previous one under that tag), with a
-    // click handler that focuses the page, closes it and calls `cb` with
-    // the tag. Throws (→ Err) without the Notification API, or where
-    // construction is disallowed (Chrome on Android).
+             const shown = (await active.getNotifications()) \
+               .filter((n) => n.data && n.data.idealyst && n.data.id === id); \
+             let keep = null; \
+             if (once && shown.length) { keep = shown[0]; options.tag = keep.tag; options.renotify = false; } \
+             else { const s = (globalThis.__idealystNoteSeq = (globalThis.__idealystNoteSeq || 0) + 1); \
+               options.tag = id + '#' + Date.now().toString(36) + '.' + s; } \
+             await active.showNotification(title, options); \
+             for (const old of shown) if (old !== keep) old.close(); \
+             return true; })()); }";
+    // `new Notification(title, options)`, kept in the page-wide map by id,
+    // with a click handler that focuses the page, closes it and calls `cb`
+    // with the id. The tag is picked as for the worker path; the previous
+    // notification for `id` is closed after the new one is shown, unless
+    // `once` replaced it in place.
+    // Throws (→ Err) without the Notification API, or where construction is
+    // disallowed (Chrome on Android).
     #[catch]
-    fn js_notify(tp: usize, tl: usize, op: usize, ol: usize, gp: usize, gl: usize, cb: u32) =
-        "(tp, tl, op, ol, gp, gl, cb) => { \
-           const tag = G.str(gp, gl); const f = G.get(cb); \
+    fn js_notify(tp: usize, tl: usize, op: usize, ol: usize, ip: usize, il: usize, once: u32, cb: u32) =
+        "(tp, tl, op, ol, ip, il, once, cb) => { \
+           const id = G.str(ip, il); const f = G.get(cb); const options = JSON.parse(G.str(op, ol)); \
            const notes = (globalThis.__idealystNotes ??= new Map()); \
-           const old = notes.get(tag); if (old) { notes.delete(tag); old.close(); } \
-           const n = new Notification(G.str(tp, tl), JSON.parse(G.str(op, ol))); \
-           notes.set(tag, n); \
+           const old = notes.get(id); \
+           if (once && old) { options.tag = old.tag; options.renotify = false; } \
+           else { const s = (globalThis.__idealystNoteSeq = (globalThis.__idealystNoteSeq || 0) + 1); \
+             options.tag = id + '#' + Date.now().toString(36) + '.' + s; } \
+           const n = new Notification(G.str(tp, tl), options); \
+           notes.set(id, n); \
+           if (old) { old.onclick = null; if (!once) old.close(); } \
+           n.onclose = () => { if (notes.get(id) === n) notes.delete(id); }; \
            n.onclick = () => { \
              try { globalThis.focus(); } catch (_) {} \
-             if (notes.get(tag) === n) notes.delete(tag); \
-             n.close(); f(tag); }; }";
-    // Close what is shown under `tag` (every tag when `all`): page-path
-    // notifications from the map, worker-path ones from the registration.
-    fn js_close(gp: usize, gl: usize, all: u32) =
-        "(gp, gl, all) => { const tag = G.str(gp, gl); const notes = globalThis.__idealystNotes; \
-           if (notes) { for (const [t, n] of [...notes]) if (all || t === tag) { notes.delete(t); n.close(); } } \
+             if (notes.get(id) === n) notes.delete(id); \
+             n.close(); f(id); }; }";
+    // Close what is shown for `id` (everything when `all`): page-path
+    // notifications from the map, worker-path ones from the registration
+    // by their `data.id`.
+    fn js_close(ip: usize, il: usize, all: u32) =
+        "(ip, il, all) => { const id = G.str(ip, il); const notes = globalThis.__idealystNotes; \
+           if (notes) { for (const [k, n] of [...notes]) if (all || k === id) { notes.delete(k); n.close(); } } \
            const c = globalThis.navigator && navigator.serviceWorker; if (!c) return; \
-           c.getRegistration().then((reg) => reg && reg.getNotifications(all ? {} : { tag })) \
-             .then((list) => { for (const n of list || []) if (n.data && n.data.idealyst) n.close(); }) \
+           c.getRegistration().then((reg) => reg && reg.getNotifications()) \
+             .then((list) => { for (const n of list || []) \
+               if (n.data && n.data.idealyst && (all || n.data.id === id)) n.close(); }) \
              .catch(() => {}); }";
     // `JSON.stringify(v)` into `out` (`{}` for undefined / null).
     fn js_stringify(v: u32, out: usize) = "(v, o) => { G.retStr(JSON.stringify(G.get(v) ?? {}), o); }";
@@ -138,7 +163,7 @@ web_glue::import! {
 
 thread_local! {
     /// The page-path click callback every page-level notification calls
-    /// with its tag. Lives for the page: a notification shown at any point
+    /// with its id. Lives for the page: a notification shown at any point
     /// may be clicked later.
     static ON_CLICK: OnceCell<Closure> = const { OnceCell::new() };
     /// The worker channel subscription, for the page's lifetime.
@@ -151,10 +176,10 @@ thread_local! {
 pub(super) fn init() {
     ON_CLICK.with(|cell| {
         cell.get_or_init(|| {
-            Closure::new_fn(|tag: JsValue| {
-                let Some(tag) = tag.as_string() else { return };
-                let data = PAYLOADS.with(|p| p.borrow_mut().remove(&tag)).unwrap_or_default();
-                deliver_response(NotificationId(tag), ResponseAction::Open, None, data);
+            Closure::new_fn(|id: JsValue| {
+                let Some(id) = id.as_string() else { return };
+                let data = PAYLOADS.with(|p| p.borrow_mut().remove(&id)).unwrap_or_default();
+                deliver_response(NotificationId(id), ResponseAction::Open, None, data);
             })
         });
     });
@@ -204,9 +229,12 @@ fn click_handle() -> u32 {
 pub(crate) fn options(n: &Note, id: &NotificationId, worker: bool) -> Map<String, Value> {
     let mut o = Map::new();
     o.insert("body".into(), json!(body_with_subtitle(n)));
+    // A placeholder tag: the post picks the real one (module docs'
+    // "Replacing"). `renotify` makes a same-tag post alert again, as
+    // on every native platform — the web default swaps it in silently —
+    // and is only valid with a tag. An `alert_once` replacement turns it
+    // off.
     o.insert("tag".into(), json!(id.as_str()));
-    // A replacement alerts again, as on every native platform; the web
-    // default swaps it in silently. Valid because `tag` is always set.
     o.insert("renotify".into(), json!(true));
     if n.sound == Sound::Silent {
         o.insert("silent".into(), json!(true));
@@ -247,7 +275,8 @@ pub(super) async fn notify(n: Note) -> Result<NotificationId, NotifyError> {
     let shown = {
         let (tp, tl) = string::abi(&n.title);
         let (op, ol) = string::abi(&worker_options);
-        let promise = unsafe { js_show_via_worker(tp, tl, op, ol, ACTIVATION_WAIT_MS) }
+        let (ip, il) = string::abi(id.as_str());
+        let promise = unsafe { js_show_via_worker(tp, tl, op, ol, ip, il, n.alert_once as u32, ACTIVATION_WAIT_MS) }
             .map_err(|e| NotifyError::Backend(e.message()))?;
         JsFuture::new(&unsafe { JsValue::from_raw(promise) })
             .await
@@ -261,8 +290,8 @@ pub(super) async fn notify(n: Note) -> Result<NotificationId, NotifyError> {
     let cb = click_handle();
     let (tp, tl) = string::abi(&n.title);
     let (op, ol) = string::abi(&page_options);
-    let (gp, gl) = string::abi(id.as_str());
-    unsafe { js_notify(tp, tl, op, ol, gp, gl, cb) }.map_err(|e| NotifyError::Backend(e.message()))?;
+    let (ip, il) = string::abi(id.as_str());
+    unsafe { js_notify(tp, tl, op, ol, ip, il, n.alert_once as u32, cb) }.map_err(|e| NotifyError::Backend(e.message()))?;
     PAYLOADS.with(|p| p.borrow_mut().insert(id.0.clone(), n.data));
     Ok(id)
 }
@@ -274,14 +303,14 @@ pub(super) async fn schedule(_n: Note, _after: std::time::Duration) -> Result<No
 
 pub(super) async fn cancel(id: &NotificationId) {
     PAYLOADS.with(|p| p.borrow_mut().remove(id.as_str()));
-    let (gp, gl) = string::abi(id.as_str());
-    unsafe { js_close(gp, gl, 0) }
+    let (ip, il) = string::abi(id.as_str());
+    unsafe { js_close(ip, il, 0) }
 }
 
 pub(super) async fn cancel_all() {
     PAYLOADS.with(|p| p.borrow_mut().clear());
-    let (gp, gl) = string::abi("");
-    unsafe { js_close(gp, gl, 1) }
+    let (ip, il) = string::abi("");
+    unsafe { js_close(ip, il, 1) }
 }
 
 pub(super) async fn push_token() -> Result<PushToken, NotifyError> {
