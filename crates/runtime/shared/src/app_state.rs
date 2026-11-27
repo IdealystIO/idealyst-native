@@ -149,6 +149,20 @@ pub fn report_splash_dismissed(dismissed: bool) {
     }
 }
 
+/// Start watching for the launch screen to go: report it as still up,
+/// unless it was dismissed already (an earlier boot on this thread), and
+/// return whether there is anything left to watch for. A backend whose
+/// splash hand-off it detects itself calls this at boot, before the first
+/// build, and reports `true` when the hand-off comes.
+///
+/// Not "is it dismissed now?": the value starts `true` (no platform
+/// splash), so a backend that asked that first would never report the
+/// splash at all.
+pub fn begin_splash_watch() -> bool {
+    report_splash_dismissed(false);
+    !splash_dismissed()
+}
+
 /// Subscribe to [`report_splash_dismissed`] changes (called by the
 /// per-world context). Observers live for the thread, as [`observe`]'s.
 pub fn observe_splash_dismissed(f: impl Fn(bool) + 'static) {
@@ -252,6 +266,20 @@ mod tests {
 
     /// A phone backend arms it at boot and releases it on the first frame;
     /// it never re-arms (a re-created Activity, a second boot).
+    /// Regression: the iOS watch asked "is it dismissed now?" before
+    /// starting, which is `true` from the start, so it never started and
+    /// `splash_dismissed()` read `true` through the launch screen.
+    #[test]
+    fn regression_a_splash_watch_starts_on_a_fresh_boot() {
+        reset_for_tests();
+        assert!(begin_splash_watch(), "a fresh boot has a splash to watch");
+        assert!(!splash_dismissed(), "the splash reads as up until its hand-off");
+        report_splash_dismissed(true);
+        assert!(!begin_splash_watch(), "nothing left to watch after a dismissal");
+        assert!(splash_dismissed());
+        reset_for_tests();
+    }
+
     #[test]
     fn splash_dismissal_is_one_way_and_notifies_on_change() {
         reset_for_tests();

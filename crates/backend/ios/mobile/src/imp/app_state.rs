@@ -318,10 +318,9 @@ pub(crate) fn watch_first_frame(
     host: &objc2_ui_kit::UIView,
     after_report: Rc<dyn Fn()>,
 ) -> Option<Retained<NSObject>> {
-    if runtime_shared::app_state::splash_dismissed() {
+    if !runtime_shared::app_state::begin_splash_watch() {
         return None;
     }
-    runtime_shared::app_state::report_splash_dismissed(false);
     let this = mtm.alloc::<IdealystFirstFrameWatch>();
     let this = this.set_ivars(FirstFrameWatchIvars {
         host: unsafe { Retained::retain(host as *const objc2_ui_kit::UIView as *mut objc2_ui_kit::UIView) }
