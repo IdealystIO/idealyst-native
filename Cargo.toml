@@ -599,8 +599,8 @@ icon-gen = { path = "crates/tools/icon-gen", version = "1.6.0", registry = "idea
 backend-apple-core = { path = "crates/backend/apple/core", version = "6.1.0", registry = "idealyst" }
 backend-image-source = { path = "crates/backend/image-source", version = "6.0.0", registry = "idealyst" }
 backend-macos = { path = "crates/backend/macos", version = "9.5.1", registry = "idealyst" }
-backend-ios-core = { path = "crates/backend/ios/core", version = "6.0.0", registry = "idealyst" }
-backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "9.6.0", registry = "idealyst" }
+backend-ios-core = { path = "crates/backend/ios/core", version = "6.0.1", registry = "idealyst" }
+backend-ios-mobile = { path = "crates/backend/ios/mobile", version = "9.6.1", registry = "idealyst" }
 backend-ios-rs-shell = { path = "crates/backend/ios/rs-shell", version = "9.0.0", registry = "idealyst" }
 backend-ios-tv = { path = "crates/backend/ios/tv", version = "9.0.0", registry = "idealyst" }
 backend-android-core = { path = "crates/backend/android/core", version = "6.0.0", registry = "idealyst" }
@@ -647,7 +647,7 @@ idea-theme-editor = { path = "crates/ui/idea-theme-editor", version = "21.0.0", 
 idea-ui = { path = "crates/ui/idea-ui", version = "24.4.0", registry = "idealyst" }
 idea-ui-mail = { path = "crates/ui/idea-ui-mail", version = "8.0.0", registry = "idealyst" }
 idea-ui-nav = { path = "crates/ui/idea-ui-nav", version = "21.0.0", registry = "idealyst" }
-idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "1.3.2", registry = "idealyst" }
+idea-ui-layout = { path = "crates/ui/idea-ui-layout", version = "1.3.3", registry = "idealyst" }
 icons-lucide = { path = "crates/ui/icons-lucide", version = "8.0.0", registry = "idealyst" }
 pan = { path = "crates/sdk/client/pan", version = "8.0.0", registry = "idealyst" }
 zoom = { path = "crates/sdk/client/zoom", version = "8.0.0", registry = "idealyst" }
@@ -657,7 +657,7 @@ maps = { path = "crates/sdk/client/maps", version = "9.0.0", registry = "idealys
 maps-core = { path = "crates/sdk/client/maps/core", version = "8.0.0", registry = "idealyst" }
 maps-web = { path = "crates/sdk/client/maps/web", version = "8.0.0", registry = "idealyst" }
 maps-ios = { path = "crates/sdk/client/maps/ios", version = "9.0.0", registry = "idealyst" }
-codeblock = { path = "crates/sdk/client/codeblock", version = "10.0.0", registry = "idealyst" }
+codeblock = { path = "crates/sdk/client/codeblock", version = "10.0.1", registry = "idealyst" }
 markdown = { path = "crates/sdk/client/markdown", version = "9.0.0", registry = "idealyst" }
 webview = { path = "crates/sdk/client/webview", version = "9.0.0", registry = "idealyst" }
 video = { path = "crates/sdk/client/video", version = "9.0.0", registry = "idealyst" }
@@ -706,7 +706,7 @@ i18n-macros = { path = "crates/sdk/client/i18n/macros", version = "1.5.2", regis
 # (notifications, location, camera, microphone, …) depend on it rather than
 # re-implementing an OS grant flow.
 permissions = { path = "crates/sdk/client/permissions", version = "8.0.1", registry = "idealyst" }
-notifications = { path = "crates/sdk/client/notifications", version = "8.0.0", registry = "idealyst" }
+notifications = { path = "crates/sdk/client/notifications", version = "9.0.0", registry = "idealyst" }
 nfc = { path = "crates/sdk/client/nfc", version = "5.0.0", registry = "idealyst" }
 clipboard = { path = "crates/sdk/client/clipboard", version = "8.0.0", registry = "idealyst" }
 location = { path = "crates/sdk/client/location", version = "9.0.0", registry = "idealyst" }
