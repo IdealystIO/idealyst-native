@@ -11,6 +11,12 @@ releases.
 
 ### Behaviour changes — read before upgrading
 
+- **`Notification` has new public fields** (`notifications` major). `actions`, `priority`, `sound`,
+  `group`, `image` and `alert_once` joined it, so a struct literal of `Notification` no longer
+  compiles; build one with `Notification::new(title, body)` and its setters. On web, re-posting an
+  id now shows a new banner each time, as on every native platform, including after the user
+  swiped the previous one into macOS Notification Center.
+
 - **With no `assets` list, a web bundle ships only the conventional web folders** (`build-web`,
   `idealyst-cli`). `assets/`, `public/`, `static/`, `fonts/`, `images/`, `img/`, `icons/` and
   `media/` ship, plus top-level files of a web type (`favicon.ico`, `robots.txt`, css,
@@ -1481,6 +1487,19 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   `scroll_y` from `Default`.
 
 ### Added
+
+- **Notification actions, replies and responses on every platform** (`notifications` major).
+  `Action::new(id, title)` adds a button, with `.text_input(...)` for a reply field,
+  `.opens_app(false)` to handle it without opening the app, `.destructive()` and
+  `.requires_unlock()`. `on_response` hears every tap, action, reply and dismissal as a
+  `NotificationResponse`, including the tap that launched the app; call `init()` (or `on_response`)
+  at boot, before the first screen mounts. `Notification` also takes `.priority(...)`,
+  `.sound(...)`, `.group(...)`, `.image(...)`, and `.alert_once()`, which updates a still-shown
+  notification with that id without a banner or sound. Per-platform hooks (`.apple`, `.android`,
+  `.windows`, `.linux`, `.web`) hand over the platform's own notification object before it is
+  posted. The words for each priority come from `set_labels`. On web, notifications go through
+  the app's service worker: buttons, dismissals and clicks with no tab open are delivered. The
+  README's tables say what each platform does with each field.
 
 - **`return_key` on `text_input` and `Field`** (`runtime-shared`, `runtime-vocabulary`, `idea-ui`
   minor; `backend-web`, `backend-ios-mobile`, `backend-android-mobile`, `backend-ssr`, the dev wire).
