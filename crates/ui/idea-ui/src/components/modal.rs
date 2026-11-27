@@ -1238,7 +1238,11 @@ fn assemble_overlay(
                 max_height: Some(Tokenized::Literal(Length::Px(max_h))),
                 // Clip the scroll content to the frame's rounded corners.
                 overflow: Some(Overflow::Hidden),
-                padding_bottom: (pad_bottom > 0.0).then(|| Tokenized::Literal(Length::Px(pad_bottom))),
+                // A sheet always states its inset, zero included: an unset
+                // padding leaves the native view's last one in place, so
+                // the inset dropped under the keyboard would stay.
+                padding_bottom: (pad_bottom > 0.0 || matches!(presentation, ModalPresentation::Sheet))
+                    .then(|| Tokenized::Literal(Length::Px(pad_bottom))),
                 border_bottom_left_radius: bottom_radius.clone(),
                 border_bottom_right_radius: bottom_radius,
                 // Re-enables hits under the avoider's `none`.

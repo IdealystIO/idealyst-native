@@ -210,6 +210,9 @@ fn a_sheet_fits_above_the_keyboard() {
     let log = h.take_log().join("\n");
     let cap = (800.0 - 300.0) * idea_ui::components::modal::SHEET_MAX_HEIGHT_FRACTION;
     assert!(log.contains(&format!("max_height=Some(Literal(Px({cap:?})))")), "capped to the room above the keyboard ({cap}):\n{log}");
+    // Zero is stated, not left unset: an unset padding keeps the native
+    // view's last one, the 34 it had before the keyboard rose.
+    assert!(log.contains("pad_bottom=Some(Literal(Px(0.0)))"), "no home-indicator inset under the keyboard:\n{log}");
     assert!(!log.contains("pad_bottom=Some(Literal(Px(34.0)))"), "no home-indicator inset under the keyboard:\n{log}");
 }
 
