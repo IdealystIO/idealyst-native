@@ -62,6 +62,25 @@ fn header() -> Element {
 /// sheet is a `Modal`, which stays mounted while closed.
 const SHEET_MARK: &str = "presence_placeholder";
 
+/// Regression: a phone header with nothing to fold (a primary alone, no
+/// record menu) drew an empty ⋮ anyway. Its node took the row's gap, so
+/// the primary stopped a gap short of the gutter, off the toolbar's edge
+/// (LumiTask, 2026-11-27: 382 vs 390 of 402).
+#[test]
+fn regression_a_phone_header_with_nothing_to_fold_has_no_menu() {
+    let m = mount_at(PHONE, || {
+        ui! {
+            PageHeader(
+                title = "Home".to_string(),
+                actions = vec![Action::new("Add", noop()).icon(GLYPH).primary()],
+            )
+        }
+    });
+    let log = m.log();
+    assert!(log.contains("\"Home\""), "{log}");
+    assert!(!log.contains(SHEET_MARK), "no ⋮ sheet with nothing in it:\n{log}");
+}
+
 #[test]
 fn a_phone_header_collapses_its_primary_and_folds_the_rest_into_one_sheet() {
     let m = mount_at(PHONE, header);

@@ -167,6 +167,11 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
     // The phone's one menu: the verbs that lost their button, then what
     // the record's menu holds.
     let folded: Vec<Action> = others.iter().chain(menu.iter()).cloned().collect();
+    // An empty menu is left out, not drawn empty: even with no trigger it
+    // is a node in the row, which takes the row's gap (the primary then
+    // stopped a gap short of the gutter, off the toolbar's edge).
+    let folded_menu: Option<Vec<Action>> = (!folded.is_empty()).then(|| folded.clone());
+    let record_menu: Option<Vec<Action>> = (!menu.is_empty()).then(|| menu.clone());
     ui! {
         view(style = HeaderRow()) {
             if let Some(leading) = leading {
@@ -195,10 +200,14 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     if let Some(a) = primary.clone() {
                         HeaderPrimary(action = a, compact = true)
                     }
-                    ActionMenu(actions = folded.clone(), size = IconButtonSize::Md)
+                    if let Some(actions) = folded_menu.clone() {
+                        ActionMenu(actions = actions, size = IconButtonSize::Md)
+                    }
                 }
                 false => {
-                    ActionMenu(actions = menu.clone(), size = IconButtonSize::Md)
+                    if let Some(actions) = record_menu.clone() {
+                        ActionMenu(actions = actions, size = IconButtonSize::Md)
+                    }
                     if let Some(build) = status.0.clone() {
                         { build() }
                     }
