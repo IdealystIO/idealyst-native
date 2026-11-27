@@ -15,6 +15,18 @@
 //!   connected (an iPad with a mouse / trackpad), following
 //!   `GCMouseDidConnect` / `DidDisconnect`.
 //! - **UserActivated**: not reported (native apps may play audio at once).
+//! - **Splash dismissed** (`runtime_shared::app_state::report_splash_dismissed`,
+//!   not `app_state::report`): `false` at boot, then `true` from
+//!   [`watch_first_frame`]. iOS has no public callback for the launch
+//!   screen going away: it stays until the app's window has committed its
+//!   first frame. The tree mounts from `viewDidLoad` inside
+//!   `didFinishLaunching`, before the window is on screen. The host view
+//!   controller belongs to the generated Swift shell, and its
+//!   `viewDidAppear:` marks the view joining the window, not the frame
+//!   reaching the screen. So a one-shot `CADisplayLink` watches the host
+//!   view: one tick after it
+//!   first finds it in a visible window, the commit that drew the app has
+//!   run ([`policy::first_frame_tick`]), and the watch reports and stops.
 //! - **Color scheme** (`runtime_shared::host::report_color_scheme`, not
 //!   `app_state`): the trait collection's `userInterfaceStyle`
 //!   ([`read_color_scheme`]), re-read on `traitCollectionDidChange:` of a
@@ -248,6 +260,87 @@ pub(crate) fn install(mtm: MainThreadMarker, after_report: Rc<dyn Fn()>) -> Reta
         add(objc2::sel!(miceChanged:), GCMouseDidDisconnectNotification);
     }
     unsafe { Retained::cast::<NSObject>(observer) }
+}
+
+pub(crate) struct FirstFrameWatchIvars {
+    host: Retained<objc2_ui_kit::UIView>,
+    armed: std::cell::Cell<bool>,
+    after_report: Rc<dyn Fn()>,
+}
+
+declare_class!(
+    /// The display-link target of [`watch_first_frame`].
+    pub(crate) struct IdealystFirstFrameWatch;
+
+    unsafe impl ClassType for IdealystFirstFrameWatch {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "IdealystFirstFrameWatch";
+    }
+
+    impl DeclaredClass for IdealystFirstFrameWatch {
+        type Ivars = FirstFrameWatchIvars;
+    }
+
+    unsafe impl NSObjectProtocol for IdealystFirstFrameWatch {}
+
+    unsafe impl IdealystFirstFrameWatch {
+        #[method(tick:)]
+        fn tick(&self, link: *mut AnyObject) {
+            crate::imp::ffi_guard::guard_ffi("IdealystFirstFrameWatch::tick", || {
+                let ivars = self.ivars();
+                let window: *mut AnyObject = unsafe { msg_send![&*ivars.host, window] };
+                let visible = !window.is_null() && {
+                    let hidden: bool = unsafe { msg_send![window, isHidden] };
+                    !hidden
+                };
+                let (armed, report_now) = policy::first_frame_tick(ivars.armed.get(), visible);
+                ivars.armed.set(armed);
+                if !report_now {
+                    return;
+                }
+                // The run loop retains a scheduled link and the link its
+                // target (this watch); invalidating releases both.
+                let _: () = unsafe { msg_send![link, invalidate] };
+                runtime_shared::app_state::report_splash_dismissed(true);
+                (ivars.after_report)();
+            });
+        }
+    }
+);
+
+/// Report the launch screen as up and watch for the app's first frame in
+/// `host` (see the module docs); `after_report` runs after the report.
+/// Nothing to watch once it was reported (a second boot on this thread).
+/// The returned display link can be invalidated to stop the watch early.
+pub(crate) fn watch_first_frame(
+    mtm: MainThreadMarker,
+    host: &objc2_ui_kit::UIView,
+    after_report: Rc<dyn Fn()>,
+) -> Option<Retained<NSObject>> {
+    if runtime_shared::app_state::splash_dismissed() {
+        return None;
+    }
+    runtime_shared::app_state::report_splash_dismissed(false);
+    let this = mtm.alloc::<IdealystFirstFrameWatch>();
+    let this = this.set_ivars(FirstFrameWatchIvars {
+        host: unsafe { Retained::retain(host as *const objc2_ui_kit::UIView as *mut objc2_ui_kit::UIView) }
+            .expect("a host view reference is non-null"),
+        armed: std::cell::Cell::new(false),
+        after_report,
+    });
+    let watch: Retained<IdealystFirstFrameWatch> = unsafe { msg_send_id![super(this), init] };
+    let link: Retained<NSObject> = unsafe {
+        msg_send_id![objc2::class!(CADisplayLink), displayLinkWithTarget: &*watch, selector: objc2::sel!(tick:)]
+    };
+    extern "C" {
+        static NSRunLoopCommonModes: &'static NSString;
+    }
+    unsafe {
+        let run_loop: *mut AnyObject = msg_send![objc2::class!(NSRunLoop), mainRunLoop];
+        let _: () = msg_send![&link, addToRunLoop: run_loop, forMode: NSRunLoopCommonModes];
+    }
+    Some(link)
 }
 
 /// Unregister an observer from [`install`].

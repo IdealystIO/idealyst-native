@@ -5,7 +5,8 @@ Two things a game or a full-screen app needs beyond views:
 - **The app's situation, as signals**: whether it has focus, whether it's
   on screen, the user's reduce-motion setting, whether the device is
   touch-only, whether the user has interacted yet (browsers allow sound
-  only after that), and whether the pointer is locked.
+  only after that), whether the pointer is locked, and whether the
+  platform's launch screen has given way to the app.
 - **App-wide mouse input**: buttons, movement and wheel anywhere in the
   app, plus **pointer lock** (the cursor is hidden and held in place and
   only movement amounts are reported, which first-person cameras need).
@@ -55,6 +56,7 @@ All are `ReadSignal`s; effects and `ui!` re-run when they change.
 | `primary_pointer()` | `PointerKind::Fine` (mouse, trackpad), `Coarse` (finger: a touch-only device), or `None` (no pointer: a TV). |
 | `user_activated()` | The user has pressed, clicked or typed. Browsers only allow audio after this. Always `true` on native. Never goes back to `false`. |
 | `pointer_locked()` | The pointer is locked. Goes `false` when the platform drops the lock (Esc, alt-tab), not only when the app releases it. |
+| `splash_dismissed()` | The platform's launch screen has given way to the app's first frame. `false` until then on iOS and Android; `true` from the start everywhere else (there is no platform splash). Never goes back to `false`. Time a loading screen that continues the launch screen (its minimum hold, its animation) from this, not from boot or `app_focused()`. |
 
 ## Mouse API
 
@@ -107,6 +109,15 @@ listener sees every event; the default is prevented if any listener asks.
 | wgpu (winit) | `WindowEvent::Focused` | `WindowEvent::Occluded` | not reported (winit has no API) | `Fine` |
 | Terminal | terminal focus reporting | not reported | not reported | `Fine` |
 
+`splash_dismissed()` turns `true` on iOS on the display-link tick after
+the first one that finds the app's host view in a visible window, so the
+commit that drew the first frame has run (iOS has no launch-screen
+callback). On Android it turns `true` right after the root view's first
+draw, the frame the system splash waits for (API 31+ `SplashScreen`; the
+theme's `windowBackground` below 31). Every other backend, and the
+runtime-server sidecar (no app-situation signal crosses the wire), has it
+`true` from the start.
+
 `user_activated()` is only ever `false` on web: from page load until the
 first `pointerdown`, `mousedown`, `keydown` or `touchend`. If the browser
 remembers an earlier gesture (`navigator.userActivation.hasBeenActive`),
@@ -140,6 +151,10 @@ back/forward buttons also send back/forward key events.
   from platform callbacks (and once at boot), then schedule the backend's
   flush. Report only what the platform knows; the defaults describe a
   focused, visible desktop app with a mouse.
+- A platform that shows a launch screen until the app's first frame calls
+  `runtime_shared::app_state::report_splash_dismissed(false)` at boot,
+  before the root build, and `report_splash_dismissed(true)` once that
+  frame is on screen, then flushes. Without one, report nothing.
 - Implement `AppEnvOps::set_pointer_sink`, `set_pointer_lock` and
   `set_cursor_hidden`. Their doc comments in
   `crates/runtime/vocabulary/src/caps/app.rs` are the contract.

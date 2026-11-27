@@ -2,11 +2,12 @@
 //!
 //! - **Host facts as signals** — [`app_focused`], [`app_visible`],
 //!   [`reduce_motion`], [`primary_pointer`], [`user_activated`],
-//!   [`pointer_locked`], [`system_color_scheme`]. Each is a `ReadSignal`,
-//!   so effects and `ui!` re-run when the platform reports a change
-//!   (auto-pause on blur, skip animations under reduce-motion, show "needs
-//!   a mouse" on touch-only devices, start audio after the first gesture,
-//!   follow the OS into dark mode).
+//!   [`pointer_locked`], [`system_color_scheme`], [`splash_dismissed`].
+//!   Each is a `ReadSignal`, so effects and `ui!` re-run when the platform
+//!   reports a change (auto-pause on blur, skip animations under
+//!   reduce-motion, show "needs a mouse" on touch-only devices, start audio
+//!   after the first gesture, follow the OS into dark mode, start a
+//!   loading screen's animation once the launch screen is gone).
 //! - **Mouse** — [`on_pointer`] (events, scoped like `on_key`),
 //!   [`pointer_state`] (poll held buttons and take accumulated movement /
 //!   wheel from a frame loop), [`request_pointer_lock`] /
@@ -35,7 +36,8 @@ use runtime_shared::pointer_input::{
 };
 use runtime_world::{inject, provide, signal, unscoped, ReadSignal, Signal};
 
-/// The per-world signals mirroring [`AppState`].
+/// The per-world signals mirroring [`AppState`], plus the launch-screen
+/// hand-off (`host_state::splash_dismissed`).
 #[derive(Clone)]
 struct AppStateCtx {
     focused: Signal<bool>,
@@ -44,6 +46,7 @@ struct AppStateCtx {
     primary_pointer: Signal<PointerKind>,
     user_activated: Signal<bool>,
     pointer_locked: Signal<bool>,
+    splash_dismissed: Signal<bool>,
 }
 
 runtime_tls::thread_local! {
@@ -83,11 +86,14 @@ fn ctx() -> AppStateCtx {
             primary_pointer: signal(s.primary_pointer),
             user_activated: signal(s.user_activated),
             pointer_locked: signal(s.pointer_locked),
+            splash_dismissed: signal(host_state::splash_dismissed()),
         }
     });
     unscoped(|| provide(ctx.clone()));
     let observer = ctx.clone();
     host_state::observe(move |s| observer.apply(s));
+    let splash = ctx.splash_dismissed;
+    host_state::observe_splash_dismissed(move |d| splash.set(d));
     LAST_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     ctx
 }
@@ -151,6 +157,37 @@ pub fn app_focused() -> ReadSignal<bool> {
 /// window, or a backgrounded mobile app).
 pub fn app_visible() -> ReadSignal<bool> {
     ctx().visible.read_only()
+}
+
+/// Whether the platform's launch screen has given way to the app: `true`
+/// once the app's first frame is on screen, and never `false` again.
+///
+/// Time a loading screen that continues the launch screen from this
+/// hand-off — its minimum hold, the start of its animation — rather than
+/// from boot or [`app_focused`], which can flip while the launch screen
+/// is still up.
+///
+/// ```ignore
+/// let shown = splash_dismissed();
+/// effect!({
+///     if shown.get() {
+///         start_glow();
+///     }
+/// });
+/// ```
+///
+/// - **iOS**: the display-link tick after the first one that finds the
+///   app's host view in a visible window, i.e. after the commit that drew
+///   the first frame (iOS has no launch-screen callback).
+/// - **Android**: right after the root view's first draw — the frame the
+///   system splash (API 31+ `SplashScreen`, the theme's
+///   `windowBackground` below) hands off to.
+/// - **Everywhere else** (web, macOS, Windows, Linux, SSR, GPU, terminal,
+///   test hosts): `true` from the start; there is no platform splash.
+/// - **runtime-server**: `true` from the start on the sidecar, like every
+///   app-situation signal there (none of them cross the wire).
+pub fn splash_dismissed() -> ReadSignal<bool> {
+    ctx().splash_dismissed.read_only()
 }
 
 /// The OS "reduce motion" accessibility setting. Follows changes live.

@@ -24,6 +24,24 @@
 //!
 //! `UserActivated` is web-only (native apps may play audio at any time) and
 //! is not reported.
+//!
+//! **Splash dismissed** (`runtime_shared::app_state::report_splash_dismissed`):
+//! `attach` reports `false` (boot runs in `onCreate`, before the root build)
+//! and a one-shot `ViewTreeObserver.OnDrawListener` on the root reports
+//! `true` from a message posted at the front of the looper queue by the
+//! root's first `onDraw` — once that draw pass has returned and the frame
+//! went to the RenderThread. That first frame is what the system splash
+//! waits for on every API level: the API 31+ `SplashScreen` is removed when
+//! the app draws its first frame (the app need not own its exit), and
+//! below 31 the theme's `windowBackground` is the window's background
+//! until the content draws over it. The listener is added to the root's
+//! live `ViewTreeObserver` once the root is attached: before API 26 a
+//! detached view's floating observer does not carry `OnDrawListener`s over
+//! when it merges into the window's. Only a working Kotlin side reports
+//! `false`, so a stale staged runtime keeps the `true` default instead of
+//! hiding the app's loading screen forever. The JVM half has no unit-test
+//! harness here; `newcore`'s `report_splash_dismissed_commits_through_flush`
+//! covers the Rust half, and the first-draw moment needs a device run.
 
 use crate::imp::{with_env, AndroidBackend};
 use jni::objects::JValue;

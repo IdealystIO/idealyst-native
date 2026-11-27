@@ -1495,6 +1495,17 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
 
 ### Added
 
+- **`splash_dismissed()` says when the launch screen gave way to the app** (`runtime-shared`
+  minor, `runtime-vocabulary` minor, `backend-ios-mobile` minor, `backend-android-mobile` minor).
+  A `ReadSignal<bool>` beside `app_focused()` that turns `true` once the app's first frame is on
+  screen and never goes back. On iOS it flips on the display-link tick after the first one that
+  finds the host view in a visible window; on Android right after the root view's first draw,
+  which is when the system splash (API 31+ `SplashScreen`, the theme's `windowBackground` below)
+  goes. Web, desktop, SSR, GPU, terminal and the runtime-server sidecar have it `true` from the
+  start. A loading screen that continues the launch screen times its hold and animation from it,
+  where `app_focused()` could flip while the launch screen was still up. Backends report it with
+  `runtime_shared::app_state::report_splash_dismissed`.
+
 - **`open_url_in_place(url)` leaves the app in its own tab** (`runtime-shared` minor,
   `runtime-vocabulary` minor, `web-glue` minor, `backend-web` minor, `robot-test` minor,
   `mcp-catalog` minor). On web the app's tab navigates to the URL (`location.assign`), so a hosted

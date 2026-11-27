@@ -671,6 +671,18 @@ pub extern "system" fn Java_io_idealyst_runtime_RustAppStateObserver_nativeAppPo
     });
 }
 
+/// `RustAppStateObserver` → `report_splash_dismissed`: `false` from
+/// `attach` (boot, before the root build), `true` right after the root's
+/// first draw.
+#[no_mangle]
+pub extern "system" fn Java_io_idealyst_runtime_RustAppStateObserver_nativeAppSplashDismissed(
+    _env: JNIEnv,
+    _this: JObject,
+    dismissed: jboolean,
+) {
+    run_void_callback("app-state-splash", || crate::newcore::report_splash_dismissed(dismissed != 0));
+}
+
 /// `RustUserActivity.nativeReport` (static — the second JNI arg is the
 /// `Class`): the person touched, typed, scrolled or wheeled anywhere in the
 /// app. Raw platform callback → report + flush.

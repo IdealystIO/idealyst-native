@@ -151,3 +151,39 @@ fn cursor_hidden_reaches_backend() {
     glue::set_cursor_hidden(false);
     assert!(h.ops().iter().any(|op| op == "set_cursor_hidden false"));
 }
+
+/// LumiTask's loading screen continues the launch screen; it timed its hold
+/// from `app_focused()`, which is the wrong moment. `splash_dismissed()` is
+/// `true` from the start where there is no platform splash (host-mock, like
+/// web and desktop) and needs no report.
+#[test]
+fn splash_dismissed_is_true_without_a_platform_splash() {
+    let h = harness();
+    let splash = h.world.enter(glue::splash_dismissed);
+    assert!(h.world.enter(|| splash.get()));
+}
+
+/// A phone backend reports `false` at boot and `true` from the first-frame
+/// callback (outside `enter`); the signal follows on the world's flush and
+/// never goes back to `false`.
+#[test]
+fn splash_dismissed_follows_the_backend_and_never_reverts() {
+    let h = harness();
+    app_state::report_splash_dismissed(false); // boot, before the build
+    let seen: Rc<RefCell<Vec<bool>>> = Rc::default();
+    let (splash, _watch) = h.world.enter(|| {
+        let splash = glue::splash_dismissed();
+        let sink = seen.clone();
+        (splash, glue::watch(move || sink.borrow_mut().push(splash.get())))
+    });
+    assert!(!h.world.enter(|| splash.get()), "seeded from the boot report");
+
+    app_state::report_splash_dismissed(true); // first frame
+    h.world.flush();
+    assert!(h.world.enter(|| splash.get()));
+
+    app_state::report_splash_dismissed(false);
+    h.world.flush();
+    assert!(h.world.enter(|| splash.get()), "never returns to false");
+    assert_eq!(*seen.borrow(), vec![false, true]);
+}

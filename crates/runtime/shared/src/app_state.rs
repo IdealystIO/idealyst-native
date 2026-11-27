@@ -1,7 +1,8 @@
 //! Host facts about the app's situation that app code reacts to: whether
 //! the app has focus, whether it is visible, the user's reduce-motion
-//! preference, what kind of pointer the device primarily has, and whether
-//! the user has interacted yet (browsers only allow sound after that).
+//! preference, what kind of pointer the device primarily has, whether
+//! the user has interacted yet (browsers only allow sound after that),
+//! and whether the platform's launch screen has given way to the app.
 //!
 //! ## Flow
 //!
@@ -17,6 +18,17 @@
 //! The thread-local value here is the single source of truth so a world
 //! created after a report (a second world, an SSR request world) still
 //! starts from the right value.
+//!
+//! ## The launch screen
+//!
+//! [`splash_dismissed`] has its own slot ([`report_splash_dismissed`],
+//! [`observe_splash_dismissed`]) beside [`AppState`]: it is a one-way
+//! launch event, not a situation that comes and goes. It starts `true`
+//! (no platform splash: web, desktop, SSR, GPU, terminal). A backend whose
+//! platform shows a launch screen until the app's first frame (iOS,
+//! Android) reports `false` at boot, before the root build, and `true`
+//! once that frame is on screen. After the first `true` a `false` is
+//! ignored, so a re-created Activity or a second boot never re-arms it.
 //!
 //! ## Defaults
 //!
@@ -102,6 +114,45 @@ runtime_tls::thread_local! {
     /// Whether activation has been observed as `true` after a boot-time
     /// `false` — makes [`AppStateChange::UserActivated`] sticky.
     static ACTIVATED_ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// [`splash_dismissed`]'s value.
+    static SPLASH_DISMISSED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// Whether a `true` was reported — makes [`report_splash_dismissed`]
+    /// one-way.
+    static SPLASH_DISMISSED_ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SPLASH_OBSERVERS: RefCell<Vec<Rc<dyn Fn(bool)>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether the platform's launch screen has given way to the app's first
+/// frame. `true` where there is no launch screen. See the module docs.
+pub fn splash_dismissed() -> bool {
+    SPLASH_DISMISSED.with(|s| s.get())
+}
+
+/// A backend reports its launch screen: `false` at boot (before the root
+/// build) on a platform that shows one, `true` once the app's first frame
+/// replaced it. A `false` after the first `true` is ignored. Notifies
+/// [`observe_splash_dismissed`] observers on a change; then schedule the
+/// backend's flush so world signals commit.
+pub fn report_splash_dismissed(dismissed: bool) {
+    if dismissed {
+        SPLASH_DISMISSED_ONCE.with(|o| o.set(true));
+    } else if SPLASH_DISMISSED_ONCE.with(|o| o.get()) {
+        return;
+    }
+    if SPLASH_DISMISSED.with(|s| s.replace(dismissed)) == dismissed {
+        return;
+    }
+    // Snapshot outside the borrow: an observer may register another.
+    let observers: Vec<Rc<dyn Fn(bool)>> = SPLASH_OBSERVERS.with(|o| o.borrow().clone());
+    for obs in observers {
+        obs(dismissed);
+    }
+}
+
+/// Subscribe to [`report_splash_dismissed`] changes (called by the
+/// per-world context). Observers live for the thread, as [`observe`]'s.
+pub fn observe_splash_dismissed(f: impl Fn(bool) + 'static) {
+    SPLASH_OBSERVERS.with(|o| o.borrow_mut().push(Rc::new(f)));
 }
 
 /// The current host facts.
@@ -154,6 +205,9 @@ pub fn reset_for_tests() {
     STATE.with(|s| *s.borrow_mut() = AppState::default());
     OBSERVERS.with(|o| o.borrow_mut().clear());
     ACTIVATED_ONCE.with(|a| a.set(false));
+    SPLASH_DISMISSED.with(|s| s.set(true));
+    SPLASH_DISMISSED_ONCE.with(|o| o.set(false));
+    SPLASH_OBSERVERS.with(|o| o.borrow_mut().clear());
 }
 
 #[cfg(test)]
@@ -186,5 +240,33 @@ mod tests {
         assert!(current().user_activated);
         report(AppStateChange::UserActivated(false));
         assert!(current().user_activated, "activation never reverts");
+    }
+
+    /// No launch screen (web, desktop, SSR, GPU, terminal, mocks): the
+    /// app is past it from the start, with no backend report.
+    #[test]
+    fn splash_is_dismissed_from_the_start_without_a_report() {
+        reset_for_tests();
+        assert!(splash_dismissed());
+    }
+
+    /// A phone backend arms it at boot and releases it on the first frame;
+    /// it never re-arms (a re-created Activity, a second boot).
+    #[test]
+    fn splash_dismissal_is_one_way_and_notifies_on_change() {
+        reset_for_tests();
+        let heard: Rc<RefCell<Vec<bool>>> = Rc::default();
+        let sink = heard.clone();
+        observe_splash_dismissed(move |d| sink.borrow_mut().push(d));
+
+        report_splash_dismissed(false);
+        assert!(!splash_dismissed());
+        report_splash_dismissed(true);
+        assert!(splash_dismissed());
+        report_splash_dismissed(true);
+        report_splash_dismissed(false);
+        assert!(splash_dismissed(), "a dismissed splash never comes back");
+        assert_eq!(*heard.borrow(), vec![false, true], "only changes are heard");
+        reset_for_tests();
     }
 }

@@ -28,6 +28,8 @@ import android.view.ViewTreeObserver
  * - connected non-virtual `SOURCE_MOUSE` devices (+ `InputDeviceListener`)
  *   and `FEATURE_TOUCHSCREEN` → `nativeAppPointerDevices` (Rust maps to
  *   Fine / Coarse / None)
+ * - the launch screen: `false` from [attach], `true` right after the root's
+ *   first draw → `nativeAppSplashDismissed` (see [watchFirstDraw])
  *
  * It holds no Rust pointer. Every registration is undone when the observed
  * Activity is destroyed, so a re-created app never hears from a stale one.
@@ -49,6 +51,8 @@ class RustAppStateObserver :
     private var activity: Activity? = null
     private var inputManager: InputManager? = null
     private var motionObserver: ContentObserver? = null
+    private var attachWatch: View.OnAttachStateChangeListener? = null
+    private var drawWatch: ViewTreeObserver.OnDrawListener? = null
 
     fun attach(root: View) {
         current = this
@@ -80,10 +84,68 @@ class RustAppStateObserver :
         inputManager = im
         im?.registerInputDeviceListener(this, main)
         reportPointerDevices()
+
+        watchFirstDraw(root, main)
+    }
+
+    /**
+     * Report the launch screen as up, then as gone right after the root's
+     * first draw: the frame the system splash (API 31+ `SplashScreen`, the
+     * theme's `windowBackground` below) gives way to.
+     *
+     * The draw listener goes on the root's live observer once the root is
+     * attached: before API 26 a detached view's floating `ViewTreeObserver`
+     * drops `OnDrawListener`s when it merges into the window's. An
+     * already-attached root is invalidated so a draw is guaranteed to come.
+     * The report is posted at the front of the queue because
+     * `removeOnDrawListener` throws inside `onDraw`, and the frame reaches
+     * the RenderThread only after the draw pass returns.
+     */
+    private fun watchFirstDraw(root: View, main: Handler) {
+        nativeAppSplashDismissed(false)
+        val onDraw = object : ViewTreeObserver.OnDrawListener {
+            private var fired = false
+            override fun onDraw() {
+                if (fired) return
+                fired = true
+                main.postAtFrontOfQueue {
+                    removeDrawWatch(root)
+                    if (reporting) nativeAppSplashDismissed(true)
+                }
+            }
+        }
+        drawWatch = onDraw
+        if (root.isAttachedToWindow) {
+            root.viewTreeObserver.addOnDrawListener(onDraw)
+            root.invalidate()
+            return
+        }
+        val onAttach = object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                v.removeOnAttachStateChangeListener(this)
+                attachWatch = null
+                v.viewTreeObserver.addOnDrawListener(onDraw)
+            }
+
+            override fun onViewDetachedFromWindow(v: View) {}
+        }
+        attachWatch = onAttach
+        root.addOnAttachStateChangeListener(onAttach)
+    }
+
+    private fun removeDrawWatch(root: View) {
+        attachWatch?.let { root.removeOnAttachStateChangeListener(it) }
+        attachWatch = null
+        drawWatch?.let { l ->
+            val vto = root.viewTreeObserver
+            if (vto.isAlive) vto.removeOnDrawListener(l)
+        }
+        drawWatch = null
     }
 
     fun detach() {
         val r = root ?: return
+        removeDrawWatch(r)
         root = null
         if (current === this) current = null
         for (vto in listOfNotNull(observer, r.viewTreeObserver)) {
@@ -161,4 +223,5 @@ class RustAppStateObserver :
     private external fun nativeAppVisible(visible: Boolean)
     private external fun nativeAppAnimatorScale(scale: Float)
     private external fun nativeAppPointerDevices(hasMouse: Boolean, hasTouchscreen: Boolean)
+    private external fun nativeAppSplashDismissed(dismissed: Boolean)
 }

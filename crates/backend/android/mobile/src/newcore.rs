@@ -289,6 +289,16 @@ pub(crate) fn report_app_state(change: runtime_shared::app_state::AppStateChange
     schedule_flush();
 }
 
+/// The launch screen's state (`false` at boot, `true` after the root's
+/// first draw) and the flush that commits what `splash_dismissed()`
+/// staged. From the `RustAppStateObserver` trampoline, a raw platform
+/// callback.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn report_splash_dismissed(dismissed: bool) {
+    runtime_shared::app_state::report_splash_dismissed(dismissed);
+    schedule_flush();
+}
+
 /// The system's light / dark theme changed (or was re-read after a
 /// configuration change that left it alone, which reports nothing):
 /// report it and queue the flush that commits what its observers staged.
@@ -2289,6 +2299,33 @@ mod tests {
         report_app_state(AppStateChange::Visible(false));
         pump();
         assert_eq!(*seen.borrow(), vec![true, false]);
+        set_flush_world(None);
+        app_state::reset_for_tests();
+    }
+
+    /// `splash_dismissed()` on Android: the first-draw trampoline runs
+    /// from a posted looper message, outside every framework handler, so
+    /// the signal only flips if the report queues the flush itself.
+    #[test]
+    fn report_splash_dismissed_commits_through_flush() {
+        use runtime_shared::app_state;
+        install_test_scheduler();
+        app_state::reset_for_tests();
+        let world = World::new();
+        set_flush_world(Some(world.clone()));
+        report_splash_dismissed(false);
+        pump();
+        let seen: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+        let splash = world.enter(|| signal(app_state::splash_dismissed()));
+        app_state::observe_splash_dismissed(move |d| splash.set(d));
+        world.enter(|| {
+            let seen = seen.clone();
+            effect(move || seen.borrow_mut().push(splash.get()));
+        });
+
+        report_splash_dismissed(true);
+        pump();
+        assert_eq!(*seen.borrow(), vec![false, true]);
         set_flush_world(None);
         app_state::reset_for_tests();
     }

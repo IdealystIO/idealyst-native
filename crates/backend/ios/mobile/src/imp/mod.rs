@@ -157,6 +157,10 @@ pub struct IosBackend {
     /// how the color scheme is followed (`imp/app_state.rs`). Removed from
     /// the host on a re-install.
     appearance_observer: Option<Retained<UIView>>,
+    /// The display link of the first-frame watch behind
+    /// `splash_dismissed()` (`imp/app_state.rs`), until it reports.
+    /// Invalidated on a re-install.
+    first_frame_watch: Option<Retained<NSObject>>,
     /// Set of view pointers that are UIScrollViews. Used in the
     /// post-layout pass to sync `contentSize` from Taffy children.
     scroll_views: std::collections::HashSet<usize>,
@@ -802,6 +806,7 @@ impl IosBackend {
             cursor_hider: None,
             app_state_observer: None,
             appearance_observer: None,
+            first_frame_watch: None,
             scroll_views: std::collections::HashSet::new(),
             external_content_measures: HashMap::new(),
             icon_image_cache: HashMap::new(),
@@ -1618,7 +1623,14 @@ impl IosBackend {
         if let Some(old) = self.appearance_observer.take() {
             unsafe { old.removeFromSuperview() };
         }
+        if let Some(old) = self.first_frame_watch.take() {
+            let _: () = unsafe { msg_send![&old, invalidate] };
+        }
         self.app_state_observer = Some(app_state::install(self.mtm, after_report.clone()));
+        self.first_frame_watch = self
+            .host_root
+            .as_ref()
+            .and_then(|host| app_state::watch_first_frame(self.mtm, host, after_report.clone()));
         self.appearance_observer = self
             .host_root
             .as_ref()

@@ -1,8 +1,9 @@
 //! Pure halves of the iOS app-level pointer source (`imp/pointer.rs`) and
 //! app-situation reporting (`imp/app_state.rs`): GameController button /
 //! motion / scroll translation, the UIKit scroll-pan → wheel conversion,
-//! the pointer-lock state machine, and the `UIApplicationState` /
-//! connected-mouse readings. Un-gated so the tests run from any host; the
+//! the pointer-lock state machine, the `UIApplicationState` /
+//! connected-mouse readings, and the first-frame watch behind
+//! `splash_dismissed()`. Un-gated so the tests run from any host; the
 //! UIKit / GameController code that feeds these is ios-only.
 //!
 //! ## Conventions this pins
@@ -98,6 +99,25 @@ pub(crate) fn focus_and_visibility(application_state: isize) -> (bool, bool) {
     (application_state == 0, application_state != 2)
 }
 
+/// One display-link tick of the first-frame watch (`imp/app_state.rs`,
+/// `watch_first_frame`): the new `armed` flag, and whether the launch
+/// screen has now given way to the app.
+///
+/// The first tick that finds the host view in a visible window arms it;
+/// the next one reports. A tick runs from the main run loop at a frame
+/// boundary, and Core Animation commits the window's first frame before
+/// the run loop waits, so by the SECOND such tick the commit that drew
+/// the app has happened — the first one can still precede it when the
+/// window was attached earlier in the same run-loop turn. Losing the
+/// window (or hiding it) before then disarms.
+pub(crate) fn first_frame_tick(armed: bool, in_visible_window: bool) -> (bool, bool) {
+    match (armed, in_visible_window) {
+        (_, false) => (false, false),
+        (false, true) => (true, false),
+        (true, true) => (true, true),
+    }
+}
+
 /// `UIUserInterfaceStyle` → the color scheme: unspecified = 0, light = 1,
 /// dark = 2.
 pub(crate) fn color_scheme(user_interface_style: isize) -> runtime_shared::ColorScheme {
@@ -191,6 +211,17 @@ impl LockState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `splash_dismissed()` on iOS: not before the host view is in a
+    /// visible window, not on the first tick that finds it there (the
+    /// commit drawing it may still be ahead), then on the next one.
+    #[test]
+    fn the_first_frame_is_reported_one_tick_after_the_window_is_seen() {
+        assert_eq!(first_frame_tick(false, false), (false, false), "no window yet");
+        assert_eq!(first_frame_tick(false, true), (true, false), "window seen: arm");
+        assert_eq!(first_frame_tick(true, true), (true, true), "next tick: report");
+        assert_eq!(first_frame_tick(true, false), (false, false), "window lost: disarm");
+    }
 
     #[test]
     fn interface_styles_map_to_color_schemes() {

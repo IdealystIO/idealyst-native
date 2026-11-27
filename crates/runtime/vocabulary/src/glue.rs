@@ -927,14 +927,15 @@ pub use runtime_shared::focus::{text_entry_focused, TextEntryFocus};
 pub use runtime_shared::primitives::key::{AppKeyEvent, KeyPhase};
 pub use runtime_shared::set_app_key_handler;
 // App situation signals (focus, visibility, reduce-motion, primary
-// pointer, user activation, pointer lock, the system color scheme) and
+// pointer, user activation, pointer lock, the system color scheme, the
+// launch screen's hand-off) and
 // app-wide mouse input with
 // pointer lock. See `crate::app_input`.
 pub use crate::app_input::{
     add_pointer_listener, app_focused, app_visible, exit_pointer_lock, on_held_press, on_pointer,
     pointer_locked,
     pointer_root_origin, pointer_state, primary_pointer, reduce_motion, request_pointer_lock, set_cursor_hidden,
-    system_color_scheme, user_activated, PointerState,
+    splash_dismissed, system_color_scheme, user_activated, PointerState,
 };
 pub use runtime_shared::app_state::PointerKind;
 // The platform's system Back (Android's back button / gesture) offered to
