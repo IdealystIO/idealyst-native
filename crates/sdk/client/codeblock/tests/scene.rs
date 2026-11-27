@@ -351,3 +351,36 @@ fn regression_soft_wrap_editing_layer_has_no_border_to_offset_its_text() {
         assert_eq!(w, &Some(Tokenized::Literal(0.0)), "border-{side} must be 0");
     }
 }
+
+/// Regression: the decorated layer's text carried no font of its own —
+/// the metrics sat on its `<pre>`, which CSS passes down on web but a
+/// native label never inherits. On iOS the drawn text fell back to the
+/// system 17 pt face while the editing layer used the editor's, so the
+/// caret drifted off the glyphs (LumiTask's add-task title, 2026-11-27).
+#[test]
+fn regression_the_decorated_text_carries_the_editor_font() {
+    let h = editor_harness();
+    h.set_style_line(|n, style| {
+        let size = match &style.font_size {
+            Some(Tokenized::Literal(runtime_shared::Length::Px(px))) => format!("{px}"),
+            _ => "-".into(),
+        };
+        let family = match &style.font_family {
+            Some(runtime_shared::FontFamily::System(f)) => f.clone(),
+            _ => "-".into(),
+        };
+        format!("style n{n} size={size} family={family}")
+    });
+    let src = h.world.enter(|| signal(String::from("fn main")));
+    let element = code_editor(src, move |next| src.set(next))
+        .font("Menlo", 15.0)
+        .into_element();
+    let _mounted = h.mount(element);
+    let log = h.ops().join("\n");
+    let line = log.lines().find(|l| l.contains("styled_text")).expect("decorated layer mounted");
+    let id = line.split_whitespace().find(|w| w.starts_with('n') && w[1..].parse::<u32>().is_ok()).expect(line);
+    assert!(
+        log.contains(&format!("style {id} size=15 family=Menlo")),
+        "the decorated text node itself must carry the editor's font: {log}"
+    );
+}

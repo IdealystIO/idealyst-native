@@ -4021,6 +4021,12 @@ behaviour an app can observe, and the `ui!` one stops code that compiled
   sits on the text it edits, and a `Textarea` insets its text as the `Field` beside it does. A bare
   `text_area` with no padding now has its text at its edge, as on the other backends.
 
+- **A `code_editor` draws its text in its own font on native** (`codeblock` patch). The editor's
+  font, size, line height and colour sat on the drawn layer's wrapper, which CSS passes down on web
+  but a native view never does: on iOS the text drew in the system font at 17 pt while the editing
+  layer used the editor's font, so the caret ran off the glyphs further along each line. The drawn
+  text now carries them itself.
+
 - **A bottom sheet fits above the keyboard** (`idea-ui` patch). The keyboard lifts a `Modal` sheet
   by its height, but the sheet's height cap was measured against the whole screen, so a tall sheet
   rose past the top edge and took its first rows with it. The cap is now the room above the

@@ -619,6 +619,22 @@ fn decorated_layer_style(m: &EditorMetrics) -> StyleRules {
     }
 }
 
+/// Style for the decorated layer's text node itself: the font metrics and
+/// ink, stated on the text rather than left to inherit from the `<pre>`.
+/// CSS inherits them on web; a native label inherits nothing, so without
+/// this the drawn text sat in the platform's default font and size (system
+/// 17 pt on iOS) while the editing layer used the editor's own, and the
+/// caret drifted off the glyphs further along each line.
+fn decorated_text_style(m: &EditorMetrics) -> StyleRules {
+    StyleRules {
+        font_family: Some(FontFamily::System(m.font_family.clone())),
+        font_size: Some(Tokenized::Literal(Length::Px(m.font_size))),
+        line_height: Some(Tokenized::Literal(m.line_height)),
+        color: Some(Tokenized::Literal(m.text_color.clone())),
+        ..Default::default()
+    }
+}
+
 /// Style for the editing layer: same metrics, stretched over the
 /// decorated layer, with invisible glyphs and a visible caret.
 fn editor_layer_style(m: &EditorMetrics) -> StyleRules {
@@ -855,6 +871,9 @@ where
     let decorated = backend
         .borrow_mut()
         .create_styled_text(&initial_runs, &a11y);
+    backend
+        .borrow_mut()
+        .apply_style(&decorated, &Rc::new(decorated_text_style(&prim.metrics)));
     backend.borrow_mut().insert(&mut pre, decorated.clone());
     backend.borrow_mut().insert(&mut stack, pre);
 
