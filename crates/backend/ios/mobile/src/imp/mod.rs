@@ -1233,6 +1233,16 @@ impl IosBackend {
         // (`keyboard`, "Escape closes the topmost overlay").
         keyboard::set_key_focus_host(&view);
         self.host_root = Some(view);
+        // The insets the host will have once it is in its window, before
+        // the first build reads them: `safe_area_insets()` and every
+        // `safe_area` container start right, rather than at zero until
+        // `safeAreaInsetsDidChange` (LayoutObserverView) reports them.
+        // That callback still follows every later change.
+        let insets = self.platform_safe_area_insets();
+        if insets != runtime_shared::EdgeInsets::ZERO {
+            runtime_shared::set_safe_area_insets(insets);
+            crate::newcore::forward_safe_area(insets);
+        }
     }
 
     /// Install a Taffy `measure_fn` for an image view so flex layout
@@ -5929,17 +5939,43 @@ root): {}. Give the list a parent that is bounded: `flex_grow: 1` against \
     /// `apply_safe_area_padding` to avoid trusting a stale framework
     /// signal value during the build/layout flow — UIKit's value is
     /// the source of truth.
+    ///
+    /// Before the host is in a window (the first build and layout run
+    /// from `viewDidLoad`, before UIKit attaches the view) its own
+    /// `safeAreaInsets` read zero, so the first frame was drawn with
+    /// no safe area and then jumped to it. The window it is about to
+    /// join already knows them: read the scene window's instead.
     fn platform_safe_area_insets(&self) -> runtime_shared::EdgeInsets {
         let Some(host) = &self.host_root else {
             return runtime_shared::EdgeInsets::ZERO;
         };
-        let insets: callbacks::UIEdgeInsets =
-            unsafe { msg_send![&**host, safeAreaInsets] };
+        let in_window: *mut UIView = unsafe { msg_send![&**host, window] };
+        let insets: callbacks::UIEdgeInsets = if in_window.is_null() {
+            match self.scene_window_safe_area() {
+                Some(insets) => insets,
+                None => unsafe { msg_send![&**host, safeAreaInsets] },
+            }
+        } else {
+            unsafe { msg_send![&**host, safeAreaInsets] }
+        };
         runtime_shared::EdgeInsets {
             top: insets.top as f32,
             right: insets.right as f32,
             bottom: insets.bottom as f32,
             left: insets.left as f32,
+        }
+    }
+
+    /// The safe-area insets of the app's window (the first window of the
+    /// first `UIWindowScene`): what a host about to join it will have.
+    /// `None` with no scene or window yet.
+    fn scene_window_safe_area(&self) -> Option<callbacks::UIEdgeInsets> {
+        let scene = self.active_window_scene()?;
+        unsafe {
+            let windows: Retained<objc2_foundation::NSArray<UIView>> = msg_send_id![&scene, windows];
+            let window: Option<Retained<UIView>> = msg_send_id![&windows, firstObject];
+            let window = window?;
+            Some(msg_send![&window, safeAreaInsets])
         }
     }
 }
