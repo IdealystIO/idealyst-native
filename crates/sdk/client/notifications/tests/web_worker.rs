@@ -239,3 +239,21 @@ async fn cancel_closes_the_worker_shown_notification() {
     settle().await;
     assert_eq!(eval("globalThis.__sw.shown.map((n) => n.tag + ':' + !!n.closed).join()"), "chat-sam:true,other:false");
 }
+
+/// The bug: on macOS a notification whose banner was swiped away stays in
+/// Notification Center, and posting the same id again updated that entry
+/// silently — "Posted as chat-sam", no banner. Each post must close what is
+/// shown under its tag first, so it arrives as a new notification; that
+/// close is the code's, so it reports no dismissal.
+#[wasm_bindgen_test]
+async fn regression_a_repost_after_a_swipe_shows_as_a_new_notification() {
+    fresh_worker(true).await;
+    let (seen, _sub) = responses();
+    notify(chat()).await.unwrap();
+    // Swiped away: still listed by the registration, not closed.
+    notify(Notification::new("Sam", "Still on for lunch?").id("chat-sam")).await.unwrap();
+    assert_eq!(eval("globalThis.__sw.calls.join()"), "close:chat-sam", "the shown one is closed before the new post");
+    assert_eq!(eval("globalThis.__sw.shown.map((n) => n.body).join()"), "Still on for lunch?");
+    settle().await;
+    assert!(seen.borrow().is_empty(), "closing it from code is not a dismissal");
+}

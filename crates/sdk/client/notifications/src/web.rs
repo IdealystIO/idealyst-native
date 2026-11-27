@@ -24,13 +24,25 @@
 //! back (the id, the payload, and which actions must not open the app). The
 //! app's [`Notification::web`] hook edits the finished options object.
 //!
+//! ## Replacing
+//!
+//! Re-posting an id must alert like a new notification, as on every native
+//! platform. `renotify` alone doesn't get there on the worker path: on
+//! macOS a notification whose banner was swiped away still sits in
+//! Notification Center, and a same-tag post then updates that entry
+//! silently — no banner, no sound. So the worker path closes whatever is
+//! shown under the tag before posting; the browser does not fire
+//! `notificationclose` for a `close()` call, so nothing is reported as a
+//! dismissal.
+//!
 //! ## Responses
 //!
 //! - **Worker path:** `sw/notifications.js` handles `notificationclick`
 //!   (focusing an open tab, or opening the app, unless the pressed action
 //!   has `opens_app(false)`) and `notificationclose` (a user dismissal —
-//!   the browser does not fire it for `close()` or for a notification that
-//!   merely leaves the screen), and delivers `{ id, action, payload }` on
+//!   closing it, or clearing it from the notification center; not
+//!   `close()`, and not a banner swiped away on macOS, which only moves it
+//!   into Notification Center), and delivers `{ id, action, payload }` on
 //!   the "notifications" channel. [`init`] subscribes to it
 //!   (`web_glue::service_worker::on_message`); the channel holds a response
 //!   until the page that will handle it is listening, so a click with no
@@ -77,7 +89,8 @@ const CHANNEL: &str = "notifications";
 const ACTIVATION_WAIT_MS: u32 = 3000;
 
 web_glue::import! {
-    // Show through the active service worker. Resolves `true` when shown,
+    // Show through the active service worker, closing what is shown under
+    // the same tag first (see the module docs' "Replacing"). Resolves `true` when shown,
     // `false` when the page has no worker (or it doesn't activate within
     // `wait` ms) — the caller then uses the page-level API; rejects when the
     // browser refuses (no permission). The strings are read up front: they
@@ -91,6 +104,7 @@ web_glue::import! {
              const active = reg.active ? reg : await Promise.race([c.ready, \
                new Promise((r) => setTimeout(() => r(null), wait))]); \
              if (!active) return false; \
+             for (const old of await active.getNotifications({ tag: options.tag })) old.close(); \
              await active.showNotification(title, options); return true; })()); }";
     // `new Notification(title, options)`, kept in the page-wide map by tag
     // (replacing — and closing — the previous one under that tag), with a

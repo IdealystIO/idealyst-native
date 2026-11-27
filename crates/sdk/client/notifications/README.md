@@ -80,7 +80,7 @@ A field a platform can't show is dropped, never faked.
 | actions | category actions (max 4) | `addAction` (max 3) | toast `<action>` (max 5) | `actions` | through the service worker: buttons on Chrome and Edge (max 2 on Chrome); others show the notification without them. Dropped on the page-level fallback. |
 | reply field | `UNTextInputNotificationAction` | `RemoteInput` | toast `<input>` | KDE `inline-reply` (one) | dropped: the action shows as a plain button, reported without text |
 | priority | interruption level: Low passive, Default/High active, Urgent time-sensitive | one channel per level (Low → low importance, High/Urgent → high importance, heads-up) | Low → no popup, High/Urgent → high priority | `urgency` hint 0/1/2 | Urgent → `requireInteraction` |
-| replace (same id) | alerts again | alerts again | alerts again | alerts again | alerts again (`renotify`) |
+| replace (same id) | alerts again | alerts again | alerts again | alerts again | alerts again: the worker path closes the shown one first (a same-tag update to an entry still in macOS Notification Center would otherwise be silent), and sets `renotify` |
 | silent | no sound set | the silent channel (normal importance whatever the priority, since sound belongs to the channel) | `<audio silent>` | `suppress-sound` | `silent` |
 | group | `threadIdentifier` | `setGroup` | dropped | dropped | dropped |
 | image | attachment (the OS moves the file into its store) | large icon + big picture | hero image | `image-path` | `image` (URL) |
@@ -93,7 +93,7 @@ A field a platform can't show is dropped, never faked.
 | Android | a translucent activity (taps and opening actions), a receiver (background actions) | delete intent | queued in `SharedPreferences`, delivered on the next launch |
 | Windows | toast `Activated` | `Dismissed` with `UserCanceled` | not delivered: an unpackaged app needs a COM activator; scheduled toasts have no events |
 | Linux | `ActionInvoked` / `NotificationReplied` signals | `NotificationClosed` reason 2 | not delivered (signals reach running clients only) |
-| Web | the worker's `notificationclick` (focuses an open tab, or opens the app, unless the action has `opens_app(false)`); the page-level fallback reports a body click only | the worker's `notificationclose` (a user dismissal only) | the click opens the app, and the response waits in the worker's outbox until the opened page listens. Lost on the page-level fallback. |
+| Web | the worker's `notificationclick` (focuses an open tab, or opens the app, unless the action has `opens_app(false)`); the page-level fallback reports a body click only | the worker's `notificationclose`: closing it (its ✕, or clearing it from the notification center). Swiping a banner away on macOS only moves it into Notification Center, so it is not a dismissal. | the click opens the app, and the response waits in the worker's outbox until the opened page listens. Lost on the page-level fallback. |
 
 Every response removes its notification, as iOS does on its own: Android cancels it after an action, Windows and Linux close it, and web closes it on click.
 
